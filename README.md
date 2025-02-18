@@ -18,12 +18,12 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    - Install from [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)
    - Verify installation with: `yt-dlp --version`
 
-3. **ngrok** - Tunneling service for local development
+3. **ngrok** - Tunneling service for local development or self-hosting
    - Sign up at [ngrok.com](https://ngrok.com)
    - Set up your authtoken and reserved domain
    - Required environment variables:
      - `NGROK_AUTHTOKEN`: Your ngrok authentication token
-     - `NGROK_DOMAIN`: Your reserved ngrok domain
+     - `NGROK_DOMAIN`: Your reserved ngrok domain (this isn't required, but it'll change every time you restart)
    - Documentation: [ngrok docs](https://ngrok.com/docs)
 
 ## 🚀 Setup
