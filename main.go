@@ -92,17 +92,25 @@ func run(ctx context.Context) error {
 		c.JSON(http.StatusOK, response)
 	})
 
-	// Setup ngrok tunnel
-	listener, err := ngrok.Listen(ctx,
-		config.HTTPEndpoint(
-			config.WithDomain("beatbot.ngrok.app"),
-		),
-		ngrok.WithAuthtokenFromEnv(),
-	)
-	if err != nil {
-		return err
+	if os.Getenv("NGROK_DOMAIN") != "" && os.Getenv("NGROK_AUTHTOKEN") != "" {
+		listener, err := ngrok.Listen(ctx,
+			config.HTTPEndpoint(
+				config.WithDomain(os.Getenv("NGROK_DOMAIN")),
+			),
+			ngrok.WithAuthtokenFromEnv(), // defaults to NGROK_AUTHTOKEN
+		)
+		if err != nil {
+			return err
+		}
+
+		log.Println("Ngrok URL:", listener.URL())
+		return http.Serve(listener, router)
 	}
 
-	log.Println("Ngrok URL:", listener.URL())
-	return http.Serve(listener, router)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("Starting server on :%s", port)
+	return http.ListenAndServe(":"+port, router)
 }
