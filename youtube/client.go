@@ -6,10 +6,11 @@ import (
 	"html"
 	"log"
 	"net/url"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"beatbot/config"
 
 	"google.golang.org/api/option"
 	ytapi "google.golang.org/api/youtube/v3"
@@ -28,7 +29,7 @@ type YoutubeStream struct {
 }
 
 func Query(query string) []VideoResponse {
-	api_key := os.Getenv("YOUTUBE_API_KEY")
+	api_key := config.Config.Youtube.APIKey
 
 	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
 	if err != nil {
@@ -62,12 +63,11 @@ func Query(query string) []VideoResponse {
 
 func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	// Use yt-dlp to get the best audio format URL
-	// TODO: will need to be sure to keep this in $PATH
-	// just use home directory for now
 	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
 	cmd := exec.Command("yt-dlp",
-		"-f", "bestaudio+best",  // we just want audio
-		"--no-audio-multistreams", // don't try to use multistreams
+		"-f", "bestaudio[ext=ogg]/bestaudio",  // prefer ogg, but fallback to bestaudio
+		// "--audio-quality", "0", this only works with -x
+		"--audio-multistreams",
 		"-g",               // Print URL only
 		"--no-warnings",   
 		ytUrl)

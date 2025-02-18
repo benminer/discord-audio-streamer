@@ -14,8 +14,9 @@ import (
 	"os"
 	"strconv"
 
+	"beatbot/config"
 	"beatbot/controller"
-	"beatbot/models"
+	"beatbot/discord"
 	"beatbot/youtube"
 )
 
@@ -78,8 +79,8 @@ type Manager struct {
 }
 
 func NewManager(appID string, controller *controller.Controller, options Options) *Manager {
-	publicKey := os.Getenv("DISCORD_PUBLIC_KEY")
-	botToken := os.Getenv("DISCORD_BOT_TOKEN")
+	publicKey := config.Config.Discord.PublicKey
+	botToken := config.Config.Discord.BotToken
 
 	if publicKey == "" || botToken == "" {
 		log.Fatal("DISCORD_PUBLIC_KEY and DISCORD_BOT_TOKEN must be set")
@@ -98,37 +99,24 @@ func NewManager(appID string, controller *controller.Controller, options Options
 // TODO: I should probably just load in the members info on interaction
 // and cache it temporarily
 // could use this to assure permissions, etc.
-func (m *Manager) GetMember(interaction *Interaction) *models.Member {
-	userId := interaction.Member.User.ID
-	guildId := interaction.GuildID
-
-	if (userId == "" || guildId == "") {
-		log.Printf("User or guild ID is empty")
-		return nil
-	}
-
-	member, err := models.MemberForGuild(guildId, userId, m.BotToken)
-	if err != nil {
-		log.Printf("Error getting member: %v", err)
-		return nil
-	}
-
-	m.Controller.GetPlayer(guildId).RegisterMember(member)
-
-	return member
-}
-
 func (manager *Manager) QueryAndQueue(interaction *Interaction) {
-	member := manager.GetMember(interaction)
-
-	if member == nil {
-		manager.SendFollowup(interaction, "Could not find member", true)
+	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
+	if err != nil {
+		manager.SendFollowup(interaction, "Error getting voice state: "+err.Error(), true)
 		return
 	}
 
-	if manager.Options.EnforceVoiceChannel && !member.IsInVoiceChannel() {
-		manager.SendFollowup(interaction, "Hey dummy, join a voice channel first", true)
-		return
+	if manager.Options.EnforceVoiceChannel {
+		voiceState, err = discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
+		if err != nil {
+			manager.SendFollowup(interaction, "Error getting voice state: "+err.Error(), true)
+			return
+		}
+
+		if voiceState == nil {
+			manager.SendFollowup(interaction, "Hey dummy, join a voice channel first", true)
+			return
+		}
 	}
 
 	query := interaction.Data.Options[0].Value

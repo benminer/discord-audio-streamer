@@ -5,9 +5,9 @@ import (
 	"beatbot/models"
 	"beatbot/youtube"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -38,13 +38,14 @@ const (
 )
 
 type GuildPlayer struct {
+	Discord *discordgo.Session
+	Presence *discordgo.Presence
 	GuildID string
 	State GuildPlayerState
 	Members map[string]*models.Member
 	Queue *GuildQueue
 	VoiceChannelID *string
 	VoiceJoinedAt *time.Time
-	VoiceSession *discordgo.Session
 	VoiceConnection *discordgo.VoiceConnection
 }
 
@@ -64,13 +65,21 @@ type GuildQueue struct {
 type Controller struct {
 	// This is a map of guildID to the player for that guild
 	sessions map[string]*GuildPlayer
+	discord *discordgo.Session
 	mutex sync.Mutex
 }
 
-func NewController() *Controller {
+func NewController() (*Controller, error) {
+	discord, err := discord.NewSession()
+	if err != nil {
+		log.Fatalf("Error creating Discord session: %v", err)
+		return nil, err
+	}
+
 	return &Controller{
 		sessions: make(map[string]*GuildPlayer),
-	}
+		discord: discord,
+	}, nil
 }
 
 func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
@@ -86,6 +95,8 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	}
 
 	session := &GuildPlayer{
+		// propagate the global discord session to the player
+		Discord: c.discord,
 		GuildID: guildID,
 		State: Stopped,
 		Queue: &GuildQueue{
@@ -108,14 +119,59 @@ func (p *GuildPlayer) GetNext() GuildQueueItem {
 	return p.Queue.Items[0]
 }
 
+func (p *GuildPlayer) AddPresence(video youtube.YoutubeStream) {
+	if p.Discord == nil || p.Discord.State == nil {
+		log.Printf("Cannot add presence: Discord session or state is nil")
+		return
+	}
+
+	presence := &discordgo.Presence{
+		Status: "playing",
+		Activities: []*discordgo.Activity{
+			{
+				Name: fmt.Sprintf("🎵 %s", video.Title),
+				Type: discordgo.ActivityTypeStreaming,
+				State: "Playing",
+			},
+		},
+	}
+	
+	err := p.Discord.State.PresenceAdd(p.GuildID, presence)
+	if err != nil {
+		log.Printf("Error adding presence: %v", err)
+		return
+	}
+	p.Presence = presence
+}
+
+func (p *GuildPlayer) RemovePresence() {
+	if p.Presence != nil && p.Discord != nil && p.Discord.State != nil {
+		err := p.Discord.State.PresenceRemove(p.GuildID, p.Presence)
+		if err != nil {
+			log.Printf("Error removing presence: %v", err)
+		}
+		p.Presence = nil
+	}
+}
+
+func (p *GuildPlayer) PopQueue() {
+	p.Queue.Mutex.Lock()
+	defer p.Queue.Mutex.Unlock()
+	if len(p.Queue.Items) > 1 {
+		p.Queue.Items = p.Queue.Items[1:]
+	} else {
+		p.Queue.Items = []GuildQueueItem{}
+	}
+}
+
 func (p *GuildPlayer) Play(video youtube.YoutubeStream) {
 	if p.VoiceConnection == nil {
 		log.Printf("No voice connection found for guild %s", p.GuildID)
 		return
 	}
 
-	if p.VoiceSession == nil {
-		log.Printf("No voice session found for guild %s", p.GuildID)
+	if !p.VoiceConnection.Ready {
+		log.Printf("Voice connection not ready for guild %s", p.GuildID)
 		return
 	}
 
@@ -133,17 +189,19 @@ func (p *GuildPlayer) Play(video youtube.YoutubeStream) {
 	}
 
 	// play the stream
-	p.VoiceConnection.Speaking(true)
+	p.PopQueue() // remove the incoming video from the queue, shift to next if any
+	go p.VoiceConnection.Speaking(true)
 	defer p.VoiceConnection.Speaking(false)
+	p.State = Playing
 
-	// Create ffmpeg command to decode audio and encode to opus
-	ffmpeg := exec.Command("ffmpeg",
-		"-i", video.StreamURL,        // Input from YouTube URL
-		"-f", "s16le",          // Output format: signed 16-bit little-endian
-		"-ar", "48000",         // Audio rate: 48kHz (required by Discord)
-		"-ac", "2",             // Audio channels: 2 (stereo)
-		"-loglevel", "error",   // Only show errors in logs
-		"pipe:1")               // Output to stdout
+    ffmpeg := exec.Command("ffmpeg",
+        "-i", video.StreamURL,
+        "-f", "s16le",          // Output format: signed 16-bit little-endian
+        "-ar", "48000",         // Audio rate: 48kHz (required by Discord)
+        "-ac", "2",             // Ensure stereo
+        "-af", "aresample=48000",  // Simple resampling to maintain quality
+        "-loglevel", "error",   
+        "pipe:1")
 
 	ffmpegout, err := ffmpeg.StdoutPipe()
 	if err != nil {
@@ -156,86 +214,87 @@ func (p *GuildPlayer) Play(video youtube.YoutubeStream) {
 		log.Printf("Error starting ffmpeg: %v", err)
 		return
 	}
+    enc, err := opus.NewEncoder(48000, 2, opus.Application(opus.AppAudio))
+    if err != nil {
+        log.Printf("Error creating opus encoder: %v", err)
+        return
+    }
+    enc.SetComplexity(10)
+    enc.SetBitrateToMax()
 
-	// Create opus encoder
-	enc, err := opus.NewEncoder(48000, 2, opus.Application(2048))
-	if err != nil {
-		log.Printf("Error creating opus encoder: %v", err)
-		return
-	}
+    frameSize := 960  // 20ms at 48kHz
+    buffer := make([]int16, frameSize*2)      // *2 for stereo
+    opusBuffer := make([]byte, frameSize*4)   
 
-	// Read raw audio data in chunks and encode to opus
-	buffer := make([]int16, 960*2) // 960 samples * 2 channels
-	opusBuffer := make([]byte, 1000)
-	
-	for {
-		err := binary.Read(ffmpegout, binary.LittleEndian, &buffer)
+    for {
+        err := binary.Read(ffmpegout, binary.LittleEndian, &buffer)
+        if err != nil {
+            if err != io.EOF && err != io.ErrUnexpectedEOF {
+                log.Printf("Error reading from ffmpeg: %v", err)
+            }
+            break
+        }
+
+		if p.State == Playing {  // Only log once when playback starts
+            log.Printf("First few PCM samples: %v", buffer[:10])  // Should show alternating L/R values if stereo
+        }
+
+        n, err := enc.Encode(buffer, opusBuffer)
+        if err != nil {
+            log.Printf("Error encoding to opus: %v", err)
+            break
+        }
+
+        p.VoiceConnection.OpusSend <- opusBuffer[:n]
+    }
+
+	// Give ffmpeg a chance to exit gracefully
+	done := make(chan error, 1)
+	go func() {
+		done <- ffmpeg.Wait()
+	}()
+
+	// Wait for ffmpeg to finish or force kill after timeout
+	select {
+	case <-time.After(3 * time.Second):
+		log.Printf("FFmpeg process taking too long to exit, killing...")
+		ffmpeg.Process.Kill()
+	case err := <-done:
 		if err != nil {
-			if err != io.EOF {
-				log.Printf("Error reading from ffmpeg: %v", err)
-			}
-			break
+			log.Printf("FFmpeg exited with error: %v", err)
 		}
-
-		// Encode audio data to opus
-		n, err := enc.Encode(buffer, opusBuffer)
-		if err != nil {
-			log.Printf("Error encoding to opus: %v", err)
-			break
-		}
-
-		// Send encoded opus data to Discord
-		p.VoiceConnection.OpusSend <- opusBuffer[:n]
 	}
-
-	ffmpeg.Process.Kill()
-	ffmpeg.Wait()
 }
 
 func (p *GuildPlayer) HandleAdd(event QueueEvent) {
 	// join voice channel if not already in one
 	if p.VoiceChannelID == nil || p.VoiceConnection == nil {
-		member := discord.GetMember(event.Item.AddedBy, &p.GuildID)
+		voiceState, err := discord.GetMemberVoiceState(event.Item.AddedBy, &p.GuildID)
+		if err != nil {
+			log.Printf("Error getting voice state: %s", err)
+			return
+		}
 
-		if os.Getenv("ENFORCE_VOICE_CHANNEL") == "true" {
-			if member == nil {
-				log.Printf("Member not found for user %s in guild %s", *event.Item.AddedBy, p.GuildID)
-				return
-			}
-
-			if member.VoiceState.ChannelID == "" {
-				log.Printf("Member %s in guild %s does not have a voice channel", *event.Item.AddedBy, p.GuildID)
-				return
-			}
+		if voiceState == nil {
+			log.Printf("Voice state not found for user %s in guild %s", *event.Item.AddedBy, p.GuildID)
+			return
 		}
 
 		// session, vc, err := discord.JoinVoiceChannel(p.GuildID, member.VoiceState.ChannelID)
-		session, vc, err := discord.JoinVoiceChannel(p.GuildID, "1340737363047092296")
+		vc, err := discord.JoinVoiceChannel(p.Discord, p.GuildID, voiceState.ChannelID)
 		if err != nil {
 			log.Printf("Error joining voice channel: %s", err)
 			return
 		}
 
-		p.VoiceSession = session
+		now := time.Now()
+
 		p.VoiceConnection = vc
-		p.VoiceChannelID = &member.VoiceState.ChannelID
+		p.VoiceChannelID = &voiceState.ChannelID
+		p.VoiceJoinedAt = &now
 
 		p.Play(event.Item.Video)
 	}
-	// prepare stream
-
-	// check if the stream url is still valid
-	// if time.Unix(event.Item.Video.Expiration, 0).Before(time.Now().Add(time.Minute * 10)) {
-	// 	stream, err := youtube.GetVideoStream(youtube.VideoResponse{
-	// 		Title: event.Item.Video.Title,
-	// 		VideoID: event.Item.Video.VideoID,
-	// 	})
-	// 	if err != nil {
-	// 		log.Printf("Error getting video stream: %s", err)
-	// 		return
-	// 	}
-		
-	// }
 }
 
 func (p *GuildPlayer) Listen() {
@@ -333,6 +392,7 @@ func (p *GuildPlayer) IsEmpty() bool {
 	defer p.Queue.Mutex.Unlock()
 	return len(p.Queue.Items) == 0
 }
+
 
 
 

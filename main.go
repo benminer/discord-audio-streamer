@@ -12,7 +12,9 @@ import (
 
 	"github.com/joho/godotenv"
 
+	appConfig "beatbot/config"
 	"beatbot/controller"
+	"beatbot/discord"
 	"beatbot/handlers"
 	"beatbot/youtube"
 )
@@ -21,13 +23,18 @@ func main() {
 	if err := godotenv.Load(); err != nil {
         log.Printf("Warning: Error loading .env file: %v", err)
     }
+	appConfig.NewConfig()
 	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func run(ctx context.Context) error {
-	controller := controller.NewController()
+	controller, err := controller.NewController()
+	if err != nil {
+		log.Fatalf("Error creating controller: %v", err)
+		return err
+	}
 	router := gin.Default()
 
 	router.GET("/youtube/search", func(c *gin.Context) {
@@ -39,16 +46,26 @@ func run(ctx context.Context) error {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get video stream"})
 			return
 		}
+
+		log.Printf("%v", stream.StreamURL)
 		
 		c.JSON(http.StatusOK, gin.H{
-			"videos": videos,
-			"stream": stream,
+			"ok": true,
 		})
 	})
 
 	router.POST("/discord/webhook", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
+		})
+	})
+
+	router.GET("/discord/:guildId/members/:userId", func(c *gin.Context) {
+		guildId := c.Param("guildId")
+		userId := c.Param("userId")
+		discord.GetMemberVoiceState(&userId, &guildId)
+		c.JSON(http.StatusOK, gin.H{
+			"ok": true,
 		})
 	})
 
@@ -85,10 +102,10 @@ func run(ctx context.Context) error {
 		c.JSON(http.StatusOK, response)
 	})
 
-	if os.Getenv("NGROK_DOMAIN") != "" && os.Getenv("NGROK_AUTHTOKEN") != "" {
+	if appConfig.Config.NGrok.IsEnabled() {
 		listener, err := ngrok.Listen(ctx,
 			config.HTTPEndpoint(
-				config.WithDomain(os.Getenv("NGROK_DOMAIN")),
+				config.WithDomain(appConfig.Config.NGrok.Domain),
 			),
 			ngrok.WithAuthtokenFromEnv(), // defaults to NGROK_AUTHTOKEN
 		)
@@ -100,7 +117,7 @@ func run(ctx context.Context) error {
 		return http.Serve(listener, router)
 	}
 
-	port := os.Getenv("PORT")
+	port := appConfig.Config.Options.Port
 	if port == "" {
 		port = "8080"
 	}

@@ -1,14 +1,5 @@
 package models
 
-import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-)
-
 type Member struct {
 	User struct {
 		ID string `json:"id"`
@@ -29,38 +20,38 @@ type Member struct {
 	} `json:"voice"`
 } 
 
-func MemberForGuild(guildID string, userID string, botToken string) (*Member, error) {
-	req, err := http.NewRequest("GET", 
-		fmt.Sprintf("https://discord.com/api/v10/guilds/%s/members/%s", guildID, userID),
-		nil)
+// func MemberForGuild(guildID string, userID string, botToken string) (*Member, error) {
+// 	req, err := http.NewRequest("GET", 
+// 		fmt.Sprintf("https://discord.com/api/v10/guilds/%s/members/%s", guildID, userID),
+// 		nil)
 
-	if err != nil {
-		return nil, err
-	}
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	req.Header.Set("Authorization", "Bot "+botToken)
+// 	req.Header.Set("Authorization", "Bot "+botToken)
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+// 	client := &http.Client{}
+// 	resp, err := client.Do(req)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer resp.Body.Close()
 	
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
+// 	body, err := io.ReadAll(resp.Body)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	log.Printf("Response body: %s", string(body))
+// 	log.Printf("Response body: %s", string(body))
 
-	var member Member
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&member); err != nil {
-		return nil, err
-	}
+// 	var member Member
+// 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&member); err != nil {
+// 		return nil, err
+// 	}
 
-	return &member, nil
-}
+// 	return &member, nil
+// }
 
 func (m *Member) IsInVoiceChannel() bool {
 	return m.VoiceState.ChannelID != ""
