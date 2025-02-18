@@ -13,7 +13,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"beatbot/controller"
-	"beatbot/discord"
+	"beatbot/handlers"
 	"beatbot/youtube"
 )
 
@@ -52,13 +52,6 @@ func run(ctx context.Context) error {
 		})
 	})
 
-	router.GET("/test/join-vc", func(c *gin.Context) {
-		discord.JoinVoiceChannel("618714668441010182", "1340737363047092296")
-		c.JSON(http.StatusOK, gin.H{
-			"message": "joined vc",
-		})
-	})
-
 	router.POST("/discord/interactions", func(c *gin.Context) {
 		signature := c.GetHeader("X-Signature-Ed25519")
 		timestamp := c.GetHeader("X-Signature-Timestamp")
@@ -71,24 +64,24 @@ func run(ctx context.Context) error {
 			return
 		}
 
-		options := discord.Options{
+		options := handlers.Options{
 			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
 		}
 
-		client := discord.NewClient(os.Getenv("DISCORD_APP_ID"), controller, options)
+		manager := handlers.NewManager(os.Getenv("DISCORD_APP_ID"), controller, options)
 
-		if !client.VerifyDiscordRequest(signature, timestamp, bodyBytes) {
+		if !manager.VerifyDiscordRequest(signature, timestamp, bodyBytes) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request signature"})
 			return
 		}
 
-		interaction, err := client.ParseInteraction(bodyBytes)
+		interaction, err := manager.ParseInteraction(bodyBytes)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse interaction"})
 			return
 		}
 
-		response := client.HandleInteraction(interaction)
+		response := manager.HandleInteraction(interaction)
 		c.JSON(http.StatusOK, response)
 	})
 

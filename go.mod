@@ -8,6 +8,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	golang.ngrok.com/ngrok v1.13.0
 	google.golang.org/api v0.221.0
+	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 )
 
 require (

@@ -1,4 +1,7 @@
-package discord
+package handlers
+
+// handlers are the functions that handle the interactions from discord
+// they are responsible for parsing the interaction, verifying the request,
 
 import (
 	"bytes"
@@ -66,7 +69,7 @@ type Options struct {
 	EnforceVoiceChannel bool
 }
 
-type Client struct {
+type Manager struct {
 	AppID string
 	PublicKey string
 	BotToken string
@@ -74,7 +77,7 @@ type Client struct {
 	Options Options
 }
 
-func NewClient(appID string, controller *controller.Controller, options Options) *Client {
+func NewManager(appID string, controller *controller.Controller, options Options) *Manager {
 	publicKey := os.Getenv("DISCORD_PUBLIC_KEY")
 	botToken := os.Getenv("DISCORD_BOT_TOKEN")
 
@@ -83,7 +86,7 @@ func NewClient(appID string, controller *controller.Controller, options Options)
 		os.Exit(1)
 	}
 
-	return &Client{
+	return &Manager{
 		AppID: appID,
 		PublicKey: publicKey,
 		BotToken: botToken,
@@ -95,7 +98,7 @@ func NewClient(appID string, controller *controller.Controller, options Options)
 // TODO: I should probably just load in the members info on interaction
 // and cache it temporarily
 // could use this to assure permissions, etc.
-func (c *Client) HydrateGuildMember(interaction *Interaction) *models.Member {
+func (m *Manager) GetMember(interaction *Interaction) *models.Member {
 	userId := interaction.Member.User.ID
 	guildId := interaction.GuildID
 
@@ -104,27 +107,27 @@ func (c *Client) HydrateGuildMember(interaction *Interaction) *models.Member {
 		return nil
 	}
 
-	member, err := models.MemberForGuild(guildId, userId, c.BotToken)
+	member, err := models.MemberForGuild(guildId, userId, m.BotToken)
 	if err != nil {
 		log.Printf("Error getting member: %v", err)
 		return nil
 	}
 
-	c.Controller.GetPlayer(guildId).RegisterMember(member)
+	m.Controller.GetPlayer(guildId).RegisterMember(member)
 
 	return member
 }
 
-func (c *Client) QueryAndQueue(interaction *Interaction) {
-	member := c.HydrateGuildMember(interaction)
+func (manager *Manager) QueryAndQueue(interaction *Interaction) {
+	member := manager.GetMember(interaction)
 
 	if member == nil {
-		c.SendFollowup(interaction, "Could not find member", true)
+		manager.SendFollowup(interaction, "Could not find member", true)
 		return
 	}
 
-	if c.Options.EnforceVoiceChannel && !member.IsInVoiceChannel() {
-		c.SendFollowup(interaction, "Hey dummy, join a voice channel first", true)
+	if manager.Options.EnforceVoiceChannel && !member.IsInVoiceChannel() {
+		manager.SendFollowup(interaction, "Hey dummy, join a voice channel first", true)
 		return
 	}
 
@@ -132,32 +135,35 @@ func (c *Client) QueryAndQueue(interaction *Interaction) {
 	videos := youtube.Query(query)
 
 	if len(videos) == 0 {
-		go c.SendFollowup(interaction, "No videos found for the given query", true)
+		go manager.SendFollowup(interaction, "No videos found for the given query", true)
 		return
 	}
 
 	top_result := videos[0]
-	c.SendFollowup(interaction, "Getting streaming url for **"+top_result.Title+"**...", true)
+	manager.SendFollowup(interaction, "Getting streaming url for **"+top_result.Title+"**...", true)
 	stream, err := youtube.GetVideoStream(top_result)
 	if err != nil {
-		go c.SendFollowup(interaction, "Error getting video stream: "+err.Error(), true)
+		go manager.SendFollowup(interaction, "Error getting video stream: "+err.Error(), true)
 		log.Printf("Error getting video stream: %v", err)
 		return
 	}
-	go c.SendFollowup(interaction, "Added **"+top_result.Title+"** to the queue", false)
-	
-	guild_player := c.Controller.GetPlayer(interaction.GuildID)
-	guild_player.Queue.Add(*stream)
+
+	var followUpMessage string
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	if player.IsEmpty() {
+		followUpMessage = "Now playing **"+top_result.Title+"**"
+	} else {
+		followUpMessage = "Added **"+top_result.Title+"** to the queue"
+	}
+	go manager.SendFollowup(interaction, followUpMessage, false)
+	player.Add(*stream, interaction.Member.User.ID)
 
 	// Hardcoded for now
-	JoinVoiceChannel(interaction.GuildID, "1340737363047092296")
-	
-	// Todo: check if empty, if so, play
-	// we'll need to start up some sort of audio streaming service here, 
-	// This could probably live on the guild's player struct
+	// JoinVoiceChannel(interaction.GuildID, "1340737363047092296")
 }
 
-func (c *Client) SendFollowup(interaction *Interaction, content string, ephemeral bool) {
+func (manager *Manager) SendFollowup(interaction *Interaction, content string, ephemeral bool) {
 	payload := map[string]interface{}{
 		"content": content,
 	}
@@ -173,7 +179,7 @@ func (c *Client) SendFollowup(interaction *Interaction, content string, ephemera
 	}
 
 	resp, err := http.Post(
-		"https://discord.com/api/v10/webhooks/" + c.AppID + "/" + interaction.Token,
+		"https://discord.com/api/v10/webhooks/" + manager.AppID + "/" + interaction.Token,
 		"application/json",
 		bytes.NewBuffer(jsonPayload),
 	)
@@ -183,7 +189,7 @@ func (c *Client) SendFollowup(interaction *Interaction, content string, ephemera
 	defer resp.Body.Close()
 }
 
-func (c *Client) ParseInteraction(body []byte) (*Interaction, error) {
+func (manager *Manager) ParseInteraction(body []byte) (*Interaction, error) {
 	var interaction Interaction
 	if err := json.Unmarshal(body, &interaction); err != nil {
 		log.Printf("Error unmarshalling interaction: %v", err)
@@ -194,7 +200,7 @@ func (c *Client) ParseInteraction(body []byte) (*Interaction, error) {
 	return &interaction, nil
 }
 
-func (c *Client) HandlePing(interaction *Interaction) Response {
+func (manager *Manager) HandlePing(interaction *Interaction) Response {
 	return Response{
 		Type: 4,
 		Data: ResponseData{
@@ -203,7 +209,7 @@ func (c *Client) HandlePing(interaction *Interaction) Response {
 	}
 }
 
-func (c *Client) HandleHelp(interaction *Interaction) Response {
+func (manager *Manager) HandleHelp(interaction *Interaction) Response {
 	return Response{
 		Type: 4,
 		Data: ResponseData{
@@ -227,8 +233,8 @@ func (c *Client) HandleHelp(interaction *Interaction) Response {
 	}
 }
 
-func (c *Client) HandleQueue(interaction *Interaction) Response {
-    go c.QueryAndQueue(interaction)
+func (manager *Manager) HandleQueue(interaction *Interaction) Response {
+    go manager.QueryAndQueue(interaction)
     
     return Response{
         Type: 5,
@@ -238,11 +244,10 @@ func (c *Client) HandleQueue(interaction *Interaction) Response {
     }
 }
 
-func (c *Client) HandleView(interaction *Interaction) Response {
-	guild_player := c.Controller.GetPlayer(interaction.GuildID)
-	queue := guild_player.Queue
+func (manager *Manager) HandleView(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if queue.IsEmpty() {
+	if player.IsEmpty() {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -252,8 +257,8 @@ func (c *Client) HandleView(interaction *Interaction) Response {
 	}
 
 	formatted_queue := ""
-	for i, video := range queue.Items {
-		formatted_queue += fmt.Sprintf("%d. %s\n", i+1, video.Title)
+	for i, video := range player.Queue.Items {
+		formatted_queue += fmt.Sprintf("%d. %s\n", i+1, video.Video.Title)
 	}
 	
 	return Response{
@@ -264,10 +269,10 @@ func (c *Client) HandleView(interaction *Interaction) Response {
 	}
 }
 
-func (c *Client) HandleRemove(interaction *Interaction) Response {
-	guild_player := c.Controller.GetPlayer(interaction.GuildID)
+func (manager *Manager) HandleRemove(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if guild_player.Queue.IsEmpty() {
+	if player.IsEmpty() {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -291,7 +296,7 @@ func (c *Client) HandleRemove(interaction *Interaction) Response {
 		}
 	}
 
-	removed_title := guild_player.Queue.Remove(index)
+	removed_title := player.Remove(index)
 	msg := "Removed the song from the queue"
 	if removed_title != "" {
 		msg = "Removed **" + removed_title + "** from the queue"
@@ -305,7 +310,7 @@ func (c *Client) HandleRemove(interaction *Interaction) Response {
 	}
 }
 
-func (c *Client) HandleInteraction(interaction *Interaction) (response Response) {
+func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
 	// Defer a recover function that will catch any panics
 	defer func() {
 		if err := recover(); err != nil {
@@ -323,15 +328,15 @@ func (c *Client) HandleInteraction(interaction *Interaction) (response Response)
 	log.Printf("Received command: %+v", interaction.Data.Name)
 	switch interaction.Data.Name{
 	case "ping":
-		return c.HandlePing(interaction)
+		return manager.HandlePing(interaction)
 	case "help":
-		return c.HandleHelp(interaction)
+		return manager.HandleHelp(interaction)
 	case "queue":
-		return c.HandleQueue(interaction)
+		return manager.HandleQueue(interaction)
 	case "view":
-		return c.HandleView(interaction)
+		return manager.HandleView(interaction)
 	case "skip":
-		return c.HandleRemove(interaction)
+		return manager.HandleRemove(interaction)
 	// case "play":
 	// 	return c.HandlePlay(interaction)
 	// case "pause":
@@ -347,8 +352,8 @@ func (c *Client) HandleInteraction(interaction *Interaction) (response Response)
 	}
 }
 
-func (c *Client) VerifyDiscordRequest(signature, timestamp string, body []byte) bool {
-	pubKeyBytes, err := hex.DecodeString(c.PublicKey)
+func (manager *Manager) VerifyDiscordRequest(signature, timestamp string, body []byte) bool {
+	pubKeyBytes, err := hex.DecodeString(manager.PublicKey)
 	if err != nil {
 		log.Printf("Error decoding public key: %v", err)
 		return false

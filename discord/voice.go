@@ -3,15 +3,15 @@ package discord
 import (
 	"log"
 	"os"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
 
-func JoinVoiceChannel(guildId string, channelId string) {
-	session, err := discordgo.New("Bot " + os.Getenv("DISCORD_BOT_TOKEN"))
+func JoinVoiceChannel(guildId string, channelId string) (session *discordgo.Session, vc *discordgo.VoiceConnection, err error) {
+	session, err = discordgo.New("Bot " + os.Getenv("DISCORD_BOT_TOKEN"))
 	if err != nil {
 		log.Printf("Error creating Discord session: %v", err)
+		return nil, nil, err
 	}
 
 	session.Open()
@@ -22,17 +22,19 @@ func JoinVoiceChannel(guildId string, channelId string) {
 		log.Printf("Voice state update: %v", event)
 	})
 
-	v, err := session.ChannelVoiceJoin(guildId, channelId, false, true)
+	vc, err = session.ChannelVoiceJoin(guildId, channelId, false, true)
 	if err != nil {
 		log.Printf("Error joining voice channel: %v", err)
+		return nil, nil, err
 	}
 
-	log.Printf("Joined voice channel: %v", v)
+	log.Printf("Joined voice channel: %v", vc)
 
-	time.Sleep(10 * time.Second)
+	return session, vc, nil
+}
 
-	v.Close()
-	log.Printf("Disconnected from voice channel")
+func LeaveVoiceChannel(session *discordgo.Session, vc *discordgo.VoiceConnection) {
+	vc.Close()
 	session.Close()
 }
 
