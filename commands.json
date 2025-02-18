@@ -1,0 +1,76 @@
+[
+  {
+    "name": "ping",
+    "type": 1,
+    "description": "Checks if the bot is responsive"
+  },
+  {
+    "name": "help",
+    "type": 1,
+    "description": "Shows the help menu"
+  },
+  {
+    "name": "queue",
+    "type": 1,
+    "description": "Adds a song to the queue",
+    "options": [
+      {
+        "name": "query",
+        "type": 3,
+        "description": "Search query",
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "play",
+    "type": 1,
+    "description": "Plays a song from the queue",
+    "options": [
+      {
+        "name": "query",
+        "type": 3,
+        "description": "Search query",
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "view",
+    "type": 1,
+    "description": "View the current queue"
+  },
+  {
+    "name": "skip",
+    "type": 1,
+    "description": "Skips the current song, or a specific song in the queue",
+    "options": [
+      {
+        "name": "song_number",
+        "type": 3,
+        "description": "The number of the song to remove from the queue",
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "pause",
+    "type": 1,
+    "description": "Pauses the current song"
+  },
+  {
+    "name": "resume",
+    "type": 1,
+    "description": "Resumes the current song"
+  },
+  {
+    "name": "stop",
+    "type": 1,
+    "description": "Stops the current song"
+  },
+  {
+    "name": "purge",
+    "type": 1,
+    "description": "Purges the queue"
+  }
+]
