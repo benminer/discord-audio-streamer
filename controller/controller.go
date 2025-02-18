@@ -31,7 +31,7 @@ type GuildQueue struct {
 }
 
 type Controller struct {
-	// This is a map of guild_id to the player for that guild
+	// This is a map of guildID to the player for that guild
 	sessions map[string]*GuildPlayer
 	mutex sync.Mutex
 }
@@ -82,14 +82,12 @@ func (q *GuildQueue) Remove(index ...int) string {
 		return ""
 	}
 
-	// If no index is provided, remove the first item
 	if len(index) == 0 {
 		removed := q.Items[0]
 		q.Items = q.Items[1:]
 		return removed.Title
 	}
 
-	// If an index is provided, check if it's valid
 	if index[0] <= 0 || index[0] > len(q.Items) {
 		return ""
 	}

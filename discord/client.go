@@ -50,7 +50,6 @@ type MemberData struct {
     Roles []string `json:"roles"`
     JoinedAt string `json:"joined_at"`
     Nick *string `json:"nick"`
-    // Add other member fields as needed
 }
 
 type Interaction struct {
@@ -256,8 +255,6 @@ func (c *Client) HandleView(interaction *Interaction) Response {
 	for i, video := range queue.Items {
 		formatted_queue += fmt.Sprintf("%d. %s\n", i+1, video.Title)
 	}
-
-	log.Printf("Formatted queue: %s", formatted_queue)
 	
 	return Response{
 		Type: 4,
@@ -340,7 +337,6 @@ func (c *Client) HandleInteraction(interaction *Interaction) (response Response)
 	// case "pause":
 	// 	return c.HandlePause(interaction)
 	default:
-		log.Printf("Unknown interaction type: %d", interaction.Type)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
