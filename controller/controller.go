@@ -170,17 +170,6 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	log.Printf("got stream for %s", event.Item.Video.Title)
 	event.Item.Stream = stream
 
-	voiceState, err := discord.GetMemberVoiceState(event.Item.AddedBy, &p.GuildID)
-	if err != nil {
-		log.Printf("Error getting voice state: %s", err)
-		return
-	}
-
-	if voiceState == nil {
-		log.Printf("Voice state not found for user %s in guild %s", *event.Item.AddedBy, p.GuildID)
-		return
-	}
-
 	// if the player is stopped, play the next song in the queue
 	if p.State == Stopped && p.VoiceConnection != nil && p.VoiceChannelID != nil {
 		next := p.GetNext()
