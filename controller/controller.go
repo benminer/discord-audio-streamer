@@ -246,8 +246,10 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			case audio.PlaybackResumed, audio.PlaybackStarted:
 				p.State = Playing
 			case audio.PlaybackStopped:
-				p.State = Stopped
-				p.CurrentSong = nil
+				if p.State != Stopped {
+					p.State = Stopped
+					p.CurrentSong = nil
+				}
 			default:
 				log.Printf("Unknown playback event: %s", event.Event)
 			}
