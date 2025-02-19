@@ -6,19 +6,19 @@ import (
 
 type ConfigStruct struct {
 	Discord DiscordConfig
-	NGrok NGrokConfig
+	NGrok   NGrokConfig
 	Options Options
 	Youtube YoutubeConfig
 }
 
 type DiscordConfig struct {
-	BotToken string
-	AppID string
+	BotToken  string
+	AppID     string
 	PublicKey string
 }
 
 type NGrokConfig struct {
-	Domain string
+	Domain    string
 	AuthToken string
 }
 
@@ -28,7 +28,7 @@ type YoutubeConfig struct {
 
 type Options struct {
 	EnforceVoiceChannel bool
-	Port string
+	Port                string
 }
 
 func (ngrok *NGrokConfig) IsEnabled() bool {
@@ -44,17 +44,17 @@ var Config *ConfigStruct
 func NewConfig() {
 	config := &ConfigStruct{
 		Discord: DiscordConfig{
-			BotToken: os.Getenv("DISCORD_BOT_TOKEN"),
-			AppID: os.Getenv("DISCORD_APP_ID"),
+			BotToken:  os.Getenv("DISCORD_BOT_TOKEN"),
+			AppID:     os.Getenv("DISCORD_APP_ID"),
 			PublicKey: os.Getenv("DISCORD_PUBLIC_KEY"),
 		},
 		NGrok: NGrokConfig{
-			Domain: os.Getenv("NGROK_DOMAIN"),
+			Domain:    os.Getenv("NGROK_DOMAIN"),
 			AuthToken: os.Getenv("NGROK_AUTHTOKEN"),
 		},
 		Options: Options{
 			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
-			Port: os.Getenv("PORT"),
+			Port:                os.Getenv("PORT"),
 		},
 		Youtube: YoutubeConfig{
 			APIKey: os.Getenv("YOUTUBE_API_KEY"),

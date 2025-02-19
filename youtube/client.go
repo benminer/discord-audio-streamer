@@ -17,15 +17,15 @@ import (
 )
 
 type VideoResponse struct {
-	Title string `json:"title"`
+	Title   string `json:"title"`
 	VideoID string `json:"video_id"`
 }
 
 type YoutubeStream struct {
-	StreamURL string
+	StreamURL  string
 	Expiration int64
-	Title string
-	VideoID string
+	Title      string
+	VideoID    string
 }
 
 func ParseYoutubeUrl(_url string) string {
@@ -57,7 +57,7 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 
 	if len(response.Items) > 0 {
 		return VideoResponse{
-			Title: response.Items[0].Snippet.Title,
+			Title:   response.Items[0].Snippet.Title,
 			VideoID: videoID,
 		}, nil
 	}
@@ -115,12 +115,12 @@ func Query(query string) []VideoResponse {
 func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
 	cmd := exec.Command("yt-dlp",
-		"-f", "bestaudio[ext=ogg]/bestaudio",  // prefer ogg, but fallback to bestaudio
+		"-f", "bestaudio[ext=ogg]/bestaudio", // prefer ogg, but fallback to bestaudio
 		"--no-audio-multistreams",
-		"-g",               // Print URL only
-		"--no-warnings",   
+		"-g", // Print URL only
+		"--no-warnings",
 		ytUrl)
-	
+
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("yt-dlp error: %v", err)
@@ -140,10 +140,10 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	youtubeStream := YoutubeStream{
-		StreamURL: streamUrl,
+		StreamURL:  streamUrl,
 		Expiration: expiration,
-		Title: videoResponse.Title,
-		VideoID: videoResponse.VideoID,
+		Title:      videoResponse.Title,
+		VideoID:    videoResponse.VideoID,
 	}
 
 	return &youtubeStream, nil
@@ -152,24 +152,24 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 func parseDuration(duration string) float64 {
 	// Remove PT from the duration string
 	duration = strings.TrimPrefix(duration, "PT")
-	
+
 	var minutes float64
 	if strings.Contains(duration, "H") {
 		return 999 // Return large number for videos with hours
 	}
-	
+
 	// Parse minutes
 	if idx := strings.Index(duration, "M"); idx != -1 {
 		m, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes = m
 		duration = duration[idx+1:]
 	}
-	
+
 	// Parse seconds
 	if idx := strings.Index(duration, "S"); idx != -1 {
 		s, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes += s / 60
 	}
-	
+
 	return minutes
 }

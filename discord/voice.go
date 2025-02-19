@@ -28,7 +28,7 @@ func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId stri
 		}
 		time.Sleep(time.Second)
 	}
-	
+
 	// If we couldn't establish a proper connection, clean up and return error
 	vc.Close()
 	return nil, fmt.Errorf("failed to establish stable voice connection after %d seconds", maxRetries)
@@ -46,30 +46,30 @@ type DiscordErrorResponse struct {
 type VoiceStateUser struct {
 	ID            string `json:"id"`
 	Username      string `json:"username"`
-	Avatar       string `json:"avatar"`
+	Avatar        string `json:"avatar"`
 	Discriminator string `json:"discriminator"`
 }
 
 type VoiceStateMember struct {
-	User      VoiceStateUser `json:"user"`
-	Nick      *string        `json:"nick"`
-	Roles     []string       `json:"roles"`
-	JoinedAt  string         `json:"joined_at"`
+	User     VoiceStateUser `json:"user"`
+	Nick     *string        `json:"nick"`
+	Roles    []string       `json:"roles"`
+	JoinedAt string         `json:"joined_at"`
 }
 
 type VoiceState struct {
-	ChannelID    string           `json:"channel_id"`
-	GuildID      string           `json:"guild_id"`
-	UserID       string           `json:"user_id"`
-	Member       VoiceStateMember `json:"member"`
-	SessionID    string           `json:"session_id"`
-	Deaf         bool             `json:"deaf"`
-	Mute         bool             `json:"mute"`
-	SelfDeaf     bool             `json:"self_deaf"`
-	SelfMute     bool             `json:"self_mute"`
-	SelfVideo    bool             `json:"self_video"`
-	SelfStream   bool             `json:"self_stream"`
-	Suppress     bool             `json:"suppress"`
+	ChannelID  string           `json:"channel_id"`
+	GuildID    string           `json:"guild_id"`
+	UserID     string           `json:"user_id"`
+	Member     VoiceStateMember `json:"member"`
+	SessionID  string           `json:"session_id"`
+	Deaf       bool             `json:"deaf"`
+	Mute       bool             `json:"mute"`
+	SelfDeaf   bool             `json:"self_deaf"`
+	SelfMute   bool             `json:"self_mute"`
+	SelfVideo  bool             `json:"self_video"`
+	SelfStream bool             `json:"self_stream"`
+	Suppress   bool             `json:"suppress"`
 }
 
 func GetMemberVoiceState(userId *string, guildId *string) (*VoiceState, error) {
@@ -101,12 +101,12 @@ func GetMemberVoiceState(userId *string, guildId *string) (*VoiceState, error) {
 		if err := json.Unmarshal(body, &errorResp); err != nil {
 			return nil, fmt.Errorf("error parsing error response: %v", err)
 		}
-		
+
 		// If user is not in voice channel, return nil without error
 		if errorResp.Code == 10065 {
 			return nil, nil
 		}
-		
+
 		return nil, fmt.Errorf("discord API error: %s (code: %d)", errorResp.Message, errorResp.Code)
 	}
 
@@ -117,4 +117,3 @@ func GetMemberVoiceState(userId *string, guildId *string) (*VoiceState, error) {
 
 	return &voiceState, nil
 }
-

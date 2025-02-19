@@ -21,49 +21,49 @@ import (
 )
 
 type Response struct {
-	Type int `json:"type"`
+	Type int          `json:"type"`
 	Data ResponseData `json:"data"`
 }
 
 type ResponseData struct {
 	Content string `json:"content"`
-	Flags int `json:"flags"`
+	Flags   int    `json:"flags"`
 }
 
 type InteractionOption struct {
-	Name string `json:"name"`
+	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
 type InteractionData struct {
-    ID   string `json:"id"`
-    Name string `json:"name"`
-    Type int    `json:"type"`
+	ID      string              `json:"id"`
+	Name    string              `json:"name"`
+	Type    int                 `json:"type"`
 	Options []InteractionOption `json:"options"`
 }
 
 type UserData struct {
-	ID string `json:"id"`
-	Username string `json:"username"`
-	Avatar string `json:"avatar"`
+	ID         string `json:"id"`
+	Username   string `json:"username"`
+	Avatar     string `json:"avatar"`
 	GlobalName string `json:"global_name"`
 }
 
 type MemberData struct {
-    User UserData `json:"user"`
-    Roles []string `json:"roles"`
-    JoinedAt string `json:"joined_at"`
-    Nick *string `json:"nick"`
+	User     UserData `json:"user"`
+	Roles    []string `json:"roles"`
+	JoinedAt string   `json:"joined_at"`
+	Nick     *string  `json:"nick"`
 }
 
 type Interaction struct {
-	ApplicationID string `json:"application_id"`
-    Type    int             `json:"type"`
-    Data    InteractionData `json:"data"`
-    Token   string         `json:"token"`
-	Member  MemberData    `json:"member"`
-    Version int            `json:"version"`
-	GuildID string `json:"guild_id"`
+	ApplicationID string          `json:"application_id"`
+	Type          int             `json:"type"`
+	Data          InteractionData `json:"data"`
+	Token         string          `json:"token"`
+	Member        MemberData      `json:"member"`
+	Version       int             `json:"version"`
+	GuildID       string          `json:"guild_id"`
 }
 
 type Options struct {
@@ -71,9 +71,9 @@ type Options struct {
 }
 
 type Manager struct {
-	AppID string
-	PublicKey string
-	BotToken string
+	AppID      string
+	PublicKey  string
+	BotToken   string
 	Controller *controller.Controller
 }
 
@@ -87,9 +87,9 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 	}
 
 	return &Manager{
-		AppID: appID,
-		PublicKey: publicKey,
-		BotToken: botToken,
+		AppID:      appID,
+		PublicKey:  publicKey,
+		BotToken:   botToken,
 		Controller: controller,
 	}
 }
@@ -149,9 +149,9 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	var followUpMessage string
 
 	if player.IsEmpty() && player.State == controller.Stopped {
-		followUpMessage = "**"+video.Title+"** comin right up"
+		followUpMessage = "**" + video.Title + "** comin right up"
 	} else {
-		followUpMessage = "**"+video.Title+"** has been added"
+		followUpMessage = "**" + video.Title + "** has been added"
 	}
 	manager.SendFollowup(interaction, followUpMessage, false)
 	player.Add(video, interaction.Member.User.ID)
@@ -173,7 +173,7 @@ func (manager *Manager) SendFollowup(interaction *Interaction, content string, e
 	}
 
 	resp, err := http.Post(
-		"https://discord.com/api/v10/webhooks/" + manager.AppID + "/" + interaction.Token,
+		"https://discord.com/api/v10/webhooks/"+manager.AppID+"/"+interaction.Token,
 		"application/json",
 		bytes.NewBuffer(jsonPayload),
 	)
@@ -226,11 +226,11 @@ func (manager *Manager) handleHelp() Response {
 }
 
 func (manager *Manager) handleQueue(interaction *Interaction) Response {
-    go manager.QueryAndQueue(interaction)
-    
-    return Response{
-        Type: 5,
-    }
+	go manager.QueryAndQueue(interaction)
+
+	return Response{
+		Type: 5,
+	}
 }
 
 func (manager *Manager) handleView(interaction *Interaction) Response {
@@ -253,7 +253,7 @@ func (manager *Manager) handleView(interaction *Interaction) Response {
 	if player.CurrentSong != nil {
 		formatted_queue += fmt.Sprintf("\nNow playing: **%s**", *player.CurrentSong)
 	}
-	
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
@@ -270,7 +270,7 @@ func (manager *Manager) handleSkip(interaction *Interaction) Response {
 			Type: 4,
 			Data: ResponseData{
 				Content: "Nothing to skip",
-				Flags: 64,
+				Flags:   64,
 			},
 		}
 	}
@@ -300,7 +300,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 		}
 	}
 
-	var index int = 1  // Default to first song if no index provided, .Remove substracts 1
+	var index int = 1 // Default to first song if no index provided, .Remove substracts 1
 	if len(interaction.Data.Options) > 0 {
 		var err error
 		index, err = strconv.Atoi(interaction.Data.Options[0].Value)
@@ -329,7 +329,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 	}
 }
 
-// todo: need to assure the user is in the voice channel 
+// todo: need to assure the user is in the voice channel
 func (manager *Manager) handlePause(interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
@@ -338,18 +338,18 @@ func (manager *Manager) handlePause(interaction *Interaction) Response {
 			Type: 4,
 			Data: ResponseData{
 				Content: "The player is not playing",
-				Flags: 64,
+				Flags:   64,
 			},
 		}
 	}
 
 	go player.PlaybackState.Pause()
-	
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
 			Content: "Paused the current song",
-			Flags: 64,
+			Flags:   64,
 		},
 	}
 }
@@ -362,18 +362,18 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 			Type: 4,
 			Data: ResponseData{
 				Content: "The player is not paused",
-				Flags: 64,
+				Flags:   64,
 			},
 		}
 	}
 
 	go player.PlaybackState.Resume()
-	
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
 			Content: "Resumed the current song",
-			Flags: 64,
+			Flags:   64,
 		},
 	}
 }
@@ -387,7 +387,7 @@ func (manager *Manager) handleStop(interaction *Interaction) Response {
 		Type: 4,
 		Data: ResponseData{
 			Content: "Stopped the player",
-			Flags: 64,
+			Flags:   64,
 		},
 	}
 }
@@ -408,7 +408,7 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 	}()
 
 	log.Printf("Received command: %+v", interaction.Data.Name)
-	switch interaction.Data.Name{
+	switch interaction.Data.Name {
 	case "ping":
 		return manager.handlePing()
 	case "help":
