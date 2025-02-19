@@ -280,10 +280,17 @@ func (manager *Manager) handleSkip(interaction *Interaction) Response {
 
 	go player.Skip()
 
+	next := player.GetNext()
+
+	response := "@" + userName + " skipped **" + *current + "**"
+	if next != nil {
+		response += "\n\nNow playing **" + next.Video.Title + "**"
+	}
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: userName + " skipped **" + *current + "**",
+			Content: response,
 		},
 	}
 }
@@ -331,6 +338,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 
 // todo: need to assure the user is in the voice channel
 func (manager *Manager) handlePause(interaction *Interaction) Response {
+	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.State == controller.Stopped || player.State == controller.Paused {
@@ -348,13 +356,13 @@ func (manager *Manager) handlePause(interaction *Interaction) Response {
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: "Paused the current song",
-			Flags:   64,
+			Content: "@" + userName + " paused the current song",
 		},
 	}
 }
 
 func (manager *Manager) handleResume(interaction *Interaction) Response {
+	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.State == controller.Stopped || player.State == controller.Playing {
@@ -372,8 +380,7 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: "Resumed the current song",
-			Flags:   64,
+			Content: "@" + userName + " resumed the current song",
 		},
 	}
 }

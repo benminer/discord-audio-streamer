@@ -124,6 +124,12 @@ func (p *GuildPlayer) popQueue() {
 	}
 }
 
+func (p *GuildPlayer) playNext() {
+	if !p.IsEmpty() {
+		go p.play(*p.GetNext().Stream)
+	}
+}
+
 func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 	// check if the stream url is still valid
 	// assure that the stream will not expire in the next 5 minutes
@@ -212,13 +218,7 @@ func (p *GuildPlayer) listenForQueueEvents() {
 			case EventSkip:
 				log.Printf("Skipping to next song in queue")
 				p.PlaybackState.Quit()
-				next := p.GetNext()
-				if next != nil && next.Stream != nil {
-					log.Printf("Playing next song in queue: %s", next.Video.Title)
-					go p.play(*next.Stream)
-				} else {
-					log.Printf("No next song to play")
-				}
+				p.playNext()
 			case EventClear:
 				p.State = Stopped
 				p.PlaybackState.Stop()
@@ -250,6 +250,12 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.State = Stopped
 					p.CurrentSong = nil
 				}
+			case audio.PlaybackError:
+				err := event.Error
+				if err != nil {
+					log.Printf("Error playing stream: %v", err)
+				}
+				p.playNext()
 			default:
 				log.Printf("Unknown playback event: %s", event.Event)
 			}

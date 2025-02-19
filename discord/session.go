@@ -15,9 +15,11 @@ func NewSession() (*discordgo.Session, error) {
 		return nil, err
 	}
 	session.Identify.Intents = discordgo.IntentsGuildVoiceStates
-	session.AddHandler(func(s *discordgo.Session, event *discordgo.VoiceStateUpdate) {
-		log.Printf("Voice state update: %v", event)
-	})
+	// could use this in the future to track user voice states
+	// for now, just hitting the api is fine 
+	// session.AddHandler(func(s *discordgo.Session, event *discordgo.VoiceStateUpdate) {
+	// 	log.Printf("Voice state update: %v", event)
+	// })
 	session.Open()
 	return session, nil
 }

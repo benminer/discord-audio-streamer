@@ -3,6 +3,7 @@ package audio
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -34,10 +35,12 @@ const (
 	PlaybackResumed   PlaybackNotificationType = "resumed"
 	PlaybackStopped   PlaybackNotificationType = "stopped"
 	PlaybackCompleted PlaybackNotificationType = "completed"
+	PlaybackError     PlaybackNotificationType = "error"
 )
 
 type PlaybackNotification struct {
 	PlaybackState *PlaybackState
+	Error         *error
 	Event         PlaybackNotificationType
 }
 
@@ -51,7 +54,9 @@ func NewPlaybackState(notifications chan PlaybackNotification) *PlaybackState {
 }
 
 func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL string) error {
-	log.Printf("Starting ffmpeg buffer for %s", streamURL)
+	ps.mutex.Lock()
+	defer ps.mutex.Unlock()
+	// log.Printf("Starting ffmpeg buffer for %s", streamURL)
 	ps.ffmpeg = exec.Command("ffmpeg",
 		"-i", streamURL,
 		"-f", "s16le",
@@ -61,28 +66,61 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 		"-loglevel", "error",
 		"pipe:1")
 
+	done := make(chan struct {
+		output []byte
+		err    error
+	})
+
 	start := time.Now()
-	output, err := ps.ffmpeg.Output()
-	if err != nil {
-		return fmt.Errorf("error getting stream: %v", err)
+
+	go func() {
+		output, err := ps.ffmpeg.Output()
+		done <- struct {
+			output []byte
+			err    error
+		}{output, err}
+	}()
+
+	// It's possible for a user to queue something HUGE
+	// In the case of this, ffmpeg will take forever to load the stream
+	// So, we kill it and emit an error after 15 seconds
+	select {
+	case result := <-done:
+		if result.err != nil {
+			ps.notifications <- PlaybackNotification{
+				PlaybackState: ps,
+				Event:         PlaybackError,
+				Error:         &result.err,
+			}
+			return result.err
+		}
+		duration := time.Since(start)
+		log.Printf("Buffered %.2f MB in %v", float64(len(result.output))/(1024*1024), duration)
+		// loading the whole stream into memory is not ideal, but it's the only way to get the duration of the stream
+		// this also is way less buggy when piping to discord
+		ps.ffmpegOut = io.NopCloser(bytes.NewReader(result.output))
+		encoder, opusErr := opus.NewEncoder(48000, 2, opus.Application(opus.AppAudio))
+		if opusErr != nil {
+			return fmt.Errorf("error creating opus encoder: %v", opusErr)
+		}
+		encoder.SetComplexity(10)
+		encoder.SetBitrateToMax()
+		ps.encoder = encoder
+
+		go ps.streamLoop(vc)
+		return nil
+	case <-time.After(15 * time.Second):
+		if err := ps.ffmpeg.Process.Kill(); err != nil {
+			log.Printf("Error killing ffmpeg: %v", err)
+		}
+		error := errors.New("ffmpeg timed out after 15 seconds")
+		ps.notifications <- PlaybackNotification{
+			PlaybackState: ps,
+			Event:         PlaybackError,
+			Error:         &error,
+		}
+		return error
 	}
-	duration := time.Since(start)
-
-	log.Printf("Buffered %.2f MB in %v", float64(len(output))/(1024*1024), duration)
-
-	// loading the whole stream into memory is not ideal, but it's the only way to get the duration of the stream
-	// this also is way less buggy when piping to discord
-	ps.ffmpegOut = io.NopCloser(bytes.NewReader(output))
-
-	ps.encoder, err = opus.NewEncoder(48000, 2, opus.Application(opus.AppAudio))
-	if err != nil {
-		return fmt.Errorf("error creating opus encoder: %v", err)
-	}
-	ps.encoder.SetComplexity(10)
-	ps.encoder.SetBitrateToMax()
-
-	go ps.streamLoop(vc)
-	return nil
 }
 
 func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {

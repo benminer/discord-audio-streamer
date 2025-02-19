@@ -20,9 +20,12 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Error loading .env file: %v", err)
+	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
+		if err := godotenv.Load(); err != nil {
+			log.Printf("Warning: Error loading .env file: %v", err)
+		}
 	}
+
 	appConfig.NewConfig()
 	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
