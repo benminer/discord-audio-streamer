@@ -28,6 +28,43 @@ type YoutubeStream struct {
 	VideoID string
 }
 
+func ParseYoutubeUrl(_url string) string {
+	parsedURL, err := url.Parse(_url)
+	if err != nil {
+		return ""
+	}
+
+	if parsedURL.Host == "www.youtube.com" || parsedURL.Host == "youtube.com" {
+		return parsedURL.Query().Get("v")
+	}
+
+	return ""
+}
+
+func GetVideoByID(videoID string) (VideoResponse, error) {
+	api_key := config.Config.Youtube.APIKey
+
+	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
+	if err != nil {
+		return VideoResponse{}, fmt.Errorf("error creating YouTube client: %v", err)
+	}
+
+	call := service.Videos.List([]string{"snippet"}).Id(videoID)
+	response, err := call.Do()
+	if err != nil {
+		return VideoResponse{}, fmt.Errorf("error querying YouTube: %v", err)
+	}
+
+	if len(response.Items) > 0 {
+		return VideoResponse{
+			Title: response.Items[0].Snippet.Title,
+			VideoID: videoID,
+		}, nil
+	}
+
+	return VideoResponse{}, fmt.Errorf("no video found")
+}
+
 func Query(query string) []VideoResponse {
 	api_key := config.Config.Youtube.APIKey
 
@@ -51,10 +88,24 @@ func Query(query string) []VideoResponse {
 
 	for _, item := range response.Items {
 		if item.Id.Kind == "youtube#video" {
-			videos = append(videos, VideoResponse{
-				Title: html.UnescapeString(item.Snippet.Title),
-				VideoID: item.Id.VideoId,
-			})
+			videoCall := service.Videos.List([]string{"contentDetails"}).Id(item.Id.VideoId)
+
+			videoResponse, err := videoCall.Do()
+			if err != nil {
+				log.Printf("Error getting video details: %v", err)
+				continue
+			}
+
+			if len(videoResponse.Items) > 0 {
+				duration := videoResponse.Items[0].ContentDetails.Duration
+				minutes := parseDuration(duration)
+				if minutes <= 12 {
+					videos = append(videos, VideoResponse{
+						Title:   html.UnescapeString(item.Snippet.Title),
+						VideoID: item.Id.VideoId,
+					})
+				}
+			}
 		}
 	}
 
@@ -62,12 +113,10 @@ func Query(query string) []VideoResponse {
 }
 
 func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
-	// Use yt-dlp to get the best audio format URL
 	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
 	cmd := exec.Command("yt-dlp",
 		"-f", "bestaudio[ext=ogg]/bestaudio",  // prefer ogg, but fallback to bestaudio
-		// "--audio-quality", "0", this only works with -x
-		"--audio-multistreams",
+		"--no-audio-multistreams",
 		"-g",               // Print URL only
 		"--no-warnings",   
 		ytUrl)
@@ -98,4 +147,29 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	return &youtubeStream, nil
+}
+
+func parseDuration(duration string) float64 {
+	// Remove PT from the duration string
+	duration = strings.TrimPrefix(duration, "PT")
+	
+	var minutes float64
+	if strings.Contains(duration, "H") {
+		return 999 // Return large number for videos with hours
+	}
+	
+	// Parse minutes
+	if idx := strings.Index(duration, "M"); idx != -1 {
+		m, _ := strconv.ParseFloat(duration[:idx], 64)
+		minutes = m
+		duration = duration[idx+1:]
+	}
+	
+	// Parse seconds
+	if idx := strings.Index(duration, "S"); idx != -1 {
+		s, _ := strconv.ParseFloat(duration[:idx], 64)
+		minutes += s / 60
+	}
+	
+	return minutes
 }

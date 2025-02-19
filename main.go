@@ -21,8 +21,8 @@ import (
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-        log.Printf("Warning: Error loading .env file: %v", err)
-    }
+		log.Printf("Warning: Error loading .env file: %v", err)
+	}
 	appConfig.NewConfig()
 	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
@@ -48,7 +48,7 @@ func run(ctx context.Context) error {
 		}
 
 		log.Printf("%v", stream.StreamURL)
-		
+
 		c.JSON(http.StatusOK, gin.H{
 			"ok": true,
 		})
@@ -81,11 +81,7 @@ func run(ctx context.Context) error {
 			return
 		}
 
-		options := handlers.Options{
-			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
-		}
-
-		manager := handlers.NewManager(os.Getenv("DISCORD_APP_ID"), controller, options)
+		manager := handlers.NewManager(os.Getenv("DISCORD_APP_ID"), controller)
 
 		if !manager.VerifyDiscordRequest(signature, timestamp, bodyBytes) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request signature"})

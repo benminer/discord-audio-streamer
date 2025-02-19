@@ -43,7 +43,12 @@
   {
     "name": "skip",
     "type": 1,
-    "description": "Skips the current song, or a specific song in the queue",
+    "description": "Skips the current song"
+  },
+  {
+    "name": "remove",
+    "type": 1,
+    "description": "Removes a song from the queue",
     "options": [
       {
         "name": "song_number",
