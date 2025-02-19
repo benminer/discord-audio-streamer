@@ -323,7 +323,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 	}
 
 	removed_title := player.Remove(index)
-	msg := "Removed the song from the queue"
+msg := "Removed the song from the queue"
 	if removed_title != "" {
 		msg = "Removed **" + removed_title + "** from the queue"
 	}
