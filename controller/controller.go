@@ -4,11 +4,11 @@ import (
 	"beatbot/audio"
 	"beatbot/discord"
 	"beatbot/youtube"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	log "github.com/sirupsen/logrus"
 )
 
 type QueueEventType string
@@ -145,21 +145,23 @@ func (p *GuildPlayer) playNext() {
 }
 
 func (p *GuildPlayer) play(video youtube.YoutubeStream) {
+	log.Debugf("playing: %s", video.Title)
 	// check if the stream url is still valid
 	// assure that the stream will not expire in the next 5 minutes
 	if time.Unix(video.Expiration, 0).Before(time.Now().Add(time.Minute * 5)) {
+		log.Debugf("stream is expired, refreshing")
 		stream, err := youtube.GetVideoStream(youtube.VideoResponse{
 			Title:   video.Title,
 			VideoID: video.VideoID,
 		})
 		if err != nil {
-			log.Printf("Error getting video stream: %s", err)
+			log.Errorf("Error getting video stream: %s", err)
 			return
 		}
 		video = *stream
 	}
 
-	log.Printf("Playing: %s", video.Title)
+	log.Debugf("Playing: %s", video.Title)
 	p.CurrentSong = &video.Title
 
 	p.popQueue() // remove the incoming video from the queue, shift to next if any
@@ -174,17 +176,17 @@ func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 	// Start playback in a goroutine
 	go func() {
 		if err := p.PlaybackState.StartStream(p.VoiceConnection, video.StreamURL); err != nil {
-			log.Printf("Error starting stream: %v", err)
+			log.Errorf("Error starting stream: %v", err)
 			p.VoiceConnection.Speaking(false)
 		}
 	}()
 }
 
 func (p *GuildPlayer) handleAdd(event QueueEvent) {
-	log.Printf("song added: %+v", event.Item.Video.Title)
+	log.Tracef("song added: %+v", event.Item.Video.Title)
 	stream, err := youtube.GetVideoStream(event.Item.Video)
 	if err != nil {
-		log.Printf("Error getting video stream: %s", err)
+		log.Errorf("Error getting video stream: %s", err)
 		go discord.SendFollowup(&discord.FollowUpRequest{
 			Token:   event.Item.Interaction.InteractionToken,
 			AppID:   event.Item.Interaction.AppID,
@@ -194,13 +196,13 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 		})
 		return
 	}
-	log.Printf("got stream for %s", event.Item.Video.Title)
+	log.Tracef("got stream for %s", event.Item.Video.Title)
 	event.Item.Stream = stream
 
 	// if the player is stopped, play the next song in the queue
 	if p.State == Stopped && p.VoiceConnection != nil && p.VoiceChannelID != nil {
 		next := p.GetNext()
-		log.Printf("no song, playing: %s", next.Video.Title)
+		log.Tracef("no song, playing: %s", next.Video.Title)
 		go p.play(*next.Stream)
 	}
 }
@@ -208,13 +210,13 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	voiceState, err := discord.GetMemberVoiceState(&userID, &p.GuildID)
 	if err != nil {
-		log.Printf("Error getting voice state: %s", err)
+		log.Errorf("Error getting voice state: %s", err)
 		return err
 	}
 
 	vc, err := discord.JoinVoiceChannel(p.Discord, p.GuildID, voiceState.ChannelID)
 	if err != nil {
-		log.Printf("Error joining voice channel: %s", err)
+		log.Errorf("Error joining voice channel: %s", err)
 		return err
 	}
 
@@ -224,7 +226,7 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	p.VoiceChannelID = &voiceState.ChannelID
 	p.VoiceJoinedAt = &now
 
-	log.Printf("joined voice channel: %s", voiceState.ChannelID)
+	log.Tracef("joined voice channel: %s", voiceState.ChannelID)
 
 	return nil
 }
@@ -251,7 +253,7 @@ func (p *GuildPlayer) listenForQueueEvents() {
 func (p *GuildPlayer) listenForPlaybackEvents() {
 	go func() {
 		for event := range p.playbackNotifications {
-			log.Printf("Playback event: %s", event.Event)
+			log.Tracef("Playback event: %s", event.Event)
 			switch event.Event {
 			case audio.PlaybackCompleted:
 				if len(p.Queue.Items) > 0 {
@@ -274,11 +276,11 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			case audio.PlaybackError:
 				err := event.Error
 				if err != nil {
-					log.Printf("Error playing stream: %v", err)
+					log.Errorf("Error playing stream: %v", err)
 				}
 				p.playNext()
 			default:
-				log.Printf("Unknown playback event: %s", event.Event)
+				log.Warnf("Unknown playback event: %s", event.Event)
 			}
 		}
 	}()
@@ -313,7 +315,7 @@ func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactio
 		Item: item,
 	}:
 	default:
-		log.Printf("Queue notifications channel is full for guild %s", p.GuildID)
+		log.Warnf("Queue notifications channel is full for guild %s", p.GuildID)
 	}
 }
 
@@ -336,7 +338,7 @@ func (p *GuildPlayer) Skip() {
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventSkip}:
 	default:
-		log.Printf("Queue notifications channel is full for guild %s", p.GuildID)
+		log.Warnf("Queue notifications channel is full for guild %s", p.GuildID)
 	}
 }
 
@@ -351,7 +353,7 @@ func (p *GuildPlayer) Clear() {
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventClear}:
 	default:
-		log.Printf("Queue notifications channel is full for guild %s", p.GuildID)
+		log.Warnf("Queue notifications channel is full for guild %s", p.GuildID)
 	}
 }
 

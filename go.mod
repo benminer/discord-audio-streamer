@@ -20,6 +20,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.7 // indirect
 	cloud.google.com/go/compute/metadata v0.6.0 // indirect
 	cloud.google.com/go/longrunning v0.5.7 // indirect
+	github.com/antonfisher/nested-logrus-formatter v1.3.1 // indirect
 	github.com/bytedance/sonic v1.12.8 // indirect
 	github.com/bytedance/sonic/loader v0.2.3 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect

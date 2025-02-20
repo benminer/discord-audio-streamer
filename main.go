@@ -13,6 +13,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	nested "github.com/antonfisher/nested-logrus-formatter"
 	log "github.com/sirupsen/logrus"
 
 	appConfig "beatbot/config"
@@ -24,12 +25,15 @@ import (
 )
 
 func main() {
-	log.SetFormatter(&log.JSONFormatter{})
+	log.SetFormatter(&nested.Formatter{
+		HideKeys:     true,
+		TrimMessages: true,
+	})
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.DebugLevel)
 
 	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
-		if err := godotenv.Load(); err != nil {
+		if err := godotenv.Load(".env.dev"); err != nil {
 			log.Fatalf("Warning: Error loading .env file: %v", err)
 		}
 	}
@@ -126,6 +130,15 @@ func run(ctx context.Context) error {
 		}
 
 		interaction, err := manager.ParseInteraction(bodyBytes)
+
+		// for registering the application, we need to respond with a pong
+		if interaction.Type == 1 {
+			c.JSON(http.StatusOK, gin.H{
+				"type": 1,
+			})
+			return
+		}
+
 		log.Tracef("parsed interaction: %v", interaction)
 		if err != nil {
 			log.Errorf("Error parsing interaction: %v", err)

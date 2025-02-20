@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source .env
+source .env.dev
 
 curl -X PUT \
   -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
