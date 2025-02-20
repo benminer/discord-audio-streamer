@@ -4,13 +4,13 @@ source .env
 
 docker build -t benminer/discord-music-bot ./
 docker rm -f benminer/discord-music-bot 
-docker run -d --name benminer/discord-music-bot \
+docker run -d --name discord-music-bot \
   --restart always \
   --memory="1g" \
   --memory-reservation="512m" \
   --memory-swap="2g" \
-  --cpus="2" \           
-  --cpu-shares="2048" \  
+  --cpus="2" \
+  --cpu-shares="2048" \
   --memory-swappiness="20" \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
