@@ -30,7 +30,7 @@ func main() {
 		TrimMessages: true,
 	})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.TraceLevel)
 
 	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
 		if err := godotenv.Load(".env.dev"); err != nil {

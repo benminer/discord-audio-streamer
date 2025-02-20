@@ -135,9 +135,13 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 
+	// Add timeout for opus send
+	sendTimeout := time.Second * 5
+
 	for {
 		select {
 		case <-ps.done:
+			ps.log.Debug("Playback stopped by done signal")
 			return
 		default:
 			if ps.paused {
@@ -149,6 +153,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 			for readAttempts < 3 {
 				err := binary.Read(ps.ffmpegOut, binary.LittleEndian, &buffer)
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					ps.log.Debug("Reached end of audio stream")
 					ps.notifications <- PlaybackNotification{
 						PlaybackState: ps,
 						Event:         PlaybackCompleted,
@@ -185,7 +190,22 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				continue
 			}
 
-			vc.OpusSend <- ps.opusBuffer[:n]
+			// Add timeout for sending opus data
+			select {
+			case vc.OpusSend <- ps.opusBuffer[:n]:
+				// Data sent successfully
+			case <-time.After(sendTimeout):
+				ps.log.Warn("Timeout sending opus data")
+				ps.notifications <- PlaybackNotification{
+					PlaybackState: ps,
+					Event:         PlaybackError,
+					Error:         &err,
+				}
+				return
+			case <-ps.done:
+				ps.log.Debug("Playback stopped during opus send")
+				return
+			}
 		}
 	}
 }
