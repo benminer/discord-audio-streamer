@@ -1,14 +1,21 @@
 #!/bin/bash
 
+# This script is used to restart the docker container
+# It will build the docker image and run it
+# It will also remove the existing container if it exists
+# It will also set the environment variables from the .env file
+
 source .env
 
 docker build -t benminer/discord-music-bot ./
+
 if docker ps -a --format '{{.Names}}' | grep -q "^discord-music-bot$"; then
     echo "Found existing container, removing..."
     docker rm -f discord-music-bot
 else
     echo "No existing container found"
 fi
+
 docker run -d --name discord-music-bot \
   --restart always \
   --memory="1g" \
@@ -25,4 +32,5 @@ docker run -d --name discord-music-bot \
   -e GEMINI_ENABLED=$GEMINI_ENABLED \
   -e NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN \
   -e NGROK_DOMAIN=$NGROK_DOMAIN \
+  -e SENTRY_DSN=$SENTRY_DSN \
   benminer/discord-music-bot:latest
