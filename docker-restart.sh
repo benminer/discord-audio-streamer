@@ -7,7 +7,15 @@
 
 source .env
 
-docker build -t benminer/discord-music-bot ./
+should_rebuild=false
+
+if [ "$1" == "rebuild" ]; then
+    should_rebuild=true
+fi
+
+if [ "$should_rebuild" == "true" ]; then
+    docker build -t benminer/discord-music-bot ./
+fi
 
 if docker ps -a --format '{{.Names}}' | grep -q "^discord-music-bot$"; then
     echo "Found existing container, removing..."

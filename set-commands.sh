@@ -1,6 +1,12 @@
 #!/bin/bash
 
-source .env
+is_dev=false
+
+if [ "$1" == "dev" ]; then
+  source .env.dev
+else
+  source .env
+fi
 
 curl -X PUT \
   -H "Authorization: Bot $DISCORD_BOT_TOKEN" \

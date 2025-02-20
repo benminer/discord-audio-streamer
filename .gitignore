@@ -2,3 +2,4 @@
 .env.local
 .env.dev
 run-docker.sh
+gcloud-deploy.sh
