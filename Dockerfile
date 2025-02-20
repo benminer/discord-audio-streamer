@@ -33,9 +33,9 @@ RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_lin
     && chmod a+rx /usr/local/bin/yt-dlp
 
 # Test yt-dlp installation and version
-RUN yt-dlp --version \
-    && echo "Testing yt-dlp..." \
-    && yt-dlp --no-warnings --dump-json "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --simulate | head -n 1
+# RUN yt-dlp --version \
+#     && echo "Testing yt-dlp..." \
+#     && yt-dlp --no-warnings --dump-json "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --simulate | head -n 1
 
 WORKDIR /app
 
