@@ -73,6 +73,9 @@ func run(ctx context.Context) error {
 		})
 	})
 
+	router.StaticFile("/privacy", "./files/privacy.txt")
+	router.StaticFile("/terms-of-service", "./files/tos.txt")
+
 	router.GET("/youtube/test", func(c *gin.Context) {
 		output, err := youtube.TestYoutubeDlpWithOutput()
 		if err != nil {
