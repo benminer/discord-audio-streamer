@@ -58,7 +58,11 @@ func NewPlaybackState(notifications chan PlaybackNotification) *PlaybackState {
 
 func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL string) error {
 	ps.mutex.Lock()
-	defer ps.mutex.Unlock()
+	if ps.ffmpegOut != nil || ps.encoder != nil {
+		ps.mutex.Unlock()
+		return fmt.Errorf("stream already in progress")
+	}
+	ps.mutex.Unlock()
 
 	ps.log.Debug("starting ffmpeg")
 
@@ -99,6 +103,10 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 			}
 			return result.err
 		}
+
+		ps.mutex.Lock()
+		defer ps.mutex.Unlock()
+
 		duration := time.Since(start)
 		ps.log.Debugf("Buffered %.2f MB in %v", float64(len(result.output))/(1024*1024), duration)
 		// loading the whole stream into memory is not ideal, but it's the only way to get the duration of the stream
@@ -146,6 +154,13 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				continue
 			}
 
+			ps.mutex.Lock()
+			if ps.ffmpegOut == nil {
+				ps.mutex.Unlock()
+				ps.log.Debug("ffmpegOut is nil, skipping")
+				continue
+			}
+
 			var readAttempts int
 			for readAttempts < 3 {
 				err := binary.Read(ps.ffmpegOut, binary.LittleEndian, &buffer)
@@ -172,6 +187,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				}
 				break
 			}
+			ps.mutex.Unlock()
 
 			if firstPacket {
 				ps.notifications <- PlaybackNotification{
@@ -181,7 +197,15 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				firstPacket = false
 			}
 
+			ps.mutex.Lock()
+			if ps.encoder == nil {
+				ps.mutex.Unlock()
+				ps.log.Debug("encoder is nil, skipping")
+				continue
+			}
 			n, err := ps.encoder.Encode(buffer, ps.opusBuffer)
+			ps.mutex.Unlock()
+
 			if err != nil {
 				ps.log.Warnf("Error encoding to opus: %v", err)
 				continue
