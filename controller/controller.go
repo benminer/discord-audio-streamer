@@ -141,6 +141,9 @@ func (p *GuildPlayer) playNext() {
 		if next != nil {
 			go p.play(*next.Stream)
 		}
+	} else {
+		p.State = Stopped
+		p.CurrentSong = nil
 	}
 }
 
@@ -255,14 +258,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			log.Tracef("Playback event: %s", event.Event)
 			switch event.Event {
 			case audio.PlaybackCompleted:
-				if len(p.Queue.Items) > 0 {
-					go p.playNext()
-				} else {
-					// todo: could start some timeout here to wait for new songs to be added
-					// if no new songs are added, then we should stop the player and disconnect from the voice channel
-					p.CurrentSong = nil
-					p.State = Stopped
-				}
+				p.playNext()
 			case audio.PlaybackPaused:
 				p.State = Paused
 			case audio.PlaybackResumed, audio.PlaybackStarted:

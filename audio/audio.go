@@ -241,9 +241,6 @@ func (ps *PlaybackState) Quit() {
 }
 
 func (ps *PlaybackState) cleanup() {
-	ps.mutex.Lock()
-	defer ps.mutex.Unlock()
-
 	ps.log.Trace("cleaning up")
 
 	if ps.ffmpegOut != nil {
