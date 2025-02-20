@@ -112,6 +112,7 @@ func run(ctx context.Context) error {
 	router.GET("/terms-of-service", func(c *gin.Context) {
 		content, err := os.ReadFile("./files/tos.txt")
 		if err != nil {
+			log.Errorf("Error reading terms of service: %v", err)
 			c.String(http.StatusInternalServerError, "Error reading terms of service")
 			return
 		}
