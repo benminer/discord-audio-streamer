@@ -11,6 +11,7 @@ should_rebuild=false
 
 if [ "$1" == "rebuild" ]; then
     should_rebuild=true
+    echo "Rebuilding docker image"
 fi
 
 if [ "$should_rebuild" == "true" ]; then

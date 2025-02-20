@@ -19,12 +19,35 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    - Verify installation with: `yt-dlp --version`
 
 3. **ngrok** - Tunneling service for local development or self-hosting
+
    - Sign up at [ngrok.com](https://ngrok.com)
    - Set up your authtoken and reserved domain
    - Required environment variables:
      - `NGROK_AUTHTOKEN`: Your ngrok authentication token
      - `NGROK_DOMAIN`: Your reserved ngrok domain (this isn't required, but it'll change every time you restart)
    - Documentation: [ngrok docs](https://ngrok.com/docs)
+
+4. **Docker** - Containerization tool
+
+   - Install from [Docker](https://docs.docker.com/get-docker/)
+   - Verify installation with: `docker --version`
+
+5. **Gemini** - Optional AI integration for song requests. Used to make responses more natural and human-like. It's set to caveman mode by default lol
+
+   - Get an API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+   - Required environment variables:
+     - `GEMINI_API_KEY`: Your Gemini API key
+     - `GEMINI_ENABLED`: Set to "true" to enable Gemini integration, or "false" to disable it.
+
+## Discord
+
+1. Create a new application in the Discord Developer Portal
+
+   - Documentation: [Discord Developer Portal](https://discord.com/developers/applications)
+
+2. Create a bot for your application
+
+   - Documentation: [Discord Bot](https://discord.com/developers/docs/interactions/application-commands#registering-a-command)
 
 ## 🚀 Setup
 
@@ -61,6 +84,32 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    ```bash
    ./discord-bot
    ```
+
+## 🐳 Docker
+
+1.  Build the Docker image:
+
+    ```bash
+    docker build -t discord-music-bot:latest ./
+    ```
+
+2.  Run the Docker container:
+
+    ```bash
+    docker run -d --name discord-music-bot \
+      --restart always \
+      -e DISCORD_APP_ID=$DISCORD_APP_ID \
+      -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
+      -e DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN \
+      -e ENFORCE_VOICE_CHANNEL=$ENFORCE_VOICE_CHANNEL \
+      -e YOUTUBE_API_KEY=$YOUTUBE_API_KEY \
+      -e GEMINI_API_KEY=$GEMINI_API_KEY \
+      -e GEMINI_ENABLED=$GEMINI_ENABLED \
+      -e NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN \
+      -e NGROK_DOMAIN=$NGROK_DOMAIN \
+      -e SENTRY_DSN=$SENTRY_DSN \
+      discord-music-bot:latest
+    ```
 
 ## 💻 Development
 
