@@ -424,15 +424,15 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 
 	log.Debugf("Received command: %+v", interaction.Data.Name)
 
-	// sentry.GetHubFromContext(context.Background()).ConfigureScope(func(scope *sentry.Scope) {
-	// 	scope.SetContext("interaction", map[string]interface{}{
-	// 		"name":     interaction.Data.Name,
-	// 		"options":  interaction.Data.Options,
-	// 		"guild_id": interaction.GuildID,
-	// 		"user_id":  interaction.Member.User.ID,
-	// 		"username": interaction.Member.User.Username,
-	// 	})
-	// })
+	sentry.CurrentHub().ConfigureScope(func(scope *sentry.Scope) {
+		scope.SetContext("interaction", map[string]interface{}{
+			"name":     interaction.Data.Name,
+			"options":  interaction.Data.Options,
+			"guild_id": interaction.GuildID,
+			"user_id":  interaction.Member.User.ID,
+			"username": interaction.Member.User.Username,
+		})
+	})
 
 	switch interaction.Data.Name {
 	case "ping":
