@@ -45,11 +45,17 @@ type GuildPlayer struct {
 	PlaybackState         *audio.PlaybackState
 }
 
+type GuildQueueItemInteraction struct {
+	UserID           string
+	InteractionToken string
+	AppID            string
+}
+
 type GuildQueueItem struct {
-	Video   youtube.VideoResponse
-	Stream  *youtube.YoutubeStream
-	AddedAt time.Time
-	AddedBy *string
+	Video       youtube.VideoResponse
+	Stream      *youtube.YoutubeStream
+	AddedAt     time.Time
+	Interaction *GuildQueueItemInteraction
 }
 
 type GuildQueue struct {
@@ -111,7 +117,10 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 func (p *GuildPlayer) GetNext() *GuildQueueItem {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
-	return p.Queue.Items[0]
+	if len(p.Queue.Items) > 0 {
+		return p.Queue.Items[0]
+	}
+	return nil
 }
 
 func (p *GuildPlayer) popQueue() {
@@ -125,8 +134,13 @@ func (p *GuildPlayer) popQueue() {
 }
 
 func (p *GuildPlayer) playNext() {
-	if !p.IsEmpty() {
-		go p.play(*p.GetNext().Stream)
+	p.Queue.Mutex.Lock()
+	defer p.Queue.Mutex.Unlock()
+	if len(p.Queue.Items) > 0 {
+		next := p.GetNext()
+		if next != nil {
+			go p.play(*next.Stream)
+		}
 	}
 }
 
@@ -171,6 +185,13 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	stream, err := youtube.GetVideoStream(event.Item.Video)
 	if err != nil {
 		log.Printf("Error getting video stream: %s", err)
+		go discord.SendFollowup(&discord.FollowUpRequest{
+			Token:   event.Item.Interaction.InteractionToken,
+			AppID:   event.Item.Interaction.AppID,
+			UserID:  event.Item.Interaction.UserID,
+			Content: "Error getting video stream: " + err.Error(),
+			Flags:   64,
+		})
 		return
 	}
 	log.Printf("got stream for %s", event.Item.Video.Title)
@@ -234,7 +255,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			switch event.Event {
 			case audio.PlaybackCompleted:
 				if len(p.Queue.Items) > 0 {
-					go p.play(*p.GetNext().Stream)
+					go p.playNext()
 				} else {
 					// todo: could start some timeout here to wait for new songs to be added
 					// if no new songs are added, then we should stop the player and disconnect from the voice channel
@@ -271,14 +292,18 @@ func (p *GuildPlayer) quitPlayback() {
 	p.VoiceConnection.Close()
 }
 
-func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string) {
+func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactionToken string, appID string) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
 	item := &GuildQueueItem{
 		Video:   video,
 		AddedAt: time.Now(),
-		AddedBy: &userID,
+		Interaction: &GuildQueueItemInteraction{
+			UserID:           userID,
+			InteractionToken: interactionToken,
+			AppID:            appID,
+		},
 	}
 	p.Queue.Items = append(p.Queue.Items, item)
 
@@ -308,8 +333,6 @@ func (p *GuildPlayer) Remove(index int) string {
 }
 
 func (p *GuildPlayer) Skip() {
-	p.Queue.Mutex.Lock()
-	defer p.Queue.Mutex.Unlock()
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventSkip}:
 	default:

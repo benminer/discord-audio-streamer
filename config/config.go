@@ -9,6 +9,7 @@ type ConfigStruct struct {
 	NGrok   NGrokConfig
 	Options Options
 	Youtube YoutubeConfig
+	Gemini  GeminiConfig
 }
 
 type DiscordConfig struct {
@@ -24,6 +25,11 @@ type NGrokConfig struct {
 
 type YoutubeConfig struct {
 	APIKey string
+}
+
+type GeminiConfig struct {
+	Enabled bool
+	APIKey  string
 }
 
 type Options struct {
@@ -58,6 +64,10 @@ func NewConfig() {
 		},
 		Youtube: YoutubeConfig{
 			APIKey: os.Getenv("YOUTUBE_API_KEY"),
+		},
+		Gemini: GeminiConfig{
+			Enabled: os.Getenv("GEMINI_ENABLED") == "true",
+			APIKey:  os.Getenv("GEMINI_API_KEY"),
 		},
 	}
 

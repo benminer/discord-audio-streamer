@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"io"
+
 	"net/http"
 	"os"
 
@@ -12,17 +13,24 @@ import (
 
 	"github.com/joho/godotenv"
 
+	log "github.com/sirupsen/logrus"
+
 	appConfig "beatbot/config"
 	"beatbot/controller"
 	"beatbot/discord"
+	"beatbot/gemini"
 	"beatbot/handlers"
 	"beatbot/youtube"
 )
 
 func main() {
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetOutput(os.Stdout)
+	log.SetLevel(log.DebugLevel)
+
 	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
 		if err := godotenv.Load(); err != nil {
-			log.Printf("Warning: Error loading .env file: %v", err)
+			log.Fatalf("Warning: Error loading .env file: %v", err)
 		}
 	}
 
@@ -40,22 +48,48 @@ func run(ctx context.Context) error {
 	}
 	router := gin.Default()
 
-	router.GET("/youtube/search", func(c *gin.Context) {
-		query := c.Query("query")
-		videos := youtube.Query(query)
+	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
+		router.GET("/youtube/search", func(c *gin.Context) {
+			query := c.Query("query")
+			videos := youtube.Query(query)
 
-		stream, err := youtube.GetVideoStream(videos[0])
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get video stream"})
-			return
-		}
+			stream, err := youtube.GetVideoStream(videos[0])
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get video stream"})
+				return
+			}
 
-		log.Printf("%v", stream.StreamURL)
-
-		c.JSON(http.StatusOK, gin.H{
-			"ok": true,
+			c.JSON(http.StatusOK, gin.H{
+				"stream": stream.StreamURL,
+			})
 		})
-	})
+
+		router.POST("/gemini/rude", func(c *gin.Context) {
+			bodyBytes, err := io.ReadAll(c.Request.Body)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
+				return
+			}
+			prompt := string(bodyBytes)
+			response := gemini.GenerateRudeResponse(prompt)
+			c.JSON(http.StatusOK, gin.H{
+				"response": response,
+			})
+		})
+
+		router.POST("/gemini/helpful", func(c *gin.Context) {
+			bodyBytes, err := io.ReadAll(c.Request.Body)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
+				return
+			}
+			prompt := string(bodyBytes)
+			response := gemini.GenerateHelpfulResponse(prompt)
+			c.JSON(http.StatusOK, gin.H{
+				"response": response,
+			})
+		})
+	}
 
 	router.POST("/discord/webhook", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -79,7 +113,7 @@ func run(ctx context.Context) error {
 		var bodyBytes []byte
 		bodyBytes, err := c.GetRawData()
 		if err != nil {
-			log.Printf("Error reading body: %v", err)
+			log.Errorf("Error reading body: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
 			return
 		}
@@ -92,7 +126,9 @@ func run(ctx context.Context) error {
 		}
 
 		interaction, err := manager.ParseInteraction(bodyBytes)
+		log.Tracef("parsed interaction: %v", interaction)
 		if err != nil {
+			log.Errorf("Error parsing interaction: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse interaction"})
 			return
 		}
@@ -102,6 +138,7 @@ func run(ctx context.Context) error {
 	})
 
 	if appConfig.Config.NGrok.IsEnabled() {
+		log.Info("using ngrok")
 		listener, err := ngrok.Listen(ctx,
 			config.HTTPEndpoint(
 				config.WithDomain(appConfig.Config.NGrok.Domain),
@@ -120,6 +157,7 @@ func run(ctx context.Context) error {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Starting server on :%s", port)
+
+	log.Infof("Starting server on :%s", port)
 	return http.ListenAndServe(":"+port, router)
 }

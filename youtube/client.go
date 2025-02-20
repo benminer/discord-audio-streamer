@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"log"
 	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
 
 	"beatbot/config"
+
+	log "github.com/sirupsen/logrus"
 
 	"google.golang.org/api/option"
 	ytapi "google.golang.org/api/youtube/v3"
@@ -46,12 +47,14 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 
 	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
 	if err != nil {
+		log.Errorf("error creating YouTube client: %v", err)
 		return VideoResponse{}, fmt.Errorf("error creating YouTube client: %v", err)
 	}
 
 	call := service.Videos.List([]string{"snippet"}).Id(videoID)
 	response, err := call.Do()
 	if err != nil {
+		log.Errorf("error querying YouTube: %v", err)
 		return VideoResponse{}, fmt.Errorf("error querying YouTube: %v", err)
 	}
 
@@ -66,11 +69,13 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 }
 
 func Query(query string) []VideoResponse {
+	logger := log.WithFields(log.Fields{"module": "youtube", "function": "Query"})
 	api_key := config.Config.Youtube.APIKey
 
 	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
 	if err != nil {
-		log.Fatalf("Error creating YouTube client: %v", err)
+		logger.Errorf("error creating YouTube client: %v", err)
+		return []VideoResponse{}
 	}
 
 	call := service.Search.List([]string{"snippet"}).
@@ -81,7 +86,8 @@ func Query(query string) []VideoResponse {
 
 	response, err := call.Do()
 	if err != nil {
-		log.Fatalf("Error querying YouTube: %v", err)
+		logger.Errorf("error querying YouTube: %v", err)
+		return []VideoResponse{}
 	}
 
 	videos := make([]VideoResponse, 0)
@@ -92,7 +98,7 @@ func Query(query string) []VideoResponse {
 
 			videoResponse, err := videoCall.Do()
 			if err != nil {
-				log.Printf("Error getting video details: %v", err)
+				logger.Errorf("error getting video details: %v", err)
 				continue
 			}
 
@@ -113,59 +119,67 @@ func Query(query string) []VideoResponse {
 }
 
 func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
-	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
-	cmd := exec.Command("yt-dlp",
-		"-f", "bestaudio[ext=ogg]/bestaudio", // prefer ogg, but fallback to bestaudio
-		"--no-audio-multistreams",
-		"-g", // Print URL only
-		"--no-warnings",
-		ytUrl)
+	logger := log.WithFields(log.Fields{"module": "youtube", "video_id": videoResponse.VideoID, "function": "GetVideoStream"})
+	var output []byte
+	var err error
 
-	output, err := cmd.Output()
-	if err != nil {
-		log.Printf("yt-dlp error: %v", err)
-		return nil, fmt.Errorf("yt-dlp error: %v", err)
+	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
+	for attempts := 0; attempts < 3; attempts++ {
+		cmd := exec.Command("yt-dlp",
+			"-f", "bestaudio[ext=ogg]/bestaudio",
+			"--no-audio-multistreams",
+			"-g",
+			"--no-warnings",
+			ytUrl)
+
+		output, err = cmd.Output()
+		if err != nil {
+			logger.Debugf("yt-dlp error (attempt %d/3): %v", attempts+1, err)
+			if attempts == 2 {
+				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v", err)
+			}
+			continue
+		}
+		break
 	}
 
 	streamUrl := strings.TrimSpace(string(output))
-
 	parsedURL, err := url.Parse(streamUrl)
 	if err != nil {
+		logger.Errorf("error parsing URL: %v", err)
 		return nil, fmt.Errorf("error parsing URL: %v", err)
 	}
 
 	expiration, err := strconv.ParseInt(parsedURL.Query().Get("expire"), 10, 64)
 	if err != nil {
+		logger.Errorf("error parsing expiration: %v", err)
 		return nil, fmt.Errorf("error parsing expiration: %v", err)
 	}
 
-	youtubeStream := YoutubeStream{
+	return &YoutubeStream{
 		StreamURL:  streamUrl,
 		Expiration: expiration,
 		Title:      videoResponse.Title,
 		VideoID:    videoResponse.VideoID,
-	}
-
-	return &youtubeStream, nil
+	}, nil
 }
 
 func parseDuration(duration string) float64 {
-	// Remove PT from the duration string
 	duration = strings.TrimPrefix(duration, "PT")
 
 	var minutes float64
 	if strings.Contains(duration, "H") {
-		return 999 // Return large number for videos with hours
+		return 999
 	}
 
-	// Parse minutes
+	// parse minutes
 	if idx := strings.Index(duration, "M"); idx != -1 {
 		m, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes = m
 		duration = duration[idx+1:]
 	}
 
-	// Parse seconds
+	// parse seconds
 	if idx := strings.Index(duration, "S"); idx != -1 {
 		s, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes += s / 60

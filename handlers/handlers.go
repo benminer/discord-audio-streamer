@@ -1,22 +1,22 @@
 package handlers
 
-// handlers are the functions that handle the interactions from discord
-// they are responsible for parsing the interaction, verifying the request,
-
 import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+
 	"net/http"
 	"os"
 	"strconv"
 
+	log "github.com/sirupsen/logrus"
+
 	"beatbot/config"
 	"beatbot/controller"
 	"beatbot/discord"
+	"beatbot/gemini"
 	"beatbot/youtube"
 )
 
@@ -82,7 +82,7 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 	botToken := config.Config.Discord.BotToken
 
 	if publicKey == "" || botToken == "" {
-		log.Fatal("DISCORD_PUBLIC_KEY and DISCORD_BOT_TOKEN must be set")
+		log.Fatalf("DISCORD_PUBLIC_KEY and DISCORD_BOT_TOKEN must be set")
 		os.Exit(1)
 	}
 
@@ -100,14 +100,14 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
 	if err != nil {
-		manager.SendFollowup(interaction, "Error getting voice state: "+err.Error(), true)
+		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
 		return
 	}
 
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if config.Config.Options.EnforceVoiceChannelEnabled() && voiceState == nil {
-		manager.SendFollowup(interaction, "Hey dummy, join a voice channel first", true)
+		manager.SendFollowup(interaction, "The user is not in a voice channel and trying to play a song", "Hey dummy, join a voice channel first", true)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if (player.VoiceChannelID == nil || player.VoiceConnection == nil) || (player.VoiceChannelID != nil && player.State == controller.Stopped && *player.VoiceChannelID != voiceState.ChannelID) {
 		err := player.JoinVoiceChannel(interaction.Member.User.ID)
 		if err != nil {
-			manager.SendFollowup(interaction, "Error joining voice channel: "+err.Error(), true)
+			manager.SendError(interaction, "Error joining voice channel: "+err.Error(), true)
 			return
 		}
 	}
@@ -130,7 +130,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if videoID != "" {
 		videoResponse, err := youtube.GetVideoByID(videoID)
 		if err != nil {
-			go manager.SendFollowup(interaction, "Error getting video stream: "+err.Error(), true)
+			go manager.SendError(interaction, "Error getting video stream: "+err.Error(), true)
 			return
 		}
 
@@ -139,7 +139,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		videos := youtube.Query(query)
 
 		if len(videos) == 0 {
-			go manager.SendFollowup(interaction, "No videos found for the given query", true)
+			go manager.SendFollowup(interaction, "There wasn't anything found for "+query, "No videos found for the given query", true)
 			return
 		}
 
@@ -147,17 +147,19 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	}
 
 	var followUpMessage string
+	firstSongQueued := player.IsEmpty() && player.State == controller.Stopped
 
-	if player.IsEmpty() && player.State == controller.Stopped {
-		followUpMessage = "**" + video.Title + "** comin right up"
+	if firstSongQueued {
+		followUpMessage = "**" + video.Title + "** playing soon (also include politely that playback could take a few seconds to start, since it's the first song and needs to load)"
 	} else {
-		followUpMessage = "**" + video.Title + "** has been added"
+		followUpMessage = "**" + video.Title + "** has been added to the queue"
 	}
-	manager.SendFollowup(interaction, followUpMessage, false)
-	player.Add(video, interaction.Member.User.ID)
+
+	manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
+	player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
 }
 
-func (manager *Manager) SendFollowup(interaction *Interaction, content string, ephemeral bool) {
+func (manager *Manager) SendRequest(interaction *Interaction, content string, ephemeral bool) {
 	payload := map[string]interface{}{
 		"content": content,
 	}
@@ -168,7 +170,7 @@ func (manager *Manager) SendFollowup(interaction *Interaction, content string, e
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Error marshalling payload: %v", err)
+		log.Errorf("Error marshalling payload: %v", err)
 		return
 	}
 
@@ -178,15 +180,33 @@ func (manager *Manager) SendFollowup(interaction *Interaction, content string, e
 		bytes.NewBuffer(jsonPayload),
 	)
 	if err != nil {
-		log.Printf("Error sending followup: %v", err)
+		log.Errorf("Error sending followup: %v", err)
 	}
 	defer resp.Body.Close()
+}
+
+func (manager *Manager) SendError(interaction *Interaction, content string, ephemeral bool) {
+	manager.SendRequest(interaction, content, ephemeral)
+}
+
+func (manager *Manager) SendFollowup(interaction *Interaction, content string, backupContent string, ephemeral bool) {
+	userName := interaction.Member.User.Username
+	toSend := backupContent
+
+	// pass in an empty string to skip the AI generation
+	if content != "" {
+		genText := gemini.GenerateRudeResponse("User: " + userName + "\nEvent: " + content)
+		if genText != "" {
+			toSend = genText
+		}
+	}
+	manager.SendRequest(interaction, toSend, ephemeral)
 }
 
 func (manager *Manager) ParseInteraction(body []byte) (*Interaction, error) {
 	var interaction Interaction
 	if err := json.Unmarshal(body, &interaction); err != nil {
-		log.Printf("Error unmarshalling interaction: %v", err)
+		log.Errorf("Error unmarshalling interaction: %v", err)
 		return nil, err
 	}
 	return &interaction, nil
@@ -201,27 +221,15 @@ func (manager *Manager) handlePing() Response {
 	}
 }
 
-func (manager *Manager) handleHelp() Response {
+func (manager *Manager) onHelp(interaction *Interaction) {
+	response := gemini.GenerateHelpfulResponse("(user issued the help command, return a nicely formatted help menu)")
+	manager.SendRequest(interaction, response, false)
+}
+
+func (manager *Manager) handleHelp(interaction *Interaction) Response {
+	go manager.onHelp(interaction)
 	return Response{
-		Type: 4,
-		Data: ResponseData{
-			Content: "**🎵 BeatBot Commands**\n\n" +
-				"Here are all the available commands:\n\n" +
-				"**`/queue <song>`**\n" +
-				"> Add a song to the queue\n" +
-				"> Example: `/queue never gonna give you up`\n\n" +
-				"**`/play`**\n" +
-				"> Start playing the current queue\n\n" +
-				"**`/pause`**\n" +
-				"> Pause the current song\n\n" +
-				"**`/skip`**\n" +
-				"> Skip to the next song, or remove a specific song in the queue\n\n" +
-				"**`/stop`**\n" +
-				"> Stop the current song\n\n" +
-				"**`/purge`**\n" +
-				"> Purge the queue\n\n" +
-				"*🤖 BeatBot v1.0*",
-		},
+		Type: 5,
 	}
 }
 
@@ -233,16 +241,11 @@ func (manager *Manager) handleQueue(interaction *Interaction) Response {
 	}
 }
 
-func (manager *Manager) handleView(interaction *Interaction) Response {
+func (manager *Manager) onView(interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.IsEmpty() && player.State == controller.Stopped {
-		return Response{
-			Type: 4,
-			Data: ResponseData{
-				Content: "The queue is empty and nothing is playing",
-			},
-		}
+		manager.SendFollowup(interaction, "The queue is empty and nothing is playing", "The queue is empty and nothing is playing", false)
 	}
 
 	formatted_queue := ""
@@ -254,25 +257,22 @@ func (manager *Manager) handleView(interaction *Interaction) Response {
 		formatted_queue += fmt.Sprintf("\nNow playing: **%s**", *player.CurrentSong)
 	}
 
+	manager.SendFollowup(interaction, "", formatted_queue, false)
+}
+
+func (manager *Manager) handleView(interaction *Interaction) Response {
+	go manager.onView(interaction)
 	return Response{
-		Type: 4,
-		Data: ResponseData{
-			Content: formatted_queue,
-		},
+		Type: 5,
 	}
 }
 
-func (manager *Manager) handleSkip(interaction *Interaction) Response {
+func (manager *Manager) onSkip(interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if player.State == controller.Stopped {
-		return Response{
-			Type: 4,
-			Data: ResponseData{
-				Content: "Nothing to skip",
-				Flags:   64,
-			},
-		}
+	if player.State == controller.Stopped || player.CurrentSong == nil {
+		manager.SendFollowup(interaction, "user tried to skip but nothing is playing", "Nothing to skip", true)
+		return
 	}
 
 	current := player.CurrentSong
@@ -287,11 +287,13 @@ func (manager *Manager) handleSkip(interaction *Interaction) Response {
 		response += "\n\nNow playing **" + next.Video.Title + "**"
 	}
 
+	manager.SendFollowup(interaction, response, response, false)
+}
+
+func (manager *Manager) handleSkip(interaction *Interaction) Response {
+	go manager.onSkip(interaction)
 	return Response{
-		Type: 4,
-		Data: ResponseData{
-			Content: response,
-		},
+		Type: 5,
 	}
 }
 
@@ -312,7 +314,6 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 		var err error
 		index, err = strconv.Atoi(interaction.Data.Options[0].Value)
 		if err != nil {
-			log.Printf("Error converting to int: %v", err)
 			return Response{
 				Type: 4,
 				Data: ResponseData{
@@ -402,26 +403,26 @@ func (manager *Manager) handleStop(interaction *Interaction) Response {
 }
 
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
-	// Defer a recover function that will catch any panics
 	defer func() {
 		if err := recover(); err != nil {
-			log.Printf("Panic in command handling: %v", err)
+			log.Errorf("Panic in command handling: %v", err)
 			response = Response{
 				Type: 4,
 				Data: ResponseData{
 					Content: "An error occurred while processing your command",
-					Flags:   64, // Ephemeral message
+					Flags:   64,
 				},
 			}
 		}
 	}()
 
-	log.Printf("Received command: %+v", interaction.Data.Name)
+	log.Debugf("Received command: %+v", interaction.Data.Name)
+
 	switch interaction.Data.Name {
 	case "ping":
 		return manager.handlePing()
 	case "help":
-		return manager.handleHelp()
+		return manager.handleHelp(interaction)
 	case "queue", "play":
 		return manager.handleQueue(interaction)
 	case "view":
@@ -452,13 +453,13 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 func (manager *Manager) VerifyDiscordRequest(signature, timestamp string, body []byte) bool {
 	pubKeyBytes, err := hex.DecodeString(manager.PublicKey)
 	if err != nil {
-		log.Printf("Error decoding public key: %v", err)
+		log.Errorf("Error decoding public key: %v", err)
 		return false
 	}
 
 	signatureBytes, err := hex.DecodeString(signature)
 	if err != nil {
-		log.Printf("Error decoding signature: %v", err)
+		log.Errorf("Error decoding signature: %v", err)
 		return false
 	}
 

@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"beatbot/config"
 
@@ -16,7 +17,7 @@ import (
 func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId string) (vc *discordgo.VoiceConnection, err error) {
 	vc, err = session.ChannelVoiceJoin(guildId, channelId, false, true)
 	if err != nil {
-		log.Printf("Error joining voice channel: %v", err)
+		log.Errorf("Error joining voice channel: %v", err)
 		return nil, err
 	}
 
