@@ -9,8 +9,8 @@ docker run -d --name discord-music-bot \
   --memory="1g" \
   --memory-reservation="512m" \
   --memory-swap="2g" \
-  --cpus="2" \           # Allocating 2 cores (half of available cores)
-  --cpu-shares="2048" \  # Double the default CPU share
+  --cpus="2" \           
+  --cpu-shares="2048" \  
   --memory-swappiness="20" \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
