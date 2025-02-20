@@ -130,11 +130,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	for attempts := 0; attempts < 3; attempts++ {
 		cmd := exec.Command("yt-dlp",
 			"-f", "bestaudio[ext=ogg]/bestaudio",
-			// "-f", "mp4",
-			// "--no-audio-multistreams",
-			"--verbose",               // Add verbose output
-			"--no-check-formats",      // Skip format checking which might use ffmpeg
-			"--no-check-certificates", // Skip HTTPS certificate validation
+			"--no-audio-multistreams",
 			"-g",
 			"--no-warnings",
 			ytUrl)
