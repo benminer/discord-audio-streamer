@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"io"
-	"time"
 
 	"net/http"
 	"os"
@@ -26,23 +25,12 @@ import (
 )
 
 func main() {
-	if os.Getenv("RELEASE") == "true" {
-		log.SetFormatter(&log.JSONFormatter{
-			TimestampFormat: time.RFC3339,
-			FieldMap: log.FieldMap{
-				log.FieldKeyTime:  "timestamp",
-				log.FieldKeyLevel: "severity",
-				log.FieldKeyMsg:   "message",
-			},
-		})
-	} else {
-		log.SetFormatter(&nested.Formatter{
-			HideKeys:     true,
-			TrimMessages: true,
-		})
-	}
+	log.SetFormatter(&nested.Formatter{
+		HideKeys:     true,
+		TrimMessages: true,
+	})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.TraceLevel)
+	log.SetLevel(log.DebugLevel)
 
 	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
 		if err := godotenv.Load(".env.dev"); err != nil {

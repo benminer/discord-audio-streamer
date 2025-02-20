@@ -161,7 +161,6 @@ func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 		video = *stream
 	}
 
-	log.Debugf("Playing: %s", video.Title)
 	p.CurrentSong = &video.Title
 
 	p.popQueue() // remove the incoming video from the queue, shift to next if any
