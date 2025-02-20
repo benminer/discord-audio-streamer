@@ -3,7 +3,12 @@
 source .env
 
 docker build -t benminer/discord-music-bot ./
-docker rm -f benminer/discord-music-bot 
+if docker ps -a --format '{{.Names}}' | grep -q "^discord-music-bot$"; then
+    echo "Found existing container, removing..."
+    docker rm -f discord-music-bot
+else
+    echo "No existing container found"
+fi
 docker run -d --name discord-music-bot \
   --restart always \
   --memory="1g" \
