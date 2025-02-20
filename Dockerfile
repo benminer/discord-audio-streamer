@@ -1,4 +1,4 @@
-FROM golang:1.23.6 AS builder
+FROM golang:1.23.6-bullseye AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -o discord-bot
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o discord-bot
 
 FROM ubuntu:22.04
 
@@ -29,8 +29,13 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp
+
+# Test yt-dlp installation and version
+RUN yt-dlp --version \
+    && echo "Testing yt-dlp..." \
+    && yt-dlp --no-warnings --dump-json "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --simulate | head -n 1
 
 WORKDIR /app
 
@@ -40,5 +45,9 @@ ENV RELEASE=true
 ENV PORT=8080
 ENV GIN_MODE=release
 ENV ENFORCE_VOICE_CHANNEL="true"
+ENV GEMINI_ENABLED="true"
+
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
 
 CMD ["./discord-bot"]

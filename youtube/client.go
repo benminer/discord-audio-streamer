@@ -59,6 +59,7 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 	}
 
 	if len(response.Items) > 0 {
+		log.Tracef("video found: %v", response.Items[0].Snippet.Title)
 		return VideoResponse{
 			Title:   response.Items[0].Snippet.Title,
 			VideoID: videoID,
@@ -115,6 +116,7 @@ func Query(query string) []VideoResponse {
 		}
 	}
 
+	logger.Tracef("found %d videos", len(videos))
 	return videos
 }
 
@@ -124,19 +126,29 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	var err error
 
 	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
+	logger.Tracef("getting video stream for %s", ytUrl)
 	for attempts := 0; attempts < 3; attempts++ {
 		cmd := exec.Command("yt-dlp",
 			"-f", "bestaudio[ext=ogg]/bestaudio",
-			"--no-audio-multistreams",
+			// "-f", "mp4",
+			// "--no-audio-multistreams",
+			"--verbose",               // Add verbose output
+			"--no-check-formats",      // Skip format checking which might use ffmpeg
+			"--no-check-certificates", // Skip HTTPS certificate validation
 			"-g",
 			"--no-warnings",
 			ytUrl)
 
-		output, err = cmd.Output()
+		output, err = cmd.CombinedOutput()
 		if err != nil {
-			logger.Debugf("yt-dlp error (attempt %d/3): %v", attempts+1, err)
+			logger.WithFields(log.Fields{
+				"attempt": attempts + 1,
+				"error":   err,
+				"output":  string(output),
+			}).Error("yt-dlp command failed")
+
 			if attempts == 2 {
-				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v", err)
+				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output))
 			}
 			continue
 		}
@@ -144,6 +156,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	streamUrl := strings.TrimSpace(string(output))
+	logger.Tracef("streamUrl: %s", streamUrl)
 	parsedURL, err := url.Parse(streamUrl)
 	if err != nil {
 		logger.Errorf("error parsing URL: %v", err)
@@ -151,6 +164,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	expiration, err := strconv.ParseInt(parsedURL.Query().Get("expire"), 10, 64)
+	logger.Tracef("expiration: %d", expiration)
 	if err != nil {
 		logger.Errorf("error parsing expiration: %v", err)
 		return nil, fmt.Errorf("error parsing expiration: %v", err)
@@ -186,4 +200,21 @@ func parseDuration(duration string) float64 {
 	}
 
 	return minutes
+}
+
+func TestYoutubeDlpWithOutput() (string, error) {
+	cmd := exec.Command("yt-dlp",
+		"-f", "bestaudio[ext=ogg]/bestaudio",
+		"--no-check-formats",      // Skip format checking which might use ffmpeg
+		"--no-check-certificates", // Skip HTTPS certificate validation
+		"--verbose",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Errorf("error running yt-dlp: %v", err)
+		return "", fmt.Errorf("error running yt-dlp: %v", err)
+	}
+
+	return string(output), nil
 }

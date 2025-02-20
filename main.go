@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"time"
 
 	"net/http"
 	"os"
@@ -25,12 +26,23 @@ import (
 )
 
 func main() {
-	log.SetFormatter(&nested.Formatter{
-		HideKeys:     true,
-		TrimMessages: true,
-	})
+	if os.Getenv("RELEASE") == "true" {
+		log.SetFormatter(&log.JSONFormatter{
+			TimestampFormat: time.RFC3339,
+			FieldMap: log.FieldMap{
+				log.FieldKeyTime:  "timestamp",
+				log.FieldKeyLevel: "severity",
+				log.FieldKeyMsg:   "message",
+			},
+		})
+	} else {
+		log.SetFormatter(&nested.Formatter{
+			HideKeys:     true,
+			TrimMessages: true,
+		})
+	}
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.TraceLevel)
 
 	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
 		if err := godotenv.Load(".env.dev"); err != nil {
@@ -52,22 +64,39 @@ func run(ctx context.Context) error {
 	}
 	router := gin.Default()
 
-	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
-		router.GET("/youtube/search", func(c *gin.Context) {
-			query := c.Query("query")
-			videos := youtube.Query(query)
-
-			stream, err := youtube.GetVideoStream(videos[0])
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get video stream"})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"stream": stream.StreamURL,
-			})
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": "ok",
 		})
+	})
 
+	router.GET("/youtube/test", func(c *gin.Context) {
+		output, err := youtube.TestYoutubeDlpWithOutput()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to test yt-dlp"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"output": output,
+		})
+	})
+
+	router.GET("/youtube/search", func(c *gin.Context) {
+		query := c.Query("query")
+		videos := youtube.Query(query)
+
+		stream, err := youtube.GetVideoStream(videos[0])
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get video stream"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"stream": stream.StreamURL,
+		})
+	})
+
+	if os.Getenv("RELEASE") == "false" || os.Getenv("RELEASE") == "" {
 		router.POST("/gemini/rude", func(c *gin.Context) {
 			bodyBytes, err := io.ReadAll(c.Request.Body)
 			if err != nil {
@@ -172,5 +201,5 @@ func run(ctx context.Context) error {
 	}
 
 	log.Infof("Starting server on :%s", port)
-	return http.ListenAndServe(":"+port, router)
+	return router.Run(":" + port)
 }
