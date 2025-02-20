@@ -1,1 +1,0 @@
-worker: ./discord-bot
