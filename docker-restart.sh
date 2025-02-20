@@ -2,9 +2,9 @@
 
 source .env
 
-docker build -t benminer/discord-music-bot ./ && \
-docker rm -f discord-music-bot && \
-docker run -d --name discord-music-bot \
+docker build -t benminer/discord-music-bot ./
+docker rm -f benminer/discord-music-bot 
+docker run -d --name benminer/discord-music-bot \
   --restart always \
   --memory="1g" \
   --memory-reservation="512m" \
