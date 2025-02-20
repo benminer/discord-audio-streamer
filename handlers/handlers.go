@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -100,8 +99,10 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 // and cache it temporarily
 // could use this to assure permissions, etc.
 func (manager *Manager) QueryAndQueue(interaction *Interaction) {
+	log.Debugf("Querying and queuing: %+v", interaction.Member.User.ID)
 	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
 	if err != nil {
+		log.Errorf("Error getting voice state: %v", err)
 		sentry.CaptureException(err)
 		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
 		return
@@ -423,15 +424,15 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 
 	log.Debugf("Received command: %+v", interaction.Data.Name)
 
-	sentry.GetHubFromContext(context.Background()).ConfigureScope(func(scope *sentry.Scope) {
-		scope.SetContext("interaction", map[string]interface{}{
-			"name":     interaction.Data.Name,
-			"options":  interaction.Data.Options,
-			"guild_id": interaction.GuildID,
-			"user_id":  interaction.Member.User.ID,
-			"username": interaction.Member.User.Username,
-		})
-	})
+	// sentry.GetHubFromContext(context.Background()).ConfigureScope(func(scope *sentry.Scope) {
+	// 	scope.SetContext("interaction", map[string]interface{}{
+	// 		"name":     interaction.Data.Name,
+	// 		"options":  interaction.Data.Options,
+	// 		"guild_id": interaction.GuildID,
+	// 		"user_id":  interaction.Member.User.ID,
+	// 		"username": interaction.Member.User.Username,
+	// 	})
+	// })
 
 	switch interaction.Data.Name {
 	case "ping":
