@@ -6,6 +6,12 @@ docker build -t benminer/discord-music-bot ./ && \
 docker rm -f discord-music-bot && \
 docker run -d --name discord-music-bot \
   --restart always \
+  --memory="1g" \
+  --memory-reservation="512m" \
+  --memory-swap="2g" \
+  --cpus="2" \           # Allocating 2 cores (half of available cores)
+  --cpu-shares="2048" \  # Double the default CPU share
+  --memory-swappiness="20" \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
   -e DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN \
