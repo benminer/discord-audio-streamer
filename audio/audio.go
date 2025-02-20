@@ -148,7 +148,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 			var readAttempts int
 			for readAttempts < 3 {
 				err := binary.Read(ps.ffmpegOut, binary.LittleEndian, &buffer)
-				if err == io.EOF {
+				if err == io.EOF || err == io.ErrUnexpectedEOF {
 					ps.notifications <- PlaybackNotification{
 						PlaybackState: ps,
 						Event:         PlaybackCompleted,
