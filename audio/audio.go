@@ -135,9 +135,6 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 
-	// Add timeout for opus send
-	sendTimeout := time.Second * 5
-
 	for {
 		select {
 		case <-ps.done:
@@ -190,18 +187,8 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				continue
 			}
 
-			// Add timeout for sending opus data
 			select {
 			case vc.OpusSend <- ps.opusBuffer[:n]:
-				// Data sent successfully
-			case <-time.After(sendTimeout):
-				ps.log.Warn("Timeout sending opus data")
-				ps.notifications <- PlaybackNotification{
-					PlaybackState: ps,
-					Event:         PlaybackError,
-					Error:         &err,
-				}
-				return
 			case <-ps.done:
 				ps.log.Debug("Playback stopped during opus send")
 				return

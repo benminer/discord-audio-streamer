@@ -130,7 +130,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if videoID != "" {
 		videoResponse, err := youtube.GetVideoByID(videoID)
 		if err != nil {
-			go manager.SendError(interaction, "Error getting video stream: "+err.Error(), true)
+			manager.SendError(interaction, "Error getting video stream: "+err.Error(), true)
 			return
 		}
 
@@ -139,7 +139,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		videos := youtube.Query(query)
 
 		if len(videos) == 0 {
-			go manager.SendFollowup(interaction, "There wasn't anything found for "+query, "No videos found for the given query", true)
+			manager.SendFollowup(interaction, "There wasn't anything found for "+query, "No videos found for the given query", true)
 			return
 		}
 

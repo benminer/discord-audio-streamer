@@ -86,6 +86,10 @@ func NewController() (*Controller, error) {
 }
 
 func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
+	if session, ok := c.sessions[guildID]; ok {
+		return session
+	}
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
