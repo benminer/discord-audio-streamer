@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -11,13 +12,13 @@ import (
 	"os"
 	"strconv"
 
+	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 
 	"beatbot/config"
 	"beatbot/controller"
 	"beatbot/discord"
 	"beatbot/gemini"
-	"beatbot/sentry"
 	"beatbot/youtube"
 )
 
@@ -101,7 +102,7 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
 	if err != nil {
-		sentry.ReportError(err)
+		sentry.CaptureException(err)
 		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
 		return
 	}
@@ -118,7 +119,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if (player.VoiceChannelID == nil || player.VoiceConnection == nil) || (player.VoiceChannelID != nil && player.State == controller.Stopped && *player.VoiceChannelID != voiceState.ChannelID) {
 		err := player.JoinVoiceChannel(interaction.Member.User.ID)
 		if err != nil {
-			sentry.ReportError(err)
+			sentry.CaptureException(err)
 			manager.SendError(interaction, "Error joining voice channel: "+err.Error(), true)
 			return
 		}
@@ -133,7 +134,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if videoID != "" {
 		videoResponse, err := youtube.GetVideoByID(videoID)
 		if err != nil {
-			sentry.ReportError(err)
+			sentry.CaptureException(err)
 			manager.SendError(interaction, "Error getting video stream: "+err.Error(), true)
 			return
 		}
@@ -422,12 +423,14 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 
 	log.Debugf("Received command: %+v", interaction.Data.Name)
 
-	sentry.SetContext("interaction", map[string]interface{}{
-		"name":     interaction.Data.Name,
-		"options":  interaction.Data.Options,
-		"guild_id": interaction.GuildID,
-		"user_id":  interaction.Member.User.ID,
-		"username": interaction.Member.User.Username,
+	sentry.GetHubFromContext(context.Background()).ConfigureScope(func(scope *sentry.Scope) {
+		scope.SetContext("interaction", map[string]interface{}{
+			"name":     interaction.Data.Name,
+			"options":  interaction.Data.Options,
+			"guild_id": interaction.GuildID,
+			"user_id":  interaction.Member.User.ID,
+			"username": interaction.Member.User.Username,
+		})
 	})
 
 	switch interaction.Data.Name {

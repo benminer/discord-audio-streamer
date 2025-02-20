@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -27,6 +28,7 @@ func SendFollowup(request *FollowUpRequest) {
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
+		sentry.CaptureException(err)
 		log.Errorf("Error marshalling payload: %v", err)
 		return
 	}
@@ -37,8 +39,9 @@ func SendFollowup(request *FollowUpRequest) {
 		bytes.NewBuffer(jsonPayload),
 	)
 	if err != nil {
+		sentry.CaptureException(err)
 		log.Errorf("Error sending followup: %v", err)
+		return
 	}
 	defer resp.Body.Close()
-
 }
