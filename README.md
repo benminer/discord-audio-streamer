@@ -93,11 +93,22 @@ A simple bot implementation for playing audio in Discord voice channels using [y
     docker build -t discord-music-bot:latest ./
     ```
 
+    **Note for Apple Silicon users:** If you are building the Docker image on an Apple Silicon Mac, you may need to use `docker buildx` to build an image that is compatible with your architecture. For example:
+
+    ```bash
+    docker buildx build --platform linux/amd64 -t discord-music-bot:latest .
+    ```
+
 2.  Run the Docker container:
 
     ```bash
     docker run -d --name discord-music-bot \
       --restart always \
+      --memory="1g" \
+      --memory-reservation="512m" \
+      --memory-swap="2g" \
+      --cpus="2" \
+      --cpu-shares="2048" \
       -e DISCORD_APP_ID=$DISCORD_APP_ID \
       -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
       -e DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN \
@@ -110,6 +121,8 @@ A simple bot implementation for playing audio in Discord voice channels using [y
       -e SENTRY_DSN=$SENTRY_DSN \
       discord-music-bot:latest
     ```
+
+    I recommend setting at least 1GB, with 2GB of swap, since songs are stored in memory while streaming.
 
 ## 💻 Development
 
