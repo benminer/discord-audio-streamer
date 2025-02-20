@@ -118,8 +118,10 @@ func (p *GuildPlayer) GetNext() *GuildQueueItem {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 	if len(p.Queue.Items) > 0 {
+		log.Tracef("returning next song in queue: %s", p.Queue.Items[0].Video.Title)
 		return p.Queue.Items[0]
 	}
+	log.Tracef("no more songs in queue")
 	return nil
 }
 
@@ -134,15 +136,12 @@ func (p *GuildPlayer) popQueue() {
 }
 
 func (p *GuildPlayer) playNext() {
-	p.Queue.Mutex.Lock()
-	defer p.Queue.Mutex.Unlock()
-	if len(p.Queue.Items) > 0 {
-		log.Tracef("playing next song in queue")
-		next := p.GetNext()
-		if next != nil {
-			log.Tracef("playing: %s", next.Video.Title)
-			go p.play(*next.Stream)
-		}
+	log.Tracef("in playNext")
+
+	next := p.GetNext()
+	if next != nil {
+		log.Tracef("playing: %s", next.Video.Title)
+		go p.play(*next.Stream)
 	} else {
 		log.Tracef("no more songs in queue, stopping player")
 		p.State = Stopped
@@ -152,24 +151,10 @@ func (p *GuildPlayer) playNext() {
 
 func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 	log.Debugf("playing: %s", video.Title)
-	// check if the stream url is still valid
-	// assure that the stream will not expire in the next 5 minutes
-	if time.Unix(video.Expiration, 0).Before(time.Now().Add(time.Minute * 5)) {
-		log.Debugf("stream is expired, refreshing")
-		stream, err := youtube.GetVideoStream(youtube.VideoResponse{
-			Title:   video.Title,
-			VideoID: video.VideoID,
-		})
-		if err != nil {
-			log.Errorf("Error getting video stream: %s", err)
-			return
-		}
-		video = *stream
-	}
+
+	p.popQueue()
 
 	p.CurrentSong = &video.Title
-
-	p.popQueue() // remove the incoming video from the queue, shift to next if any
 	p.VoiceConnection.Speaking(true)
 	defer p.VoiceConnection.Speaking(false)
 	p.State = Playing
@@ -178,7 +163,6 @@ func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 		p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications)
 	}
 
-	// Start playback in a goroutine
 	go func() {
 		if err := p.PlaybackState.StartStream(p.VoiceConnection, video.StreamURL); err != nil {
 			log.Errorf("Error starting stream: %v", err)
@@ -240,6 +224,7 @@ func (p *GuildPlayer) listenForQueueEvents() {
 	p.Queue.Listening = true
 	go func() {
 		for event := range p.Queue.notifications {
+			log.Tracef("Queue event: %s", event.Type)
 			switch event.Type {
 			case EventAdd:
 				p.handleAdd(event)
@@ -267,7 +252,8 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			case audio.PlaybackResumed, audio.PlaybackStarted:
 				p.State = Playing
 			case audio.PlaybackStopped:
-				p.playNext()
+				p.State = Stopped
+				p.CurrentSong = nil
 			case audio.PlaybackError:
 				err := event.Error
 				if err != nil {
