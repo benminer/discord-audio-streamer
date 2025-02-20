@@ -137,11 +137,14 @@ func (p *GuildPlayer) playNext() {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 	if len(p.Queue.Items) > 0 {
+		log.Tracef("playing next song in queue")
 		next := p.GetNext()
 		if next != nil {
+			log.Tracef("playing: %s", next.Video.Title)
 			go p.play(*next.Stream)
 		}
 	} else {
+		log.Tracef("no more songs in queue, stopping player")
 		p.State = Stopped
 		p.CurrentSong = nil
 	}
@@ -264,10 +267,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			case audio.PlaybackResumed, audio.PlaybackStarted:
 				p.State = Playing
 			case audio.PlaybackStopped:
-				if p.State != Stopped {
-					p.State = Stopped
-					p.CurrentSong = nil
-				}
+				p.playNext()
 			case audio.PlaybackError:
 				err := event.Error
 				if err != nil {
