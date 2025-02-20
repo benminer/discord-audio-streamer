@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"time"
 
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/handlers"
+	"beatbot/sentry"
 	"beatbot/youtube"
 )
 
@@ -38,8 +40,12 @@ func main() {
 		}
 	}
 
+	sentry.Init()
+	defer sentry.GetSentryClient().Flush(2 * time.Second)
+
 	appConfig.NewConfig()
 	if err := run(context.Background()); err != nil {
+		sentry.ReportFatal(err)
 		log.Fatal(err)
 	}
 }
@@ -47,10 +53,13 @@ func main() {
 func run(ctx context.Context) error {
 	controller, err := controller.NewController()
 	if err != nil {
+		sentry.ReportFatal(err)
 		log.Fatalf("Error creating controller: %v", err)
 		return err
 	}
 	router := gin.Default()
+
+	router.Use(sentry.GetSentryGin())
 
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -142,6 +151,7 @@ func run(ctx context.Context) error {
 		manager := handlers.NewManager(os.Getenv("DISCORD_APP_ID"), controller)
 
 		if !manager.VerifyDiscordRequest(signature, timestamp, bodyBytes) {
+			sentry.ReportMessage("Invalid request signature")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request signature"})
 			return
 		}

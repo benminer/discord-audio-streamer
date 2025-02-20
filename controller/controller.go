@@ -3,6 +3,7 @@ package controller
 import (
 	"beatbot/audio"
 	"beatbot/discord"
+	"beatbot/sentry"
 	"beatbot/youtube"
 	"sync"
 	"time"
@@ -140,8 +141,6 @@ func (p *GuildPlayer) popQueue() {
 }
 
 func (p *GuildPlayer) playNext() {
-	log.Tracef("in playNext")
-
 	next := p.GetNext()
 	if next != nil {
 		log.Tracef("playing: %s", next.Video.Title)
@@ -169,6 +168,7 @@ func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 
 	go func() {
 		if err := p.PlaybackState.StartStream(p.VoiceConnection, video.StreamURL); err != nil {
+			sentry.ReportError(err)
 			log.Errorf("Error starting stream: %v", err)
 			p.VoiceConnection.Speaking(false)
 		}
@@ -180,6 +180,7 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	stream, err := youtube.GetVideoStream(event.Item.Video)
 	if err != nil {
 		log.Errorf("Error getting video stream: %s", err)
+		sentry.ReportError(err)
 		go discord.SendFollowup(&discord.FollowUpRequest{
 			Token:   event.Item.Interaction.InteractionToken,
 			AppID:   event.Item.Interaction.AppID,
@@ -203,12 +204,14 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	voiceState, err := discord.GetMemberVoiceState(&userID, &p.GuildID)
 	if err != nil {
+		sentry.ReportError(err)
 		log.Errorf("Error getting voice state: %s", err)
 		return err
 	}
 
 	vc, err := discord.JoinVoiceChannel(p.Discord, p.GuildID, voiceState.ChannelID)
 	if err != nil {
+		sentry.ReportError(err)
 		log.Errorf("Error joining voice channel: %s", err)
 		return err
 	}
@@ -300,7 +303,9 @@ func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactio
 		Item: item,
 	}:
 	default:
-		log.Warnf("Queue notifications channel is full for guild %s", p.GuildID)
+		msg := "Queue notifications channel is full for guild " + p.GuildID
+		sentry.ReportMessage(msg)
+		log.Warn(msg)
 	}
 }
 
@@ -323,7 +328,9 @@ func (p *GuildPlayer) Skip() {
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventSkip}:
 	default:
-		log.Warnf("Queue notifications channel is full for guild %s", p.GuildID)
+		msg := "Queue notifications channel is full for guild " + p.GuildID
+		sentry.ReportMessage(msg)
+		log.Warn(msg)
 	}
 }
 
@@ -338,7 +345,9 @@ func (p *GuildPlayer) Clear() {
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventClear}:
 	default:
-		log.Warnf("Queue notifications channel is full for guild %s", p.GuildID)
+		msg := "Queue notifications channel is full for guild " + p.GuildID
+		sentry.ReportMessage(msg)
+		log.Warn(msg)
 	}
 }
 

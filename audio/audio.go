@@ -14,6 +14,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"gopkg.in/hraban/opus.v2"
+
+	"beatbot/sentry"
 )
 
 type PlaybackState struct {
@@ -101,6 +103,7 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 				Event:         PlaybackError,
 				Error:         &result.err,
 			}
+			sentry.ReportError(result.err)
 			return result.err
 		}
 
@@ -114,6 +117,7 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 		ps.ffmpegOut = io.NopCloser(bytes.NewReader(result.output))
 		encoder, opusErr := opus.NewEncoder(48000, 2, opus.Application(opus.AppAudio))
 		if opusErr != nil {
+			sentry.ReportError(opusErr)
 			ps.log.Errorf("error creating opus encoder: %v", opusErr)
 			return fmt.Errorf("error creating opus encoder: %v", opusErr)
 		}
@@ -128,6 +132,7 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 			ps.log.Warnf("Error killing ffmpeg: %v", err)
 		}
 		error := errors.New("ffmpeg timed out after 15 seconds")
+		sentry.ReportError(error)
 		ps.notifications <- PlaybackNotification{
 			PlaybackState: ps,
 			Event:         PlaybackError,
@@ -175,6 +180,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				if err != nil {
 					readAttempts++
 					ps.log.Warnf("Error reading from buffer (attempt %d/3): %v", readAttempts, err)
+					sentry.ReportError(err)
 					if readAttempts == 3 {
 						ps.notifications <- PlaybackNotification{
 							PlaybackState: ps,
@@ -208,6 +214,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 
 			if err != nil {
 				ps.log.Warnf("Error encoding to opus: %v", err)
+				sentry.ReportError(err)
 				continue
 			}
 
