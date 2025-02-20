@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -73,8 +74,75 @@ func run(ctx context.Context) error {
 		})
 	})
 
-	router.StaticFile("/privacy", "./files/privacy.txt")
-	router.StaticFile("/terms-of-service", "./files/tos.txt")
+	router.GET("/privacy", func(c *gin.Context) {
+		content, err := os.ReadFile("./files/privacy.txt")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Error reading privacy policy")
+			return
+		}
+
+		html := `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Privacy Policy</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <h1>Privacy Policy</h1>
+    <pre>%s</pre>
+</body>
+</html>`
+
+		c.Header("Content-Type", "text/html")
+		c.String(http.StatusOK, fmt.Sprintf(html, content))
+	})
+	router.GET("/terms-of-service", func(c *gin.Context) {
+		content, err := os.ReadFile("./files/tos.txt")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Error reading terms of service")
+			return
+		}
+		html := `
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Terms of Service</title>
+	<style>
+		body {
+			font-family: Arial, sans-serif;
+			line-height: 1.6;
+			max-width: 800px;
+			margin: 0 auto;
+			padding: 20px;
+		}
+		pre {
+			white-space: pre-wrap;
+			word-wrap: break-word;
+		}
+	</style>
+</head>
+<body>
+	<h1>Terms of Service</h1>
+	<pre>%s</pre>
+</body>
+</html>`
+
+		c.Header("Content-Type", "text/html")
+		c.String(http.StatusOK, fmt.Sprintf(html, content))
+	})
 
 	router.GET("/youtube/test", func(c *gin.Context) {
 		output, err := youtube.TestYoutubeDlpWithOutput()
