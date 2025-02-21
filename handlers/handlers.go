@@ -115,9 +115,15 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		return
 	}
 
+	shouldJoin := player.VoiceChannelID == nil ||
+		player.VoiceConnection == nil ||
+		(player.VoiceChannelID != nil &&
+			player.IsEmpty() && !player.PlaybackState.IsPlaying() &&
+			*player.VoiceChannelID != voiceState.ChannelID)
+
 	// join vc if not in one
 	// or move to requester's vc if stopped
-	if (player.VoiceChannelID == nil || player.VoiceConnection == nil) || (player.VoiceChannelID != nil && player.State == controller.Stopped && *player.VoiceChannelID != voiceState.ChannelID) {
+	if shouldJoin {
 		err := player.JoinVoiceChannel(interaction.Member.User.ID)
 		if err != nil {
 			sentry.CaptureException(err)
@@ -153,7 +159,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	}
 
 	var followUpMessage string
-	firstSongQueued := player.IsEmpty() && player.State == controller.Stopped
+	firstSongQueued := player.IsEmpty() && !player.PlaybackState.IsPlaying() && player.CurrentSong == nil
 
 	if firstSongQueued {
 		followUpMessage = "**" + video.Title + "** playing soon (also include politely that playback could take a few seconds to start, since it's the first song and needs to load)"
@@ -250,7 +256,7 @@ func (manager *Manager) handleQueue(interaction *Interaction) Response {
 func (manager *Manager) onView(interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if player.IsEmpty() && player.State == controller.Stopped {
+	if player.IsEmpty() && !player.PlaybackState.IsPlaying() && player.CurrentSong == nil {
 		manager.SendFollowup(interaction, "The queue is empty and nothing is playing", "The queue is empty and nothing is playing", false)
 	}
 
@@ -276,7 +282,7 @@ func (manager *Manager) handleView(interaction *Interaction) Response {
 func (manager *Manager) onSkip(interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if player.State == controller.Stopped || player.CurrentSong == nil {
+	if !player.PlaybackState.IsPlaying() && player.CurrentSong == nil {
 		manager.SendFollowup(interaction, "user tried to skip but nothing is playing", "Nothing to skip", true)
 		return
 	}
@@ -296,8 +302,30 @@ func (manager *Manager) onSkip(interaction *Interaction) {
 	manager.SendFollowup(interaction, response, response, false)
 }
 
+func (manager *Manager) handlePurge(interaction *Interaction) {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	go player.Clear()
+
+	manager.SendFollowup(interaction, "Queue purged", "Queue purged", false)
+}
+
 func (manager *Manager) handleSkip(interaction *Interaction) Response {
 	go manager.onSkip(interaction)
+	return Response{
+		Type: 5,
+	}
+}
+
+func (manager *Manager) handleReset(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	go player.Reset(&controller.GuildQueueItemInteraction{
+		UserID:           interaction.Member.User.ID,
+		InteractionToken: interaction.Token,
+		AppID:            manager.AppID,
+	})
+
 	return Response{
 		Type: 5,
 	}
@@ -350,7 +378,7 @@ func (manager *Manager) handlePause(interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if player.State == controller.Stopped || player.State == controller.Paused {
+	if !player.PlaybackState.IsPlaying() {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -374,7 +402,7 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if player.State == controller.Stopped || player.State == controller.Playing {
+	if !player.PlaybackState.IsPlaying() {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -390,20 +418,6 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 		Type: 4,
 		Data: ResponseData{
 			Content: "@" + userName + " resumed the current song",
-		},
-	}
-}
-
-func (manager *Manager) handleStop(interaction *Interaction) Response {
-	player := manager.Controller.GetPlayer(interaction.GuildID)
-
-	go player.Stop()
-
-	return Response{
-		Type: 4,
-		Data: ResponseData{
-			Content: "Stopped the player",
-			Flags:   64,
 		},
 	}
 }
@@ -447,12 +461,12 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleRemove(interaction)
 	case "skip":
 		return manager.handleSkip(interaction)
-	case "pause":
+	case "pause", "stop":
 		return manager.handlePause(interaction)
 	case "resume":
 		return manager.handleResume(interaction)
-	case "stop":
-		return manager.handleStop(interaction)
+	case "reset":
+		return manager.handleReset(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:

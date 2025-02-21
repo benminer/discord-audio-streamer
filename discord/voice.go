@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 
 	"beatbot/config"
@@ -17,6 +18,7 @@ import (
 func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId string) (vc *discordgo.VoiceConnection, err error) {
 	vc, err = session.ChannelVoiceJoin(guildId, channelId, false, true)
 	if err != nil {
+		sentry.CaptureException(err)
 		log.Errorf("Error joining voice channel: %v", err)
 		return nil, err
 	}
@@ -32,6 +34,7 @@ func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId stri
 
 	// If we couldn't establish a proper connection, clean up and return error
 	vc.Close()
+	sentry.CaptureMessage(fmt.Sprintf("failed to establish stable voice connection after %d seconds", maxRetries))
 	return nil, fmt.Errorf("failed to establish stable voice connection after %d seconds", maxRetries)
 }
 
@@ -73,20 +76,45 @@ type VoiceState struct {
 	Suppress   bool             `json:"suppress"`
 }
 
+func MakeRequestWithRetries(client *http.Client, req *http.Request) (*http.Response, error) {
+	logger := log.WithFields(log.Fields{
+		"module": "discord.voice",
+		"method": req.Method,
+		"url":    req.URL.String(),
+	})
+
+	retries := 3
+
+	for i := 0; i < retries; i++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Errorf("error making request: %v", err)
+			time.Sleep(time.Millisecond * time.Duration(100*(i+1)))
+			continue
+		}
+
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("failed to make request after %d retries", retries)
+}
+
 func GetMemberVoiceState(userId *string, guildId *string) (*VoiceState, error) {
 	if userId == nil || guildId == nil {
 		return nil, fmt.Errorf("user or guild ID is empty")
 	}
 
+	log.Tracef("getting voice state for user %s in guild %s", *userId, *guildId)
+
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", "https://discord.com/api/v10/guilds/"+*guildId+"/voice-states/"+*userId, nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://discord.com/api/v10/guilds/%s/voice-states/%s", *guildId, *userId), nil)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %v", err)
 	}
 
-	req.Header.Set("Authorization", "Bot "+config.Config.Discord.BotToken)
+	req.Header.Set("Authorization", fmt.Sprintf("Bot %s", config.Config.Discord.BotToken))
 
-	resp, err := client.Do(req)
+	resp, err := MakeRequestWithRetries(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("error getting voice state: %v", err)
 	}

@@ -24,6 +24,7 @@ import (
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/handlers"
+	"beatbot/pages"
 	"beatbot/youtube"
 )
 
@@ -81,33 +82,8 @@ func run(ctx context.Context) error {
 			return
 		}
 
-		html := `
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Privacy Policy</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        pre {
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-    </style>
-</head>
-<body>
-    <h1>Privacy Policy</h1>
-    <pre>%s</pre>
-</body>
-</html>`
-
 		c.Header("Content-Type", "text/html")
-		c.String(http.StatusOK, fmt.Sprintf(html, content))
+		c.String(http.StatusOK, fmt.Sprintf(pages.PrivacyPolicy, content))
 	})
 	router.GET("/terms-of-service", func(c *gin.Context) {
 		content, err := os.ReadFile("./files/tos.txt")
@@ -116,33 +92,9 @@ func run(ctx context.Context) error {
 			c.String(http.StatusInternalServerError, "Error reading terms of service")
 			return
 		}
-		html := `
-<!DOCTYPE html>
-<html>
-<head>
-	<title>Terms of Service</title>
-	<style>
-		body {
-			font-family: Arial, sans-serif;
-			line-height: 1.6;
-			max-width: 800px;
-			margin: 0 auto;
-			padding: 20px;
-		}
-		pre {
-			white-space: pre-wrap;
-			word-wrap: break-word;
-		}
-	</style>
-</head>
-<body>
-	<h1>Terms of Service</h1>
-	<pre>%s</pre>
-</body>
-</html>`
 
 		c.Header("Content-Type", "text/html")
-		c.String(http.StatusOK, fmt.Sprintf(html, content))
+		c.String(http.StatusOK, fmt.Sprintf(pages.TermsOfService, content))
 	})
 
 	router.GET("/youtube/test", func(c *gin.Context) {
@@ -275,6 +227,8 @@ func run(ctx context.Context) error {
 	if port == "" {
 		port = "8080"
 	}
+
+	router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
 
 	log.Infof("Starting server on :%s", port)
 	return router.Run(":" + port)

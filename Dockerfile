@@ -2,8 +2,6 @@ FROM golang:1.23.6-bullseye AS builder
 
 WORKDIR /app
 
-COPY files/ /app/files/
-
 RUN apt-get update && apt-get install -y \
     libopusfile-dev \
     libopus-dev \

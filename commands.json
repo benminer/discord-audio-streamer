@@ -46,6 +46,11 @@
     "description": "Skips the current song"
   },
   {
+    "name": "reset",
+    "type": 1,
+    "description": "resets the player state, use this if the bot is stuck"
+  },
+  {
     "name": "remove",
     "type": 1,
     "description": "Removes a song from the queue",
@@ -64,14 +69,14 @@
     "description": "Pauses the current song"
   },
   {
+    "name": "stop",
+    "type": 1,
+    "description": "Pauses the current song"
+  },
+  {
     "name": "resume",
     "type": 1,
     "description": "Resumes the current song"
-  },
-  {
-    "name": "stop",
-    "type": 1,
-    "description": "Stops the current song"
   },
   {
     "name": "purge",

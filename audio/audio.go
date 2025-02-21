@@ -22,6 +22,7 @@ type PlaybackState struct {
 	ffmpegOut     io.ReadCloser
 	encoder       *opus.Encoder
 	done          chan bool
+	loading       bool
 	paused        bool
 	buffer        []int16
 	opusBuffer    []byte
@@ -36,14 +37,15 @@ const (
 	PlaybackStarted   PlaybackNotificationType = "started"
 	PlaybackPaused    PlaybackNotificationType = "paused"
 	PlaybackResumed   PlaybackNotificationType = "resumed"
-	PlaybackStopped   PlaybackNotificationType = "stopped"
 	PlaybackCompleted PlaybackNotificationType = "completed"
+	PlaybackStopped   PlaybackNotificationType = "stopped"
 	PlaybackError     PlaybackNotificationType = "error"
 )
 
 type PlaybackNotification struct {
 	PlaybackState *PlaybackState
 	Error         *error
+	VideoID       *string
 	Event         PlaybackNotificationType
 }
 
@@ -57,13 +59,24 @@ func NewPlaybackState(notifications chan PlaybackNotification) *PlaybackState {
 	}
 }
 
-func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL string) error {
+func (ps *PlaybackState) IsLoading() bool {
+	ps.mutex.Lock()
+	defer ps.mutex.Unlock()
+	return ps.loading
+}
+
+func (ps *PlaybackState) IsPlaying() bool {
+	// these are only set while actively streaming
+	return ps.ffmpegOut != nil && ps.encoder != nil
+}
+
+func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL string, videoID string) error {
 	ps.mutex.Lock()
 	if ps.ffmpegOut != nil || ps.encoder != nil {
 		ps.mutex.Unlock()
 		return fmt.Errorf("stream already in progress")
 	}
-	ps.mutex.Unlock()
+	defer ps.mutex.Unlock()
 
 	ps.log.Debug("starting ffmpeg")
 
@@ -83,6 +96,8 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 
 	start := time.Now()
 
+	ps.loading = true
+
 	go func() {
 		output, err := ps.ffmpeg.Output()
 		done <- struct {
@@ -96,18 +111,17 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 	// So, we kill it and emit an error after 15 seconds
 	select {
 	case result := <-done:
+		ps.loading = false
 		if result.err != nil {
 			ps.notifications <- PlaybackNotification{
 				PlaybackState: ps,
 				Event:         PlaybackError,
+				VideoID:       &videoID,
 				Error:         &result.err,
 			}
 			sentry.CaptureException(result.err)
 			return result.err
 		}
-
-		ps.mutex.Lock()
-		defer ps.mutex.Unlock()
 
 		duration := time.Since(start)
 		ps.log.Debugf("Buffered %.2f MB in %v", float64(len(result.output))/(1024*1024), duration)
@@ -124,9 +138,17 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 		encoder.SetBitrateToMax()
 		ps.encoder = encoder
 
-		go ps.streamLoop(vc)
+		go ps.streamLoop(vc, videoID)
 		return nil
+	case <-ps.done:
+		ps.loading = false
+		if ps.ffmpeg.Process != nil {
+			ps.ffmpeg.Process.Kill()
+		}
+		ps.log.Debug("Stream initialization cancelled")
+		return fmt.Errorf("stream initialization cancelled")
 	case <-time.After(15 * time.Second):
+		ps.loading = false
 		if err := ps.ffmpeg.Process.Kill(); err != nil {
 			ps.log.Warnf("Error killing ffmpeg: %v", err)
 		}
@@ -135,22 +157,29 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 		ps.notifications <- PlaybackNotification{
 			PlaybackState: ps,
 			Event:         PlaybackError,
+			VideoID:       &videoID,
 			Error:         &error,
 		}
 		return error
 	}
 }
 
-func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
-	defer ps.cleanup()
+func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection, videoID string) {
+	defer ps.cleanup(videoID)
 
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 
 	for {
 		select {
-		case <-ps.done:
-			ps.log.Debug("Playback stopped by done signal")
+		case _, ok := <-ps.done:
+			if !ok {
+				// stream was pre-emptively stopped, probably from a /skip command
+				ps.log.Trace("Playback stopped by channel close")
+			} else {
+				// the stream ended naturally
+				ps.log.Trace("Playback stopped by done signal")
+			}
 			return
 		default:
 			if ps.paused {
@@ -158,9 +187,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				continue
 			}
 
-			ps.mutex.Lock()
 			if ps.ffmpegOut == nil {
-				ps.mutex.Unlock()
 				ps.log.Debug("ffmpegOut is nil, skipping")
 				continue
 			}
@@ -173,6 +200,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 					ps.notifications <- PlaybackNotification{
 						PlaybackState: ps,
 						Event:         PlaybackCompleted,
+						VideoID:       &videoID,
 					}
 					return
 				}
@@ -184,6 +212,7 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 						ps.notifications <- PlaybackNotification{
 							PlaybackState: ps,
 							Event:         PlaybackError,
+							VideoID:       &videoID,
 							Error:         &err,
 						}
 						return
@@ -192,28 +221,38 @@ func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection) {
 				}
 				break
 			}
-			ps.mutex.Unlock()
 
 			if firstPacket {
 				ps.notifications <- PlaybackNotification{
 					PlaybackState: ps,
 					Event:         PlaybackStarted,
+					VideoID:       &videoID,
 				}
 				firstPacket = false
 			}
 
-			ps.mutex.Lock()
 			if ps.encoder == nil {
-				ps.mutex.Unlock()
-				ps.log.Debug("encoder is nil, skipping")
+				ps.log.Warn("encoder is nil, skipping")
+				error := errors.New("encoder is nil")
+				ps.notifications <- PlaybackNotification{
+					PlaybackState: ps,
+					Event:         PlaybackError,
+					VideoID:       &videoID,
+					Error:         &error,
+				}
 				continue
 			}
 			n, err := ps.encoder.Encode(buffer, ps.opusBuffer)
-			ps.mutex.Unlock()
 
 			if err != nil {
 				ps.log.Warnf("Error encoding to opus: %v", err)
 				sentry.CaptureException(err)
+				ps.notifications <- PlaybackNotification{
+					PlaybackState: ps,
+					Event:         PlaybackError,
+					VideoID:       &videoID,
+					Error:         &err,
+				}
 				continue
 			}
 
@@ -247,30 +286,51 @@ func (ps *PlaybackState) Resume() {
 
 func (ps *PlaybackState) Stop() {
 	ps.log.Trace("stopping playback")
-	if ps.done != nil {
-		close(ps.done)
-		ps.done = nil
-	}
+	ps.done <- true
+	ps.done = make(chan bool)
 }
 
 func (ps *PlaybackState) Quit() {
 	ps.Stop()
 }
 
-func (ps *PlaybackState) cleanup() {
-	ps.log.Trace("cleaning up")
-
+func (ps *PlaybackState) Clear() {
 	if ps.ffmpegOut != nil {
+		log.Trace("closing ffmpeg output")
 		ps.ffmpegOut.Close()
 		ps.ffmpegOut = nil
 	}
 
-	if ps.encoder != nil {
-		ps.encoder = nil
+	if ps.ffmpeg.Process != nil {
+		log.Trace("killing ffmpeg process")
+		ps.ffmpeg.Process.Kill()
 	}
 
+	if ps.encoder != nil {
+		log.Trace("closing encoder")
+		ps.encoder = nil
+	}
+}
+
+// on reset, we just clear the playback state
+// the controller will handle starting a new stream
+func (ps *PlaybackState) Reset() {
+	ps.Clear()
+}
+
+func (ps *PlaybackState) cleanup(videoID string) {
+	ps.mutex.Lock()
+	defer ps.mutex.Unlock()
+
+	ps.log.Trace("cleaning up")
+
+	ps.Clear()
+
+	// we send a stopped event to indicate that the stream has ended
+	// this could either be because the stream ended, or because it was stopped by the user i.e. skip or stop
 	ps.notifications <- PlaybackNotification{
 		PlaybackState: ps,
 		Event:         PlaybackStopped,
+		VideoID:       &videoID,
 	}
 }

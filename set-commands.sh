@@ -4,11 +4,12 @@ is_dev=false
 
 if [ "$1" == "dev" ]; then
   source .env.dev
+  echo "Setting commands for dev"
 else
   source .env
 fi
 
-curl -X PUT \
+curl -s -X PUT \
   -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
   -H "Content-Type: application/json" \
   -d @commands.json \
