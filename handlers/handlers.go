@@ -126,8 +126,13 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if shouldJoin {
 		err := player.JoinVoiceChannel(interaction.Member.User.ID)
 		if err != nil {
+			errStr := err.Error()
+			if errStr != "" && errStr == "voice state not found" {
+				manager.SendFollowup(interaction, "You gotta join a voice channel first!", "Error joining voice channel: "+errStr, true)
+				return
+			}
 			sentry.CaptureException(err)
-			manager.SendError(interaction, "Error joining voice channel: "+err.Error(), true)
+			manager.SendError(interaction, "Error joining voice channel: "+errStr, true)
 			return
 		}
 	}

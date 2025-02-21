@@ -23,12 +23,12 @@ type PlaybackState struct {
 	encoder       *opus.Encoder
 	done          chan bool
 	loading       bool
-	tearingDown   bool
 	paused        bool
 	buffer        []int16
 	opusBuffer    []byte
 	mutex         sync.Mutex
 	notifications chan PlaybackNotification
+	resetChannel  chan bool
 	log           *log.Entry
 }
 
@@ -50,13 +50,13 @@ type PlaybackNotification struct {
 	Event         PlaybackNotificationType
 }
 
-func NewPlaybackState(notifications chan PlaybackNotification) *PlaybackState {
+func NewPlaybackState(notifications chan PlaybackNotification, resetChannel chan bool) *PlaybackState {
 	return &PlaybackState{
 		done:          make(chan bool),
 		buffer:        make([]int16, 960*2), // 20ms at 48kHz, stereo
 		opusBuffer:    make([]byte, 960*4),
 		notifications: notifications,
-		tearingDown:   false,
+		resetChannel:  resetChannel,
 		loading:       false,
 		paused:        false,
 		log:           log.WithFields(log.Fields{"module": "audio"}),
@@ -76,24 +76,6 @@ func (ps *PlaybackState) IsPlaying() bool {
 
 func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL string, videoID string) error {
 	ps.mutex.Lock()
-	isTearingDown := ps.tearingDown
-
-	if isTearingDown {
-		for i := 0; i < 15; i++ {
-			if !ps.tearingDown {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		ps.mutex.Unlock()
-		return fmt.Errorf("timed out waiting for stream to tear down")
-	}
-
-	if ps.ffmpegOut != nil || ps.encoder != nil {
-		ps.mutex.Unlock()
-		return fmt.Errorf("stream already in progress")
-	}
-
 	defer ps.mutex.Unlock()
 
 	ps.log.Debug("starting ffmpeg")
@@ -162,6 +144,11 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 		ps.loading = false
 		if ps.ffmpeg.Process != nil {
 			ps.ffmpeg.Process.Kill()
+		}
+		ps.notifications <- PlaybackNotification{
+			PlaybackState: ps,
+			Event:         PlaybackStopped,
+			VideoID:       &videoID,
 		}
 		ps.log.Debug("Stream initialization cancelled")
 		return fmt.Errorf("stream initialization cancelled")
@@ -308,12 +295,7 @@ func (ps *PlaybackState) Stop() {
 	ps.done = make(chan bool)
 }
 
-func (ps *PlaybackState) Quit() {
-	ps.Stop()
-}
-
 func (ps *PlaybackState) Clear() {
-	ps.tearingDown = true
 	if ps.ffmpegOut != nil {
 		log.Trace("closing ffmpeg output")
 		ps.ffmpegOut.Close()
@@ -329,7 +311,6 @@ func (ps *PlaybackState) Clear() {
 		log.Trace("closing encoder")
 		ps.encoder = nil
 	}
-	ps.tearingDown = false
 }
 
 // on reset, we just clear the playback state
@@ -345,12 +326,13 @@ func (ps *PlaybackState) cleanup(videoID string) {
 	ps.log.Trace("cleaning up")
 
 	ps.Clear()
+	ps.resetChannel <- true
 
 	// we send a stopped event to indicate that the stream has ended
 	// this could either be because the stream ended, or because it was stopped by the user i.e. skip or stop
-	// ps.notifications <- PlaybackNotification{
-	// 	PlaybackState: ps,
-	// 	Event:         PlaybackStopped,
-	// 	VideoID:       &videoID,
-	// }
+	ps.notifications <- PlaybackNotification{
+		PlaybackState: ps,
+		Event:         PlaybackStopped,
+		VideoID:       &videoID,
+	}
 }

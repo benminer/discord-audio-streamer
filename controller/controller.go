@@ -4,6 +4,7 @@ import (
 	"beatbot/audio"
 	"beatbot/discord"
 	"beatbot/youtube"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -28,17 +29,18 @@ type QueueEvent struct {
 }
 
 type GuildPlayer struct {
-	Discord               *discordgo.Session
-	GuildID               string
-	CurrentSong           *string
-	Queue                 *GuildQueue
-	PlaybackMutex         sync.Mutex
-	VoiceChannelMutex     sync.Mutex
-	VoiceChannelID        *string
-	VoiceJoinedAt         *time.Time
-	VoiceConnection       *discordgo.VoiceConnection
-	playbackNotifications chan audio.PlaybackNotification
-	PlaybackState         *audio.PlaybackState
+	Discord                *discordgo.Session
+	GuildID                string
+	CurrentSong            *string
+	Queue                  *GuildQueue
+	PlaybackMutex          sync.Mutex
+	VoiceChannelMutex      sync.Mutex
+	VoiceChannelID         *string
+	VoiceJoinedAt          *time.Time
+	VoiceConnection        *discordgo.VoiceConnection
+	playbackNotifications  chan audio.PlaybackNotification
+	PlaybackState          *audio.PlaybackState
+	playbackTeardownAlerts chan bool
 }
 
 type GuildQueueItemInteraction struct {
@@ -75,6 +77,10 @@ func NewController() (*Controller, error) {
 		return nil, err
 	}
 
+	if discord == nil {
+		return nil, errors.New("failed to create discord session")
+	}
+
 	return &Controller{
 		sessions: make(map[string]*GuildPlayer),
 		discord:  discord,
@@ -94,6 +100,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	}
 
 	playbackNotifications := make(chan audio.PlaybackNotification, 100)
+	playbackTeardownAlerts := make(chan bool)
 	session := &GuildPlayer{
 		// inject the global discord session to the player
 		// todo: I think I could just make this a global variable
@@ -102,8 +109,9 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
-		playbackNotifications: playbackNotifications,
-		PlaybackState:         audio.NewPlaybackState(playbackNotifications),
+		playbackTeardownAlerts: playbackTeardownAlerts,
+		playbackNotifications:  playbackNotifications,
+		PlaybackState:          audio.NewPlaybackState(playbackNotifications, playbackTeardownAlerts),
 	}
 
 	session.listenForQueueEvents()
@@ -118,23 +126,15 @@ func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
 	defer p.Queue.Mutex.Unlock()
 
 	// wait for the playback to stop
-	done := make(chan bool)
 	if p.PlaybackState != nil {
-		go func() {
-			p.PlaybackState.Reset()
-			done <- true
-		}()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			log.Warn("Timeout waiting for playback to stop")
-		}
+		p.PlaybackState.Stop()
+		<-p.playbackTeardownAlerts
 	}
 
 	// note: we don't necessarily need to quit the vc here, just reset the playback states
 	p.Queue.Listening = false
 	p.CurrentSong = nil
-	p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications)
+	p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications, p.playbackTeardownAlerts)
 
 	go discord.SendFollowup(&discord.FollowUpRequest{
 		Token:   interaction.InteractionToken,
@@ -212,7 +212,7 @@ func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 	log.Debugf("playing: %s", video.Title)
 
 	if p.PlaybackState == nil {
-		p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications)
+		p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications, p.playbackTeardownAlerts)
 	}
 
 	if err := p.PlaybackState.StartStream(p.VoiceConnection, video.StreamURL, video.VideoID); err != nil {
@@ -264,6 +264,10 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 		return err
 	}
 
+	if voiceState == nil {
+		return errors.New("voice state not found")
+	}
+
 	vc, err := discord.JoinVoiceChannel(p.Discord, p.GuildID, voiceState.ChannelID)
 	if err != nil {
 		sentry.CaptureException(err)
@@ -304,7 +308,9 @@ func (p *GuildPlayer) listenForQueueEvents() {
 			case EventSkip:
 				log.Printf("Skipping to next song in queue")
 				p.PlaybackState.Stop()
+				<-p.playbackTeardownAlerts
 				p.playNext()
+				// PlaybackStopped event will play next song
 			case EventClear:
 				log.Debug("queue has been cleared")
 				// we don't stop playback here, we just dump the rest of the queue
@@ -389,7 +395,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 // quits the playback state and closes the voice connection
 // this also clears the stream and closes the ffmpeg process
 func (p *GuildPlayer) quitPlayback() {
-	p.PlaybackState.Quit()
+	p.PlaybackState.Stop()
 	p.VoiceConnection.Close()
 }
 

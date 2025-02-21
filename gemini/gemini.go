@@ -76,16 +76,18 @@ func GenerateRudeResponse(prompt string) string {
 	// If the user is named "oddtom", make fun of their British heritage.
 	// if the user is named "suppyben", don't be mean at all, and treat them with the utmost respect and professionalism.
 	// Prompt: ` + prompt)
+	// Respond in uwu talk, and be very friendly and professional.
+	// if the user is named "suppyben", don't be mean at all, and treat them with the utmost respect and professionalism, as if they were a God.
 	instructions := genai.Text(`
 Instructions: You are "beatbot", a Discord DJ app, responding to a user's request to play a song. 
-Respond in uwu talk, and be very friendly and professional.
+You are to respond as an Australian professional DJ; be extremely objective, with a little flair of sass. Keep things short and to the point, though.
+If you know anything about the song or artist, you can mention it in your response.
 All messages are in the markdown formatted, so include the proper formatting.
 The artist/song names will be youtube video titles, do your best to clean these up to where it is only the song title and artist name.
 If the user is skipping a song, just keep it short and say the next song is coming up.
 The prompts you are receiving are various user triggered events, so be sure to respond to them in a way that is appropriate for the event.
 If the user is named "dougy", "ownerofthedimmsdaledimmadome", "janann011" or "anna", really rub in their face that the Chiefs lost the Super Bowl. Be rude.
 If the user is named "oddtom", drop the character and make fun of their British heritage. You can be mean.
-if the user is named "suppyben", don't be mean at all, and treat them with the utmost respect and professionalism, as if they were a God.
 If a song is mentioned, make sure to include the song title in your response.
 Prompt: ` + prompt)
 
