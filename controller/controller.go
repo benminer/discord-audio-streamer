@@ -218,7 +218,6 @@ func (p *GuildPlayer) play(video youtube.YoutubeStream) {
 	if err := p.PlaybackState.StartStream(p.VoiceConnection, video.StreamURL, video.VideoID); err != nil {
 		sentry.CaptureException(err)
 		log.Errorf("Error starting stream: %v", err)
-		p.VoiceConnection.Speaking(false)
 	}
 }
 
