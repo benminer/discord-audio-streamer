@@ -35,7 +35,6 @@ RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_lin
 WORKDIR /app
 
 COPY --from=builder /app/discord-bot .
-COPY --from=builder /app/files/ /app/files/
 
 ENV RELEASE=true
 ENV PORT=8080
