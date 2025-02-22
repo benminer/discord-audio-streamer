@@ -33,7 +33,6 @@ type GuildPlayer struct {
 	GuildID                string
 	CurrentSong            *string
 	Queue                  *GuildQueue
-	PlaybackMutex          sync.Mutex
 	VoiceChannelMutex      sync.Mutex
 	VoiceChannelID         *string
 	VoiceJoinedAt          *time.Time
@@ -206,9 +205,6 @@ func (p *GuildPlayer) playNext() {
 }
 
 func (p *GuildPlayer) play(video youtube.YoutubeStream) {
-	p.PlaybackMutex.Lock()
-	defer p.PlaybackMutex.Unlock()
-
 	log.Debugf("playing: %s", video.Title)
 
 	if p.PlaybackState == nil {

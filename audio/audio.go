@@ -26,6 +26,7 @@ type PlaybackState struct {
 	paused        bool
 	buffer        []int16
 	opusBuffer    []byte
+	opusMutex     sync.Mutex
 	mutex         sync.Mutex
 	notifications chan PlaybackNotification
 	resetChannel  chan bool
@@ -55,6 +56,8 @@ func NewPlaybackState(notifications chan PlaybackNotification, resetChannel chan
 		done:          make(chan bool),
 		buffer:        make([]int16, 960*2), // 20ms at 48kHz, stereo
 		opusBuffer:    make([]byte, 960*4),
+		opusMutex:     sync.Mutex{},
+		mutex:         sync.Mutex{},
 		notifications: notifications,
 		resetChannel:  resetChannel,
 		loading:       false,
@@ -75,9 +78,6 @@ func (ps *PlaybackState) IsPlaying() bool {
 }
 
 func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL string, videoID string) error {
-	ps.mutex.Lock()
-	defer ps.mutex.Unlock()
-
 	ps.log.Debug("starting ffmpeg")
 
 	ps.ffmpeg = exec.Command("ffmpeg",
@@ -150,8 +150,8 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 			Event:         PlaybackStopped,
 			VideoID:       &videoID,
 		}
-		ps.log.Debug("Stream initialization cancelled")
-		return fmt.Errorf("stream initialization cancelled")
+		ps.log.Debug("Stream initialization canceled")
+		return fmt.Errorf("stream initialization canceled")
 	case <-time.After(15 * time.Second):
 		ps.loading = false
 		if err := ps.ffmpeg.Process.Kill(); err != nil {
@@ -170,6 +170,8 @@ func (ps *PlaybackState) StartStream(vc *discordgo.VoiceConnection, streamURL st
 }
 
 func (ps *PlaybackState) streamLoop(vc *discordgo.VoiceConnection, videoID string) {
+	ps.opusMutex.Lock()
+	defer ps.opusMutex.Unlock()
 	defer ps.cleanup(videoID)
 
 	firstPacket := true
@@ -320,8 +322,8 @@ func (ps *PlaybackState) Reset() {
 }
 
 func (ps *PlaybackState) cleanup(videoID string) {
-	ps.mutex.Lock()
-	defer ps.mutex.Unlock()
+	// ps.mutex.Lock()
+	// defer ps.mutex.Unlock()
 
 	ps.log.Trace("cleaning up")
 

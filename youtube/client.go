@@ -152,7 +152,6 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	streamUrl := strings.TrimSpace(string(output))
-	logger.Tracef("streamUrl: %s", streamUrl)
 	parsedURL, err := url.Parse(streamUrl)
 	if err != nil {
 		logger.Errorf("error parsing URL: %v", err)
@@ -160,7 +159,6 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	expiration, err := strconv.ParseInt(parsedURL.Query().Get("expire"), 10, 64)
-	logger.Tracef("expiration: %d", expiration)
 	if err != nil {
 		logger.Errorf("error parsing expiration: %v", err)
 		return nil, fmt.Errorf("error parsing expiration: %v", err)
