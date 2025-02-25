@@ -64,6 +64,32 @@
     ]
   },
   {
+    "name": "topsongs",
+    "type": 1,
+    "description": "Queues the top 5 songs for an artist",
+    "options": [
+      {
+        "name": "artist",
+        "type": 3,
+        "description": "The artist to get the top songs for",
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "volume",
+    "type": 1,
+    "description": "Sets the volume of the player",
+    "options": [
+      {
+        "name": "volume",
+        "type": 3,
+        "description": "The volume to set the player to, range is 0-150",
+        "required": true
+      }
+    ]
+  },
+  {
     "name": "pause",
     "type": 1,
     "description": "Pauses the current song"

@@ -2,7 +2,9 @@ package controller
 
 import (
 	"beatbot/audio"
+	"beatbot/config"
 	"beatbot/discord"
+	"beatbot/spotify"
 	"beatbot/youtube"
 	"errors"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	sentry "github.com/getsentry/sentry-go"
+	spotifyclient "github.com/zmb3/spotify/v2"
 
 	"github.com/bwmarrin/discordgo"
 	log "github.com/sirupsen/logrus"
@@ -29,17 +32,16 @@ type QueueEvent struct {
 }
 
 type GuildPlayer struct {
-	Discord                *discordgo.Session
-	GuildID                string
-	CurrentSong            *string
-	Queue                  *GuildQueue
-	VoiceChannelMutex      sync.Mutex
-	VoiceChannelID         *string
-	VoiceJoinedAt          *time.Time
-	VoiceConnection        *discordgo.VoiceConnection
-	playbackNotifications  chan audio.PlaybackNotification
-	PlaybackState          *audio.PlaybackState
-	playbackTeardownAlerts chan bool
+	Discord           *discordgo.Session
+	GuildID           string
+	CurrentSong       *string
+	Queue             *GuildQueue
+	VoiceChannelMutex sync.Mutex
+	VoiceChannelID    *string
+	VoiceJoinedAt     *time.Time
+	VoiceConnection   *discordgo.VoiceConnection
+	Loader            *audio.Loader
+	Player            *audio.Player
 }
 
 type GuildQueueItemInteraction struct {
@@ -51,6 +53,7 @@ type GuildQueueItemInteraction struct {
 type GuildQueueItem struct {
 	Video       youtube.VideoResponse
 	Stream      *youtube.YoutubeStream
+	LoadResult  *audio.LoadResult
 	AddedAt     time.Time
 	Interaction *GuildQueueItemInteraction
 }
@@ -66,6 +69,7 @@ type Controller struct {
 	// This is a map of guildID to the player for that guild
 	sessions map[string]*GuildPlayer
 	discord  *discordgo.Session
+	spotify  *spotifyclient.Client
 	mutex    sync.Mutex
 }
 
@@ -80,9 +84,22 @@ func NewController() (*Controller, error) {
 		return nil, errors.New("failed to create discord session")
 	}
 
+	if config.Config.Spotify.Enabled {
+		err = spotify.NewSpotifyClient()
+		if err != nil {
+			log.Fatalf("Error creating Spotify client: %v", err)
+			return nil, err
+		}
+
+		if spotify.Spotify == nil {
+			return nil, errors.New("failed to create Spotify client")
+		}
+	}
+
 	return &Controller{
 		sessions: make(map[string]*GuildPlayer),
 		discord:  discord,
+		spotify:  spotify.Spotify,
 	}, nil
 }
 
@@ -98,8 +115,14 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		return session
 	}
 
-	playbackNotifications := make(chan audio.PlaybackNotification, 100)
-	playbackTeardownAlerts := make(chan bool)
+	player, err := audio.NewPlayer()
+
+	if err != nil {
+		log.Errorf("Error creating player: %s", err)
+		sentry.CaptureException(err)
+		return nil
+	}
+
 	session := &GuildPlayer{
 		// inject the global discord session to the player
 		// todo: I think I could just make this a global variable
@@ -108,16 +131,26 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
-		playbackTeardownAlerts: playbackTeardownAlerts,
-		playbackNotifications:  playbackNotifications,
-		PlaybackState:          audio.NewPlaybackState(playbackNotifications, playbackTeardownAlerts),
+		Loader: audio.NewLoader(),
+		Player: player,
 	}
 
 	session.listenForQueueEvents()
 	session.listenForPlaybackEvents()
+	session.listenForLoadEvents()
 
 	c.sessions[guildID] = session
 	return session
+}
+
+func (item *GuildQueueItem) WaitForStreamURL() bool {
+	for i := 0; i < 300; i++ {
+		if item.Stream != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return item.Stream != nil
 }
 
 func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
@@ -125,15 +158,13 @@ func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
 	defer p.Queue.Mutex.Unlock()
 
 	// wait for the playback to stop
-	if p.PlaybackState != nil {
-		p.PlaybackState.Stop()
-		<-p.playbackTeardownAlerts
+	if p.Player != nil {
+		p.Player.Stop()
 	}
 
 	// note: we don't necessarily need to quit the vc here, just reset the playback states
 	p.Queue.Listening = false
 	p.CurrentSong = nil
-	p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications, p.playbackTeardownAlerts)
 
 	go discord.SendFollowup(&discord.FollowUpRequest{
 		Token:   interaction.InteractionToken,
@@ -173,6 +204,24 @@ func (p *GuildPlayer) popQueue() {
 	}
 }
 
+func (p *GuildPlayer) loadNext() {
+	next := p.GetNext()
+	if next != nil {
+		log.Tracef("loading next song: %s", next.Video.Title)
+
+		if !next.WaitForStreamURL() {
+			log.Tracef("stream URL not found for %s", next.Video.Title)
+			return
+		}
+
+		go p.Loader.Load(audio.LoadJob{
+			URL:     next.Stream.StreamURL,
+			VideoID: next.Video.VideoID,
+			Title:   next.Video.Title,
+		})
+	}
+}
+
 func (p *GuildPlayer) playNext() {
 	next := p.GetNext()
 	if next != nil {
@@ -181,11 +230,12 @@ func (p *GuildPlayer) playNext() {
 		if next.Stream == nil {
 			log.Tracef("waiting for stream to be ready for %s", next.Video.Title)
 
-			go discord.SendFollowup(&discord.FollowUpRequest{
-				Token:   next.Interaction.InteractionToken,
-				AppID:   next.Interaction.AppID,
-				UserID:  next.Interaction.UserID,
-				Content: "loading " + next.Video.Title + "...",
+			go discord.UpdateMessage(&discord.FollowUpRequest{
+				Token:           next.Interaction.InteractionToken,
+				AppID:           next.Interaction.AppID,
+				UserID:          next.Interaction.UserID,
+				Content:         "loading " + next.Video.Title + "...",
+				GenerateContent: false,
 			})
 
 			for i := 0; i < 300; i++ {
@@ -197,21 +247,29 @@ func (p *GuildPlayer) playNext() {
 		}
 
 		log.Tracef("playing from playNext: %s", next.Video.Title)
-		p.play(*next.Stream)
+		if next.LoadResult == nil {
+			// load the stream
+			// playback will start when the loader has finished
+			go p.Loader.Load(audio.LoadJob{
+				URL:     next.Stream.StreamURL,
+				VideoID: next.Video.VideoID,
+				Title:   next.Video.Title,
+			})
+		} else {
+			// if song has already been loaded, play it
+			log.Tracef("next song is already loaded, playing")
+			go p.play(next.LoadResult)
+		}
 	} else {
 		log.Tracef("no more songs in queue, stopping player")
 		p.CurrentSong = nil
 	}
 }
 
-func (p *GuildPlayer) play(video youtube.YoutubeStream) {
-	log.Debugf("playing: %s", video.Title)
+func (p *GuildPlayer) play(data *audio.LoadResult) {
+	log.Debugf("playing: %s", data.Title)
 
-	if p.PlaybackState == nil {
-		p.PlaybackState = audio.NewPlaybackState(p.playbackNotifications, p.playbackTeardownAlerts)
-	}
-
-	if err := p.PlaybackState.StartStream(p.VoiceConnection, video.StreamURL, video.VideoID); err != nil {
+	if err := p.Player.Play(data, p.VoiceConnection); err != nil {
 		sentry.CaptureException(err)
 		log.Errorf("Error starting stream: %v", err)
 	}
@@ -223,7 +281,7 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	if err != nil {
 		log.Errorf("Error getting video stream: %s", err)
 		sentry.CaptureException(err)
-		go discord.SendFollowup(&discord.FollowUpRequest{
+		go discord.UpdateMessage(&discord.FollowUpRequest{
 			Token:   event.Item.Interaction.InteractionToken,
 			AppID:   event.Item.Interaction.AppID,
 			UserID:  event.Item.Interaction.UserID,
@@ -238,14 +296,26 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	shouldPlay := p.VoiceConnection != nil &&
 		p.VoiceChannelID != nil &&
 		p.CurrentSong == nil &&
-		!p.PlaybackState.IsPlaying() &&
-		!p.PlaybackState.IsLoading()
+		!p.Player.IsPlaying()
 
 	// if the player is stopped, or not loading anything, play the next song in the queue
 	if shouldPlay {
 		next := p.GetNext()
-		log.Tracef("no song playing, playing from handleAdd: %s", next.Video.Title)
-		go p.play(*next.Stream)
+		log.Tracef("no song playing, starting load job for: %s", next.Video.Title)
+		go p.Loader.Load(audio.LoadJob{
+			URL:     next.Stream.StreamURL,
+			VideoID: next.Video.VideoID,
+			Title:   next.Video.Title,
+		})
+		return
+	}
+
+	index := p.getIndexForItem(event.Item)
+	log.Tracef("song is %d in the queue", index)
+	if index == 0 {
+		log.Tracef("song is next up, loading from stream url")
+		p.loadNext()
+		return
 	}
 }
 
@@ -282,15 +352,40 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	return nil
 }
 
-func (p *GuildPlayer) findQueueItemByVideoID(videoID string) *GuildQueueItem {
+func (p *GuildPlayer) findQueueItemByVideoID(videoID string) (*GuildQueueItem, int) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
-	for _, item := range p.Queue.Items {
+	for i, item := range p.Queue.Items {
 		if item.Video.VideoID == videoID {
-			return item
+			return item, i
 		}
 	}
-	return nil
+	return nil, -1
+}
+
+func (p *GuildPlayer) removeItemByVideoID(videoID string) int {
+	p.Queue.Mutex.Lock()
+	defer p.Queue.Mutex.Unlock()
+	for i, item := range p.Queue.Items {
+		if item.Video.VideoID == videoID {
+			p.Queue.Items = append(p.Queue.Items[:i], p.Queue.Items[i+1:]...)
+			log.Tracef("removed item by videoID: %s", videoID)
+			return i
+		}
+	}
+	log.Tracef("no item found by videoID: %s", videoID)
+	return -1
+}
+
+func (p *GuildPlayer) getIndexForItem(queueItem *GuildQueueItem) int {
+	p.Queue.Mutex.Lock()
+	defer p.Queue.Mutex.Unlock()
+	for i, item := range p.Queue.Items {
+		if item == queueItem {
+			return i
+		}
+	}
+	return -1
 }
 
 func (p *GuildPlayer) listenForQueueEvents() {
@@ -303,8 +398,7 @@ func (p *GuildPlayer) listenForQueueEvents() {
 				p.handleAdd(event)
 			case EventSkip:
 				log.Printf("Skipping to next song in queue")
-				p.PlaybackState.Stop()
-				<-p.playbackTeardownAlerts
+				p.Player.Stop()
 				p.playNext()
 				// PlaybackStopped event will play next song
 			case EventClear:
@@ -315,15 +409,84 @@ func (p *GuildPlayer) listenForQueueEvents() {
 	}()
 }
 
-func (p *GuildPlayer) listenForPlaybackEvents() {
+func (p *GuildPlayer) listenForLoadEvents() {
+	log.Tracef("listening for load events")
 	go func() {
-		for event := range p.playbackNotifications {
+		for event := range p.Loader.Notifications {
+			log.Tracef("Load event: %s", event.Event)
+			videoID := event.VideoID
+			var queueItem *GuildQueueItem
+			var queueIndex int
+			if videoID != nil {
+				queueItem, queueIndex = p.findQueueItemByVideoID(*videoID)
+			}
+
+			switch event.Event {
+			case audio.PlaybackLoaded:
+				if queueItem != nil && event.LoadResult != nil {
+					if queueIndex == 0 && p.CurrentSong == nil {
+						log.Tracef("loaded song is next up, playing")
+						go p.play(event.LoadResult)
+					} else {
+						log.Tracef("loaded song read for index %d, setting load result", queueIndex)
+						queueItem.LoadResult = event.LoadResult
+					}
+				}
+			case audio.PlaybackLoadCanceled:
+				log.Tracef("load for %s canceled", *event.VideoID)
+			case audio.PlaybackLoadError:
+				err := event.Error
+				var ffmpegTimeoutErr = false
+				var errStr string
+				if err != nil {
+					errStr = (*err).Error()
+					if strings.Contains(errStr, "ffmpeg timed out") {
+						ffmpegTimeoutErr = true
+					}
+				}
+
+				if ffmpegTimeoutErr {
+					p.removeItemByVideoID(*event.VideoID)
+				}
+
+				log.Tracef("[loaderror] queueItem: %+v", queueItem.Video.Title)
+
+				if queueItem != nil {
+					var msg string
+					if ffmpegTimeoutErr {
+						msg = "timed out loading **" + queueItem.Video.Title + "**\nIt may be too long, try something shorter :)"
+					} else if errStr != "" {
+						msg = "Something went wrong while loading " + queueItem.Video.Title + "\nError: " + errStr
+					} else {
+						msg = "Something went wrong while loading " + queueItem.Video.Title
+					}
+
+					go discord.SendFollowup(&discord.FollowUpRequest{
+						Token:           queueItem.Interaction.InteractionToken,
+						AppID:           queueItem.Interaction.AppID,
+						UserID:          queueItem.Interaction.UserID,
+						Content:         msg,
+						GenerateContent: false,
+					})
+				}
+
+				go p.playNext()
+			default:
+				log.Warnf("Unknown load event: %s", event.Event)
+			}
+		}
+	}()
+}
+
+func (p *GuildPlayer) listenForPlaybackEvents() {
+	log.Tracef("listening for playback events")
+	go func() {
+		for event := range p.Player.Notifications {
 			log.Tracef("Playback event: %s", event.Event)
 			videoID := event.VideoID
 			var queueItem *GuildQueueItem
-
 			if videoID != nil {
-				queueItem = p.findQueueItemByVideoID(*videoID)
+				queueItem, _ = p.findQueueItemByVideoID(*videoID)
 			}
 
 			switch event.Event {
@@ -340,10 +503,14 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				p.playNext()
 			case audio.PlaybackStarted:
 				if queueItem != nil {
+					log.Tracef("playback started for %s", queueItem.Video.Title)
 					p.CurrentSong = &queueItem.Video.Title
 				}
 				p.VoiceConnection.Speaking(true)
+				// once a song starts playback, we can pop it from the queue
 				p.popQueue()
+				// if there are more songs in the queue, load the next one
+				p.loadNext()
 			case audio.PlaybackError:
 				p.CurrentSong = nil
 				p.VoiceConnection.Speaking(false)
@@ -351,28 +518,24 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				err := event.Error
 
 				// parse the error, if any
-				var ffmpegTimeoutErr = false
 				var errStr string
 				if err != nil {
 					log.Errorf("Error playing stream: %v", err)
 					errStr = (*err).Error()
-					if strings.Contains(errStr, "ffmpeg timed out") {
-						ffmpegTimeoutErr = true
-					}
 				}
+
+				log.Tracef("[loaderror] queueItem: %+v", queueItem.Video.Title)
 
 				// if we found a queue item, send a followup to the user notifying them of the error
 				if queueItem != nil {
 					var msg string
-					if ffmpegTimeoutErr {
-						msg = "timed out loading **" + queueItem.Video.Title + "**\nIt may be too long, try something shorter :)"
-					} else if errStr != "" {
+					if errStr != "" {
 						msg = "Something went wrong while playing " + queueItem.Video.Title + "\nError: " + errStr
 					} else {
 						msg = "Something went wrong while playing " + queueItem.Video.Title
 					}
 
-					go discord.SendFollowup(&discord.FollowUpRequest{
+					go discord.UpdateMessage(&discord.FollowUpRequest{
 						Token:   queueItem.Interaction.InteractionToken,
 						AppID:   queueItem.Interaction.AppID,
 						UserID:  queueItem.Interaction.UserID,
@@ -391,7 +554,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 // quits the playback state and closes the voice connection
 // this also clears the stream and closes the ffmpeg process
 func (p *GuildPlayer) quitPlayback() {
-	p.PlaybackState.Stop()
+	p.Player.Stop()
 	p.VoiceConnection.Close()
 }
 

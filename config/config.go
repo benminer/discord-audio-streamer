@@ -10,6 +10,7 @@ type ConfigStruct struct {
 	Options Options
 	Youtube YoutubeConfig
 	Gemini  GeminiConfig
+	Spotify SpotifyConfig
 }
 
 type DiscordConfig struct {
@@ -30,6 +31,12 @@ type YoutubeConfig struct {
 type GeminiConfig struct {
 	Enabled bool
 	APIKey  string
+}
+
+type SpotifyConfig struct {
+	ClientID     string
+	ClientSecret string
+	Enabled      bool
 }
 
 type Options struct {
@@ -68,6 +75,11 @@ func NewConfig() {
 		Gemini: GeminiConfig{
 			Enabled: os.Getenv("GEMINI_ENABLED") == "true",
 			APIKey:  os.Getenv("GEMINI_API_KEY"),
+		},
+		Spotify: SpotifyConfig{
+			ClientID:     os.Getenv("SPOTIFY_CLIENT_ID"),
+			ClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
+			Enabled:      os.Getenv("SPOTIFY_ENABLED") == "true",
 		},
 	}
 

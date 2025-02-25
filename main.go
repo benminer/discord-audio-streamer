@@ -131,7 +131,7 @@ func run(ctx context.Context) error {
 				return
 			}
 			prompt := string(bodyBytes)
-			response := gemini.GenerateRudeResponse(prompt)
+			response := gemini.GenerateResponse(prompt)
 			c.JSON(http.StatusOK, gin.H{
 				"response": response,
 			})
@@ -196,7 +196,6 @@ func run(ctx context.Context) error {
 			return
 		}
 
-		log.Tracef("parsed interaction: %v", interaction)
 		if err != nil {
 			log.Errorf("Error parsing interaction: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse interaction"})
