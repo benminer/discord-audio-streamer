@@ -210,7 +210,7 @@ func (p *GuildPlayer) loadNext() {
 		log.Tracef("loading next song: %s", next.Video.Title)
 
 		if !next.WaitForStreamURL() {
-			log.Tracef("stream URL not found for %s", next.Video.Title)
+			log.Warnf("stream URL not found for %s", next.Video.Title)
 			return
 		}
 
@@ -228,7 +228,7 @@ func (p *GuildPlayer) playNext() {
 		log.Tracef("next up: %s", next.Video.Title)
 		// Wait up to 30 seconds for stream to be ready
 		if next.Stream == nil {
-			log.Tracef("waiting for stream to be ready for %s", next.Video.Title)
+			log.Debugf("waiting for stream to be ready for %s", next.Video.Title)
 
 			go discord.UpdateMessage(&discord.FollowUpRequest{
 				Token:           next.Interaction.InteractionToken,
@@ -246,7 +246,6 @@ func (p *GuildPlayer) playNext() {
 			}
 		}
 
-		log.Tracef("playing from playNext: %s", next.Video.Title)
 		if next.LoadResult == nil {
 			// load the stream
 			// playback will start when the loader has finished

@@ -110,7 +110,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if config.Config.Options.EnforceVoiceChannelEnabled() && voiceState == nil {
+	if voiceState == nil {
 		manager.SendFollowup(interaction, "The user is not in a voice channel and trying to play a song", "Hey dummy, join a voice channel first", true)
 		return
 	}
@@ -302,6 +302,8 @@ func (manager *Manager) onSkip(interaction *Interaction) {
 	response := "@" + userName + " skipped **" + *current + "**"
 	if next != nil {
 		response += "\n\nNow playing **" + next.Video.Title + "**"
+	} else {
+		response += "\n\nNo more songs in queue"
 	}
 
 	manager.SendFollowup(interaction, response, response, false)
