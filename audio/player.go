@@ -84,7 +84,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 			for attempts < 3 {
 				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
-					p.logger.Debug("Reached end of audio stream")
+					p.logger.Trace("Reached end of audio stream")
 					p.Notifications <- PlaybackNotification{
 						Event:   PlaybackCompleted,
 						VideoID: &data.VideoID,
@@ -109,20 +109,17 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 			}
 
 			if firstPacket {
-				log.Tracef("playback started for %s", data.VideoID)
 				p.Notifications <- PlaybackNotification{
 					Event:   PlaybackStarted,
 					VideoID: &data.VideoID,
 				}
-				log.Tracef("sent playback started event for %s", data.VideoID)
 				firstPacket = false
 			}
 
-			if p.volume != 100 { // Only adjust if not at default volume
+			if p.volume != 100 {
 				for i := range buffer {
-					// Convert to float64 for calculation
 					sample := float64(buffer[i]) * float64(p.volume) / 100.0
-					// Clamp values to prevent overflow
+					// clamp
 					if sample > 32767 {
 						sample = 32767
 					} else if sample < -32768 {
