@@ -118,7 +118,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	shouldJoin := player.VoiceChannelID == nil ||
 		player.VoiceConnection == nil ||
 		(player.VoiceChannelID != nil &&
-			player.IsEmpty() && !player.PlaybackState.IsPlaying() &&
+			player.IsEmpty() && !player.Player.IsPlaying() &&
 			*player.VoiceChannelID != voiceState.ChannelID)
 
 	// join vc if not in one
@@ -164,12 +164,12 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	}
 
 	var followUpMessage string
-	firstSongQueued := player.IsEmpty() && !player.PlaybackState.IsPlaying() && player.CurrentSong == nil
+	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
 
 	if firstSongQueued {
 		followUpMessage = "**" + video.Title + "** playing soon (also include politely that playback could take a few seconds to start, since it's the first song and needs to load)"
 	} else {
-		followUpMessage = "**" + video.Title + "** has been added to the queue"
+		followUpMessage = "**" + video.Title + "** received, loading the song!"
 	}
 
 	manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
@@ -212,7 +212,7 @@ func (manager *Manager) SendFollowup(interaction *Interaction, content string, b
 
 	// pass in an empty string to skip the AI generation
 	if content != "" {
-		genText := gemini.GenerateRudeResponse("User: " + userName + "\nEvent: " + content)
+		genText := gemini.GenerateResponse("User: " + userName + "\nEvent: " + content)
 		if genText != "" {
 			toSend = genText
 		}
@@ -261,7 +261,7 @@ func (manager *Manager) handleQueue(interaction *Interaction) Response {
 func (manager *Manager) onView(interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if player.IsEmpty() && !player.PlaybackState.IsPlaying() && player.CurrentSong == nil {
+	if player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil {
 		manager.SendFollowup(interaction, "The queue is empty and nothing is playing", "The queue is empty and nothing is playing", false)
 	}
 
@@ -287,7 +287,7 @@ func (manager *Manager) handleView(interaction *Interaction) Response {
 func (manager *Manager) onSkip(interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if !player.PlaybackState.IsPlaying() && player.CurrentSong == nil {
+	if !player.Player.IsPlaying() && player.CurrentSong == nil {
 		manager.SendFollowup(interaction, "user tried to skip but nothing is playing", "Nothing to skip", true)
 		return
 	}
@@ -343,7 +343,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "The queue is empty",
+				Content: "the queue is empty",
 			},
 		}
 	}
@@ -378,22 +378,44 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 	}
 }
 
+func (manager *Manager) handleVolume(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	volume, err := strconv.Atoi(interaction.Data.Options[0].Value)
+	if err != nil {
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "Invalid volume",
+			},
+		}
+	}
+
+	player.Player.SetVolume(volume)
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: "Volume set to " + interaction.Data.Options[0].Value,
+		},
+	}
+}
+
 // todo: need to assure the user is in the voice channel
 func (manager *Manager) handlePause(interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if !player.PlaybackState.IsPlaying() {
+	if !player.Player.IsPlaying() {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "The player is not playing",
-				Flags:   64,
+				Content: "nothing is playing",
 			},
 		}
 	}
 
-	go player.PlaybackState.Pause()
+	go player.Player.Pause()
 
 	return Response{
 		Type: 4,
@@ -407,17 +429,16 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	if !player.PlaybackState.IsPlaying() {
+	if !player.Player.IsPlaying() {
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "The player is not paused",
-				Flags:   64,
+				Content: "nothing is playing",
 			},
 		}
 	}
 
-	go player.PlaybackState.Resume()
+	go player.Player.Resume()
 
 	return Response{
 		Type: 4,
@@ -468,6 +489,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleSkip(interaction)
 	case "pause", "stop":
 		return manager.handlePause(interaction)
+	case "volume":
+		return manager.handleVolume(interaction)
 	case "resume":
 		return manager.handleResume(interaction)
 	case "reset":
