@@ -6,6 +6,25 @@ A lightweight Discord bot for streaming audio to voice channels in private serve
 
 A simple bot implementation for playing audio in Discord voice channels using [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
+## 🎮 Commands
+
+| Command     | Description                                   | Options                                                    |
+| ----------- | --------------------------------------------- | ---------------------------------------------------------- |
+| `/ping`     | Checks if the bot is responsive               | None                                                       |
+| `/help`     | Shows the help menu                           | None                                                       |
+| `/play`     | Plays a song from the queue                   | `query`: Search query or Youtube URL                       |
+| `/queue`    | Adds a song to the queue                      | `query`: Search query or Youtube URL                       |
+| `/view`     | View the current queue                        | None                                                       |
+| `/skip`     | Skips the current song                        | None                                                       |
+| `/reset`    | Resets the player state (use if bot is stuck) | None                                                       |
+| `/remove`   | Removes a song from the queue                 | `song_number`: The number of the song to remove (optional) |
+| `/topsongs` | Queues the top 5 songs for an artist          | `artist`: The artist name                                  |
+| `/volume`   | Sets the volume of the player                 | `volume`: Volume level (0-150)                             |
+| `/pause`    | Pauses the current song                       | None                                                       |
+| `/resume`   | Resumes the current song                      | None                                                       |
+| `/stop`     | Pauses the current song                       | None                                                       |
+| `/purge`    | Purges the queue                              | None                                                       |
+
 ## 🛠️ Prerequisites
 
 1. **Go** - Go programming language runtime

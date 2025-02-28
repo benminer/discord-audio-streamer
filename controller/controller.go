@@ -3,13 +3,17 @@ package controller
 import (
 	"beatbot/audio"
 	"beatbot/config"
+	"beatbot/database"
 	"beatbot/discord"
+	"beatbot/models"
 	"beatbot/spotify"
 	"beatbot/youtube"
 	"errors"
 	"strings"
 	"sync"
 	"time"
+
+	"database/sql"
 
 	sentry "github.com/getsentry/sentry-go"
 	spotifyclient "github.com/zmb3/spotify/v2"
@@ -42,6 +46,7 @@ type GuildPlayer struct {
 	VoiceConnection   *discordgo.VoiceConnection
 	Loader            *audio.Loader
 	Player            *audio.Player
+	GuildSettings     *models.GuildSettings
 }
 
 type GuildQueueItemInteraction struct {
@@ -66,11 +71,11 @@ type GuildQueue struct {
 }
 
 type Controller struct {
-	// This is a map of guildID to the player for that guild
 	sessions map[string]*GuildPlayer
 	discord  *discordgo.Session
 	spotify  *spotifyclient.Client
 	mutex    sync.Mutex
+	db       *sql.DB
 }
 
 func NewController() (*Controller, error) {
@@ -96,11 +101,40 @@ func NewController() (*Controller, error) {
 		}
 	}
 
+	db, err := database.LoadDatabase()
+	if err != nil {
+		log.Fatalf("Error creating database: %v", err)
+		return nil, err
+	}
+
 	return &Controller{
 		sessions: make(map[string]*GuildPlayer),
 		discord:  discord,
 		spotify:  spotify.Spotify,
+		db:       db,
 	}, nil
+}
+
+func (c *Controller) SetGuildVolume(guildID string, volume int) {
+	player := c.GetPlayer(guildID)
+	if player == nil {
+		log.Errorf("Player not found for guild: %s", guildID)
+		return
+	}
+
+	player.Player.SetVolume(volume)
+	go database.SetGuildVolume(c.db, guildID, volume)
+}
+
+func (c *Controller) SetGuildTone(guildID string, tone string) {
+	player := c.GetPlayer(guildID)
+	if player == nil {
+		log.Errorf("Player not found for guild: %s", guildID)
+		return
+	}
+
+	player.GuildSettings.Tone = tone
+	go database.SetGuildTone(c.db, guildID, tone)
 }
 
 func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
@@ -115,7 +149,19 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		return session
 	}
 
-	player, err := audio.NewPlayer()
+	settings, err := database.GetGuildSettings(c.db, guildID)
+	if err != nil {
+		log.Errorf("Error getting guild settings: %s", err)
+		sentry.CaptureException(err)
+	}
+
+	log.Debugf("guild settings: %+v", settings)
+
+	volume := settings.Volume
+	if volume == 0 {
+		volume = 100
+	}
+	player, err := audio.NewPlayer(volume)
 
 	if err != nil {
 		log.Errorf("Error creating player: %s", err)
@@ -131,8 +177,9 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
-		Loader: audio.NewLoader(),
-		Player: player,
+		Loader:        audio.NewLoader(),
+		Player:        player,
+		GuildSettings: &settings,
 	}
 
 	session.listenForQueueEvents()
@@ -281,11 +328,12 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 		log.Errorf("Error getting video stream: %s", err)
 		sentry.CaptureException(err)
 		go discord.UpdateMessage(&discord.FollowUpRequest{
-			Token:   event.Item.Interaction.InteractionToken,
-			AppID:   event.Item.Interaction.AppID,
-			UserID:  event.Item.Interaction.UserID,
-			Content: "Error getting video stream: " + err.Error(),
-			Flags:   64,
+			Token:           event.Item.Interaction.InteractionToken,
+			AppID:           event.Item.Interaction.AppID,
+			UserID:          event.Item.Interaction.UserID,
+			Content:         "Error getting video stream: " + err.Error(),
+			GenerateContent: false,
+			Flags:           64,
 		})
 		return
 	}
@@ -535,10 +583,11 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					}
 
 					go discord.UpdateMessage(&discord.FollowUpRequest{
-						Token:   queueItem.Interaction.InteractionToken,
-						AppID:   queueItem.Interaction.AppID,
-						UserID:  queueItem.Interaction.UserID,
-						Content: msg,
+						Token:           queueItem.Interaction.InteractionToken,
+						AppID:           queueItem.Interaction.AppID,
+						UserID:          queueItem.Interaction.UserID,
+						Content:         msg,
+						GenerateContent: false,
 					})
 				}
 

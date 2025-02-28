@@ -5,12 +5,13 @@ import (
 )
 
 type ConfigStruct struct {
-	Discord DiscordConfig
-	NGrok   NGrokConfig
-	Options Options
-	Youtube YoutubeConfig
-	Gemini  GeminiConfig
-	Spotify SpotifyConfig
+	Discord  DiscordConfig
+	NGrok    NGrokConfig
+	Options  Options
+	Youtube  YoutubeConfig
+	Gemini   GeminiConfig
+	Spotify  SpotifyConfig
+	Database DatabaseConfig
 }
 
 type DiscordConfig struct {
@@ -37,6 +38,11 @@ type SpotifyConfig struct {
 	ClientID     string
 	ClientSecret string
 	Enabled      bool
+}
+
+type DatabaseConfig struct {
+	Path    string
+	Enabled bool
 }
 
 type Options struct {
@@ -80,6 +86,10 @@ func NewConfig() {
 			ClientID:     os.Getenv("SPOTIFY_CLIENT_ID"),
 			ClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
 			Enabled:      os.Getenv("SPOTIFY_ENABLED") == "true",
+		},
+		Database: DatabaseConfig{
+			Path:    os.Getenv("DATABASE_PATH"),
+			Enabled: os.Getenv("DATABASE_ENABLED") == "true",
 		},
 	}
 

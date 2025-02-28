@@ -207,12 +207,18 @@ func (manager *Manager) SendError(interaction *Interaction, content string, ephe
 }
 
 func (manager *Manager) SendFollowup(interaction *Interaction, content string, backupContent string, ephemeral bool) {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+	guildPrompt := ""
+	if player != nil {
+		guildPrompt = player.GuildSettings.Tone
+	}
+
 	userName := interaction.Member.User.Username
 	toSend := backupContent
 
 	// pass in an empty string to skip the AI generation
 	if content != "" {
-		genText := gemini.GenerateResponse("User: " + userName + "\nEvent: " + content)
+		genText := gemini.GenerateResponse("User: "+userName+"\nEvent: "+content, guildPrompt)
 		if genText != "" {
 			toSend = genText
 		}
@@ -381,8 +387,6 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 }
 
 func (manager *Manager) handleVolume(interaction *Interaction) Response {
-	player := manager.Controller.GetPlayer(interaction.GuildID)
-
 	volume, err := strconv.Atoi(interaction.Data.Options[0].Value)
 	if err != nil {
 		return Response{
@@ -393,12 +397,23 @@ func (manager *Manager) handleVolume(interaction *Interaction) Response {
 		}
 	}
 
-	player.Player.SetVolume(volume)
+	manager.Controller.SetGuildVolume(interaction.GuildID, volume)
 
 	return Response{
 		Type: 4,
 		Data: ResponseData{
 			Content: "Volume set to " + interaction.Data.Options[0].Value,
+		},
+	}
+}
+
+func (manager *Manager) handleTone(interaction *Interaction) Response {
+	manager.Controller.SetGuildTone(interaction.GuildID, interaction.Data.Options[0].Value)
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: "Bot tone has been updated!",
 		},
 	}
 }
@@ -497,6 +512,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleResume(interaction)
 	case "reset":
 		return manager.handleReset(interaction)
+	case "tone":
+		return manager.handleTone(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:

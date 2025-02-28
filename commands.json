@@ -36,6 +36,19 @@
     ]
   },
   {
+    "name": "tone",
+    "type": 1,
+    "description": "Sets the tone of the bot",
+    "options": [
+      {
+        "name": "tone",
+        "type": 3,
+        "description": "Give the bot custom instructions on how to respond to events",
+        "required": true
+      }
+    ]
+  },
+  {
     "name": "view",
     "type": 1,
     "description": "View the current queue"
