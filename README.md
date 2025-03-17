@@ -128,6 +128,13 @@ A simple bot implementation for playing audio in Discord voice channels using [y
 
 This project was created for personal use in a private Discord server. While you're welcome to use and modify it, please note it's not maintained as a product or service.
 
+## 🙏 Acknowledgments
+
+This project makes use of several excellent open-source libraries that I couldn't have built this without.
+
+- [DiscordGo](https://github.com/bwmarrin/discordgo) - A powerful Go package for creating Discord bots
+- [Opus](https://gopkg.in/hraban/opus.v2) - Go bindings for the Opus audio codec
+
 ## 📝 License
 
 MIT License - See LICENSE file for details.
