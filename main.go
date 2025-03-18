@@ -131,7 +131,7 @@ func run(ctx context.Context) error {
 				return
 			}
 			prompt := string(bodyBytes)
-			response := gemini.GenerateResponse(prompt)
+			response := gemini.GenerateResponse(prompt, "")
 			c.JSON(http.StatusOK, gin.H{
 				"response": response,
 			})

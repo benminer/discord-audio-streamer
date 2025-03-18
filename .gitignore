@@ -3,3 +3,4 @@
 .env.dev
 run-docker.sh
 gcloud-deploy.sh
+beatbot.db

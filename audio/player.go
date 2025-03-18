@@ -25,7 +25,7 @@ type Player struct {
 	mutex         sync.Mutex
 }
 
-func NewPlayer() (*Player, error) {
+func NewPlayer(volume int) (*Player, error) {
 	encoder, err := opus.NewEncoder(48000, 2, opus.AppAudio)
 	if err != nil {
 		sentry.CaptureException(err)
@@ -46,7 +46,7 @@ func NewPlayer() (*Player, error) {
 		encoder: encoder,
 		paused:  false,
 		playing: &playing,
-		volume:  100,
+		volume:  volume,
 		mutex:   sync.Mutex{},
 	}, nil
 }

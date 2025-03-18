@@ -30,3 +30,8 @@ func (m *Member) GetActiveVoiceChannel() string {
 	}
 	return m.VoiceState.ChannelID
 }
+
+type GuildSettings struct {
+	Tone   string `json:"tone"`
+	Volume int    `json:"volume"`
+}
