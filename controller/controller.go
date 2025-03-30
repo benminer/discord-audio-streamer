@@ -144,7 +144,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 }
 
 func (item *GuildQueueItem) WaitForStreamURL() bool {
-	for i := 0; i < 300; i++ {
+	for range [300]int{} {
 		if item.Stream != nil {
 			break
 		}
@@ -238,7 +238,7 @@ func (p *GuildPlayer) playNext() {
 				GenerateContent: false,
 			})
 
-			for i := 0; i < 300; i++ {
+			for range [300]int{} {
 				if next.Stream != nil {
 					break
 				}
@@ -550,13 +550,6 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 	}()
 }
 
-// quits the playback state and closes the voice connection
-// this also clears the stream and closes the ffmpeg process
-func (p *GuildPlayer) quitPlayback() {
-	p.Player.Stop()
-	p.VoiceConnection.Close()
-}
-
 func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactionToken string, appID string) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
@@ -592,10 +585,17 @@ func (p *GuildPlayer) Remove(index int) string {
 		return ""
 	}
 
-	var removed *GuildQueueItem
-	removed = p.Queue.Items[index-1]
-	p.Queue.Items = append(p.Queue.Items[:index-1], p.Queue.Items[index:]...)
+	if index < 1 || index > len(p.Queue.Items) {
+		return ""
+	}
 
+	removed := p.Queue.Items[index-1]
+	copy(p.Queue.Items[index-1:], p.Queue.Items[index:])
+	p.Queue.Items = p.Queue.Items[:len(p.Queue.Items)-1]
+
+	if removed == nil {
+		return ""
+	}
 	return removed.Video.Title
 }
 
