@@ -47,6 +47,7 @@ type GuildPlayer struct {
 	Loader            *audio.Loader
 	Player            *audio.Player
 	GuildSettings     *models.GuildSettings
+	RadioHistory      *[]spotify.SpotifyTrack
 }
 
 type GuildQueueItemInteraction struct {
@@ -668,6 +669,22 @@ func (p *GuildPlayer) Clear() {
 		msg := "Queue notifications channel is full for guild " + p.GuildID
 		sentry.CaptureMessage(msg)
 		log.Warn(msg)
+	}
+}
+
+func (p *GuildPlayer) StartRadio(query string, userID string, interactionToken string, appID string) {
+	results, err := spotify.SearchAndRecommend(query)
+	if err != nil {
+		log.Errorf("Error searching and recommending: %s", err)
+		sentry.CaptureException(err)
+		return
+	}
+
+	for _, track := range results {
+		videos := youtube.Query(track.Name + " " + track.Artist)
+		if len(videos) > 0 {
+			p.Add(videos[0], userID, interactionToken, appID)
+		}
 	}
 }
 

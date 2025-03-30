@@ -19,6 +19,18 @@ type SpotifyRequest struct {
 	ArtistID   string
 }
 
+type SpotifyTrack struct {
+	URI       string
+	Name      string
+	Artist    string
+	ArtistURI string
+	Album     string
+}
+
+type SearchResult struct {
+	Tracks []SpotifyTrack
+}
+
 func NewSpotifyClient() error {
 	ctx := context.Background()
 	config := &clientcredentials.Config{
@@ -37,14 +49,72 @@ func NewSpotifyClient() error {
 	return nil
 }
 
-func Search(query string) (spotifyclient.SearchResult, error) {
+func Search(query string) (SearchResult, error) {
 	ctx := context.Background()
 	results, err := Spotify.Search(ctx, query, spotifyclient.SearchTypeTrack)
 	if err != nil {
-		return spotifyclient.SearchResult{}, err
+		return SearchResult{}, err
 	}
 
-	return *results, nil
+	tracks := []SpotifyTrack{}
+	for _, track := range results.Tracks.Tracks {
+		tracks = append(tracks, SpotifyTrack{
+			URI:       string(track.URI),
+			Name:      track.Name,
+			Artist:    track.Artists[0].Name,
+			ArtistURI: string(track.Artists[0].URI),
+			Album:     track.Album.Name,
+		})
+	}
+
+	return SearchResult{Tracks: tracks}, nil
+}
+
+func GetRecommendedTracks(seedTracks []string) ([]SpotifyTrack, error) {
+	trackIds := []spotifyclient.ID{}
+	for _, track := range seedTracks {
+		trackIds = append(trackIds, spotifyclient.ID(track))
+	}
+	ctx := context.Background()
+	results, err := Spotify.GetRecommendations(ctx, spotifyclient.Seeds{
+		Tracks: trackIds,
+	}, nil, spotifyclient.Limit(5))
+
+	if err != nil {
+		return []SpotifyTrack{}, err
+	}
+
+	tracks := []SpotifyTrack{}
+	for _, track := range results.Tracks {
+		tracks = append(tracks, SpotifyTrack{
+			URI:       string(track.URI),
+			Name:      track.Name,
+			Artist:    track.Artists[0].Name,
+			ArtistURI: string(track.Artists[0].URI),
+			Album:     track.Album.Name,
+		})
+	}
+
+	return tracks, nil
+}
+
+func SearchAndRecommend(query string) ([]SpotifyTrack, error) {
+	results, err := Search(query)
+	if err != nil {
+		return []SpotifyTrack{}, err
+	}
+
+	uris := []string{}
+	for _, track := range results.Tracks {
+		uris = append(uris, track.URI)
+	}
+
+	recommended, err := GetRecommendedTracks(uris)
+	if err != nil {
+		return []SpotifyTrack{}, err
+	}
+
+	return recommended, nil
 }
 
 func GetArtistTopSongs(artistID string) ([]string, error) {

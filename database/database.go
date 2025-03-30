@@ -20,7 +20,7 @@ func LoadDatabase() (*sql.DB, error) {
 		return nil, err
 	}
 
-	// Create the guild_settings table
+	// guild_settings table
 	_, err = db.Exec(`
 	CREATE TABLE IF NOT EXISTS guild_settings (
 		guild_id TEXT NOT NULL,
