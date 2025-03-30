@@ -127,7 +127,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 
 	ytUrl := "https://www.youtube.com/watch?v=" + videoResponse.VideoID
 	logger.Tracef("getting video stream for %s", ytUrl)
-	for attempts := 0; attempts < 3; attempts++ {
+	for i := range 3 {
 		cmd := exec.Command("yt-dlp",
 			"-f", "bestaudio[ext=ogg]/bestaudio",
 			"--no-audio-multistreams",
@@ -138,12 +138,12 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 		output, err = cmd.CombinedOutput()
 		if err != nil {
 			logger.WithFields(log.Fields{
-				"attempt": attempts + 1,
+				"attempt": i + 1,
 				"error":   err,
 				"output":  string(output),
 			}).Error("yt-dlp command failed")
 
-			if attempts == 2 {
+			if i == 2 {
 				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output))
 			}
 			continue
@@ -152,14 +152,6 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	streamUrl := strings.TrimSpace(string(output))
-	logger.Infof("streamUrl: %s", streamUrl)
-	parsedURL, err := url.Parse(streamUrl)
-	logger.Infof("parsedURL: %v", parsedURL)
-	if err != nil {
-		logger.Errorf("error parsing URL: %v", err)
-		return nil, fmt.Errorf("error parsing URL: %v", err)
-	}
-
 	expiration, expErr := getExpiration(streamUrl)
 	if expErr != nil {
 		logger.Errorf("error getting expiration: %v", expErr)
