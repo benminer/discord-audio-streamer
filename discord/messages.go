@@ -18,13 +18,14 @@ type FollowUpRequest struct {
 	Content         string
 	GenerateContent bool
 	Flags           int
+	GuildPrompt     string
 }
 
 func buildRequest(request *FollowUpRequest) map[string]interface{} {
 	var content string = request.Content
 
 	if request.GenerateContent {
-		content = gemini.GenerateResponse(request.Content)
+		content = gemini.GenerateResponse(request.Content, request.GuildPrompt)
 		if content == "" {
 			content = request.Content
 		}

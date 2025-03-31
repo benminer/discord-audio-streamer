@@ -25,6 +25,7 @@ import (
 	"beatbot/gemini"
 	"beatbot/handlers"
 	"beatbot/pages"
+	"beatbot/spotify"
 	"beatbot/youtube"
 )
 
@@ -131,7 +132,7 @@ func run(ctx context.Context) error {
 				return
 			}
 			prompt := string(bodyBytes)
-			response := gemini.GenerateResponse(prompt)
+			response := gemini.GenerateResponse(prompt, "")
 			c.JSON(http.StatusOK, gin.H{
 				"response": response,
 			})
@@ -150,6 +151,19 @@ func run(ctx context.Context) error {
 			})
 		})
 	}
+
+	router.GET("/spotify/test", func(c *gin.Context) {
+		err := spotify.NewSpotifyClient()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create spotify client"})
+			return
+		}
+		results, err := spotify.Search("Lose Yourself to Dance Daft Punk")
+		log.Infof("Results: %v", results)
+		c.JSON(http.StatusOK, gin.H{
+			"results": results,
+		})
+	})
 
 	router.POST("/discord/webhook", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{

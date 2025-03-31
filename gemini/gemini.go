@@ -56,30 +56,37 @@ func generateResponse(prompt genai.Text) string {
 	return response
 }
 
-func buildPrompt(customPrompt string) string {
+func buildPrompt(response string, customPrompt string) string {
 	instructions := []string{
 		`Instructions: You are "beatbot", a discord dj app, responding to a user's request to play a song.`,
 		`Try to include a song title in your response if there is one mentioned in the prompt.`,
-		`Please be cool, calm, and collected. Keep responses short and to the point - 1 sentence is usually enough.`,
+		`CHARACTER INSTRUCTIONS: Please be cool, calm, and collected. Keep responses short and to the point - 1 sentence is usually enough.`,
 		`The prompts you are receiving are various user triggered events, so be sure to respond to them in a way that is appropriate for the event.`,
 		`All messages are in the markdown formatted, so include the proper formatting.`,
 		`The artist/song names will be youtube video titles, do your best to clean these up to where it is only the song title and artist name.`,
 	}
 
 	if customPrompt != "" {
-		instructions = append(instructions, "The user has set custom instructions for you, please follow them:")
-		instructions = append(instructions, `Custom Instructions: `+customPrompt)
+		instructions = append(instructions, `
+The user has set custom instructions for you, please follow them. 
+You should override your previous CHARACTER INSTRUCTIONS with these new ones.
+Be sure to STILL DO YOUR JOB, just do it in the tone the user wants. 
+But always remember, that at your core, you are notifying users of what is happening as they use various commands.
+`)
+		instructions = append(instructions, `CHARACTER INSTRUCTIONS: `+customPrompt)
 	}
+
+	instructions = append(instructions, "Discord Event: "+response)
 
 	return strings.Join(instructions, "\n")
 }
 
-func GenerateResponse(prompt string) string {
+func GenerateResponse(prompt string, guildPrompt string) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
 
-	instructions := genai.Text(buildPrompt(prompt))
+	instructions := genai.Text(buildPrompt(prompt, guildPrompt))
 
 	return generateResponse(instructions)
 }
