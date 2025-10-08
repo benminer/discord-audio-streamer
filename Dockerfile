@@ -1,4 +1,4 @@
-FROM golang:1.23.6-bullseye AS builder
+FROM golang:1.24.0-bullseye AS builder
 
 WORKDIR /app
 
@@ -43,6 +43,6 @@ ENV ENFORCE_VOICE_CHANNEL="true"
 ENV GEMINI_ENABLED="true"
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
 CMD ["./discord-bot"]
