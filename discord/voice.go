@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +17,10 @@ import (
 )
 
 func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId string) (vc *discordgo.VoiceConnection, err error) {
-	vc, err = session.ChannelVoiceJoin(guildId, channelId, false, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	vc, err = session.ChannelVoiceJoin(ctx, guildId, channelId, false, true)
 	if err != nil {
 		sentry.CaptureException(err)
 		log.Errorf("Error joining voice channel: %v", err)
@@ -26,20 +30,20 @@ func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId stri
 	// Add connection check with timeout
 	maxRetries := 5
 	for i := 0; i < maxRetries; i++ {
-		if vc.Ready && vc.OpusSend != nil {
+		if vc.Status == discordgo.VoiceConnectionStatusReady && vc.OpusSend != nil {
 			return vc, nil
 		}
 		time.Sleep(time.Second)
 	}
 
 	// If we couldn't establish a proper connection, clean up and return error
-	vc.Close()
+	vc.Disconnect(context.Background())
 	sentry.CaptureMessage(fmt.Sprintf("failed to establish stable voice connection after %d seconds", maxRetries))
 	return nil, fmt.Errorf("failed to establish stable voice connection after %d seconds", maxRetries)
 }
 
 func LeaveVoiceChannel(vc *discordgo.VoiceConnection) {
-	vc.Close()
+	vc.Disconnect(context.Background())
 }
 
 type DiscordErrorResponse struct {
