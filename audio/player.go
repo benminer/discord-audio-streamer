@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -15,14 +16,16 @@ import (
 )
 
 type Player struct {
-	Notifications chan PlaybackNotification
-	completed     chan bool
-	logger        *log.Entry
-	encoder       *opus.Encoder
-	paused        bool
-	playing       *bool
-	volume        int
-	mutex         sync.Mutex
+	Notifications    chan PlaybackNotification
+	completed        chan bool
+	logger           *log.Entry
+	encoder          *opus.Encoder
+	paused           atomic.Bool
+	stopping         atomic.Bool
+	playing          *bool
+	volume           int
+	fadeOutRemaining int
+	mutex            sync.Mutex
 }
 
 func NewPlayer() (*Player, error) {
@@ -37,18 +40,21 @@ func NewPlayer() (*Player, error) {
 
 	playing := false
 
-	return &Player{
+	player := &Player{
 		completed:     make(chan bool),
 		Notifications: make(chan PlaybackNotification, 100),
 		logger: log.WithFields(log.Fields{
 			"module": "player",
 		}),
-		encoder: encoder,
-		paused:  false,
-		playing: &playing,
-		volume:  100,
-		mutex:   sync.Mutex{},
-	}, nil
+		encoder:          encoder,
+		playing:          &playing,
+		volume:           100,
+		fadeOutRemaining: 0,
+		mutex:            sync.Mutex{},
+	}
+	player.paused.Store(false)
+	player.stopping.Store(false)
+	return player, nil
 }
 
 func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection) error {
@@ -60,9 +66,18 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 	}()
 
 	*p.playing = true
+	p.stopping.Store(false) // Reset stopping flag for new song
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 	opusBuffer := make([]byte, 960*4)
+
+	// Prime the voice connection before streaming
+	p.logger.Debug("Setting Speaking(true) to prime voice connection")
+	voiceChannel.Speaking(true)
+
+	// Small delay to let Discord prepare its pipeline
+	time.Sleep(50 * time.Millisecond)
+	p.logger.Debug("Starting audio stream")
 
 	for {
 		select {
@@ -75,8 +90,83 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 			}
 			return nil
 		default:
-			if p.paused {
-				time.Sleep(100 * time.Millisecond)
+			// Handle fade-out when pausing or stopping
+			if p.fadeOutRemaining > 0 {
+				// Read frame normally
+				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+				if err != nil {
+					if err == io.EOF || err == io.ErrUnexpectedEOF {
+						p.fadeOutRemaining = 0
+						continue
+					}
+					p.logger.Warnf("Error reading during fade-out: %v", err)
+					continue
+				}
+
+				// Apply fade-out multiplier (cubic fade for sharp curve)
+				t := float64(p.fadeOutRemaining) / 5.0
+				fadeMultiplier := t * t * t
+				for i := range buffer {
+					sample := float64(buffer[i]) * fadeMultiplier
+					if sample > 32767 {
+						sample = 32767
+					} else if sample < -32768 {
+						sample = -32768
+					}
+					buffer[i] = int16(sample)
+				}
+
+				// Encode and send
+				encoded, err := p.encoder.Encode(buffer, opusBuffer)
+				if err == nil {
+					select {
+					case voiceChannel.OpusSend <- opusBuffer[:encoded]:
+					case <-p.completed:
+						return nil
+					}
+				}
+
+				p.fadeOutRemaining--
+
+				// If we were stopping and fade-out is complete, exit
+				if p.stopping.Load() && p.fadeOutRemaining == 0 {
+					p.logger.Debug("Fade-out complete, stopping playback")
+					return nil
+				}
+
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+
+			// Check if we should start fade-out for stop
+			if p.stopping.Load() && p.fadeOutRemaining == 0 {
+				p.logger.Debug("Stop requested, starting fade-out")
+				p.fadeOutRemaining = 5
+				continue
+			}
+
+			if p.paused.Load() {
+				// Drain FFmpeg buffer to prevent stale data buildup
+				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+					p.logger.Warnf("Error draining buffer during pause: %v", err)
+				}
+
+				// Send silence frame to maintain stream continuity
+				silenceBuffer := make([]int16, 960*2)
+				silenceOpus := make([]byte, 960*4)
+				encoded, err := p.encoder.Encode(silenceBuffer, silenceOpus)
+				if err == nil {
+					select {
+					case voiceChannel.OpusSend <- silenceOpus[:encoded]:
+					case <-p.completed:
+						return nil
+					default:
+						// Skip if channel is full
+					}
+				}
+
+				time.Sleep(20 * time.Millisecond) // ~50 frames per second
 				continue
 			}
 
@@ -156,22 +246,28 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 }
 
 func (p *Player) Pause() {
-	p.paused = true
+	p.logger.Info("Pausing playback - starting fade-out")
+	if p.fadeOutRemaining == 0 {
+		p.fadeOutRemaining = 5 // 5 frames = 100ms fade-out
+	}
+	p.paused.Store(true)
 	p.Notifications <- PlaybackNotification{
 		Event: PlaybackPaused,
 	}
 }
 
 func (p *Player) Resume() {
-	p.paused = false
+	p.logger.Info("Resuming playback")
+	p.fadeOutRemaining = 0 // Cancel any ongoing fade-out
+	p.paused.Store(false)
 	p.Notifications <- PlaybackNotification{
 		Event: PlaybackResumed,
 	}
 }
 
 func (p *Player) Stop() {
-	p.completed <- true
-	p.completed = make(chan bool)
+	p.logger.Info("Stopping playback - will fade out")
+	p.stopping.Store(true)
 }
 
 func (p *Player) IsPlaying() bool {
