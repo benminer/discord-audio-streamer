@@ -154,7 +154,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	streamUrl := strings.TrimSpace(string(output))
 	expiration, expErr := getExpiration(streamUrl)
 	if expErr != nil {
-		logger.Errorf("error getting expiration: %v", expErr)
+		logger.Warnf("error getting expiration: %v", expErr)
 		expiration = 0
 	}
 
