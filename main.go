@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.ngrok.com/ngrok"
-	"golang.ngrok.com/ngrok/config"
+	"golang.ngrok.com/ngrok/v2"
 
 	"github.com/joho/godotenv"
 
@@ -209,10 +208,7 @@ func run(ctx context.Context) error {
 	if appConfig.Config.NGrok.IsEnabled() {
 		log.Info("using ngrok")
 		listener, err := ngrok.Listen(ctx,
-			config.HTTPEndpoint(
-				config.WithDomain(appConfig.Config.NGrok.Domain),
-			),
-			ngrok.WithAuthtokenFromEnv(), // defaults to NGROK_AUTHTOKEN
+			ngrok.WithURL(appConfig.Config.NGrok.Domain),
 		)
 		if err != nil {
 			return err

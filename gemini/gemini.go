@@ -6,9 +6,7 @@ import (
 	"strings"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/google/generative-ai-go/genai"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 
 	"beatbot/config"
 )
@@ -24,21 +22,28 @@ func printResponse(resp *genai.GenerateContentResponse) {
 	fmt.Println("---")
 }
 
-func generateResponse(prompt genai.Text) string {
+func generateResponse(prompt string) string {
 	ctx := context.Background()
 
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
 
-	client, err := genai.NewClient(ctx, option.WithAPIKey(config.Config.Gemini.APIKey))
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  config.Config.Gemini.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 		return ""
 	}
 
-	model := client.GenerativeModel("gemini-2.0-flash")
-	resp, err := model.GenerateContent(ctx, prompt)
+	parts := []*genai.Part{
+		{Text: prompt},
+	}
+	content := []*genai.Content{{Parts: parts}}
+
+	resp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
 	if err != nil {
 		log.Fatalf("failed to generate content: %v", err)
 		return ""
@@ -48,7 +53,9 @@ func generateResponse(prompt genai.Text) string {
 	for _, cand := range resp.Candidates {
 		if cand.Content != nil {
 			for _, part := range cand.Content.Parts {
-				sb.WriteString(fmt.Sprint(part))
+				if part.Text != "" {
+					sb.WriteString(part.Text)
+				}
 			}
 		}
 	}
@@ -82,7 +89,7 @@ func GenerateResponse(prompt string) string {
 		return ""
 	}
 
-	instructions := genai.Text(buildPrompt(prompt))
+	instructions := buildPrompt(prompt)
 
 	return generateResponse(instructions)
 }
@@ -92,7 +99,7 @@ func GenerateHelpfulResponse(prompt string) string {
 		return ""
 	}
 
-	instructions := genai.Text(`
+	instructions := `
 Instructions: You are "beatbot", a sassy AI DJ helping users with commands.
 You are responding to a user's request for help. Be helpful and informative, but keep your signature personality - a bit pretentious, a bit sassy.
 All responses are rendered to markdown, so use proper markdown formatting.
@@ -116,7 +123,7 @@ Here are the available commands:
 **Other:**
 /help - Show this help menu
 /ping - Check if the bot is alive
-Prompt: ` + prompt)
+Prompt: ` + prompt
 
 	return generateResponse(instructions)
 }
