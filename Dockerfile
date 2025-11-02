@@ -28,8 +28,6 @@ RUN apt-get update && apt-get install -y \
     libopusfile0 \
     libopus0 \
     ffmpeg \
-    python3 \
-    python3-pip \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
