@@ -4,19 +4,22 @@ import (
 	"beatbot/audio"
 	"beatbot/config"
 	"beatbot/discord"
+	"beatbot/gemini"
 	"beatbot/spotify"
 	"beatbot/youtube"
+	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	sentry "github.com/getsentry/sentry-go"
-	spotifyclient "github.com/zmb3/spotify/v2"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/bwmarrin/discordgo"
-	log "github.com/sirupsen/logrus"
+	spotifyclient "github.com/zmb3/spotify/v2"
 )
 
 type QueueEventType string
@@ -43,6 +46,9 @@ type GuildPlayer struct {
 	VoiceConnection   *discordgo.VoiceConnection
 	Loader            *audio.Loader
 	Player            *audio.Player
+	LastActivityAt    time.Time
+	LastTextChannelID string
+	idleCheckStop     chan struct{}
 }
 
 type GuildQueueItemInteraction struct {
@@ -134,13 +140,16 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
-		Loader: audio.NewLoader(),
-		Player: player,
+		Loader:         audio.NewLoader(),
+		Player:         player,
+		LastActivityAt: time.Now(),
+		idleCheckStop:  make(chan struct{}),
 	}
 
 	session.listenForQueueEvents()
 	session.listenForPlaybackEvents()
 	session.listenForLoadEvents()
+	session.startIdleChecker()
 
 	c.sessions[guildID] = session
 	return session
@@ -160,6 +169,12 @@ func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
+	// Stop the idle checker
+	select {
+	case p.idleCheckStop <- struct{}{}:
+	default:
+	}
+
 	// wait for the playback to stop
 	if p.Player != nil {
 		p.Player.Stop()
@@ -168,6 +183,11 @@ func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
 	// note: we don't necessarily need to quit the vc here, just reset the playback states
 	p.Queue.Listening = false
 	p.CurrentSong = nil
+	p.LastActivityAt = time.Now()
+
+	// Restart the idle checker
+	p.idleCheckStop = make(chan struct{})
+	p.startIdleChecker()
 
 	go discord.SendFollowup(&discord.FollowUpRequest{
 		Token:   interaction.InteractionToken,
@@ -270,6 +290,7 @@ func (p *GuildPlayer) playNext() {
 
 func (p *GuildPlayer) play(data *audio.LoadResult) {
 	log.Debugf("playing: %s", data.Title)
+	p.LastActivityAt = time.Now()
 
 	if err := p.Player.Play(data, p.VoiceConnection); err != nil {
 		sentry.CaptureException(err)
@@ -595,9 +616,65 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 	}()
 }
 
+func (p *GuildPlayer) startIdleChecker() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		idleTimeout := time.Duration(config.Config.Options.IdleTimeoutMinutes) * time.Minute
+		log.Debugf("Starting idle checker for guild %s with timeout: %v", p.GuildID, idleTimeout)
+
+		for {
+			select {
+			case <-ticker.C:
+				idleDuration := time.Since(p.LastActivityAt)
+				if idleDuration >= idleTimeout {
+					log.Infof("Guild %s has been idle for %v, disconnecting", p.GuildID, idleDuration)
+
+					if p.LastTextChannelID != "" {
+						prompt := fmt.Sprintf("The bot has been idle in the voice channel for %d minutes with no activity, so it's disconnecting now", config.Config.Options.IdleTimeoutMinutes)
+						message := gemini.GenerateResponse(prompt)
+
+						if message == "" {
+							message = fmt.Sprintf("Been sitting here idle for %d minutes with nothing to do. I'm out - let me know when you actually want to hear something.", config.Config.Options.IdleTimeoutMinutes)
+						}
+
+						_, err := p.Discord.ChannelMessageSend(p.LastTextChannelID, message)
+						if err != nil {
+							log.Errorf("Failed to send idle disconnect message: %v", err)
+						}
+					}
+
+					if p.Player != nil {
+						p.Player.Stop()
+					}
+
+					if p.VoiceConnection != nil {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						if err := p.VoiceConnection.Disconnect(ctx); err != nil {
+							log.Errorf("Error disconnecting from voice: %v", err)
+						}
+						cancel()
+						p.VoiceConnection = nil
+					}
+
+					p.VoiceChannelID = nil
+					p.Clear()
+					return
+				}
+			case <-p.idleCheckStop:
+				log.Debugf("Stopping idle checker for guild %s", p.GuildID)
+				return
+			}
+		}
+	}()
+}
+
 func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactionToken string, appID string) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
+
+	p.LastActivityAt = time.Now()
 
 	item := &GuildQueueItem{
 		Video:   video,
@@ -647,6 +724,8 @@ func (p *GuildPlayer) Remove(index int) string {
 }
 
 func (p *GuildPlayer) Skip() {
+	p.LastActivityAt = time.Now()
+
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventSkip}:
 	default:
