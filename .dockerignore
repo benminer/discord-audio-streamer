@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+.gitattributes
+.github
+
+# Environment files (sensitive!)
+.env
+.env.*
+!.env.example
+
+# Documentation
+README.md
+CLAUDE.md
+*.md
+LICENSE
+
+# Docker files (don't copy docker files into docker)
+Dockerfile
+docker-compose.yml
+.dockerignore
+docker-*.sh
+
+# Build artifacts
+beatbot
+discord-bot
+*.exe
+*.so
+*.dylib
+
+# Go build cache
+/bin
+/pkg
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test files
+*_test.go
+test/
+tests/
+
+# CI/CD
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Development scripts
+set-commands.sh
+commands.json
+
+# OS files
+Thumbs.db
