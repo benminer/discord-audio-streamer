@@ -7,6 +7,7 @@ import (
 	"beatbot/spotify"
 	"beatbot/youtube"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,11 +52,13 @@ type GuildQueueItemInteraction struct {
 }
 
 type GuildQueueItem struct {
-	Video       youtube.VideoResponse
-	Stream      *youtube.YoutubeStream
-	LoadResult  *audio.LoadResult
-	AddedAt     time.Time
-	Interaction *GuildQueueItemInteraction
+	Video        youtube.VideoResponse
+	Stream       *youtube.YoutubeStream
+	LoadResult   *audio.LoadResult
+	AddedAt      time.Time
+	Interaction  *GuildQueueItemInteraction
+	LoadAttempts int
+	MaxAttempts  int
 }
 
 type GuildQueue struct {
@@ -435,41 +438,83 @@ func (p *GuildPlayer) listenForLoadEvents() {
 				log.Tracef("load for %s canceled", *event.VideoID)
 			case audio.PlaybackLoadError:
 				err := event.Error
-				var ffmpegTimeoutErr = false
 				var errStr string
 				if err != nil {
 					errStr = (*err).Error()
-					if strings.Contains(errStr, "ffmpeg timed out") {
-						ffmpegTimeoutErr = true
-					}
 				}
 
-				if ffmpegTimeoutErr {
-					p.removeItemByVideoID(*event.VideoID)
-				}
-
-				log.Tracef("[loaderror] queueItem: %+v", queueItem.Video.Title)
+				log.Tracef("[loaderror] queueItem: %+v", queueItem)
 
 				if queueItem != nil {
-					var msg string
-					if ffmpegTimeoutErr {
-						msg = "timed out loading **" + queueItem.Video.Title + "**\nIt may be too long, try something shorter :)"
-					} else if errStr != "" {
-						msg = "Something went wrong while loading " + queueItem.Video.Title + "\nError: " + errStr
-					} else {
-						msg = "Something went wrong while loading " + queueItem.Video.Title
-					}
+					// Increment load attempts for circuit breaker
+					queueItem.LoadAttempts++
 
-					go discord.SendFollowup(&discord.FollowUpRequest{
-						Token:           queueItem.Interaction.InteractionToken,
-						AppID:           queueItem.Interaction.AppID,
-						UserID:          queueItem.Interaction.UserID,
-						Content:         msg,
-						GenerateContent: false,
-					})
+					log.Warnf("Load failed for %s (attempt %d/%d): %s",
+						queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts, errStr)
+
+					// Check if we've exceeded max retry attempts
+					if queueItem.LoadAttempts >= queueItem.MaxAttempts {
+						// Remove item permanently after max retries
+						p.removeItemByVideoID(*event.VideoID)
+
+						var msg string
+						if strings.Contains(errStr, "ffmpeg timed out") {
+							msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
+								strconv.Itoa(queueItem.MaxAttempts) + " failed attempts\n" +
+								"It may be too long, try something shorter :)"
+						} else if errStr != "" {
+							msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
+								strconv.Itoa(queueItem.MaxAttempts) + " failed attempts\n" +
+								"Error: " + errStr
+						} else {
+							msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
+								strconv.Itoa(queueItem.MaxAttempts) + " failed attempts"
+						}
+
+						go discord.SendFollowup(&discord.FollowUpRequest{
+							Token:           queueItem.Interaction.InteractionToken,
+							AppID:           queueItem.Interaction.AppID,
+							UserID:          queueItem.Interaction.UserID,
+							Content:         msg,
+							GenerateContent: false,
+						})
+
+						log.Infof("Removed %s from queue after %d failed load attempts",
+							queueItem.Video.Title, queueItem.MaxAttempts)
+					} else {
+						// Retry - notify user we're retrying
+						var msg string
+						if strings.Contains(errStr, "ffmpeg timed out") {
+							msg = "⚠️ Timeout loading **" + queueItem.Video.Title + "** (attempt " +
+								strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+								"), retrying..."
+						} else if errStr != "" {
+							msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
+								strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+								"), retrying...\nError: " + errStr
+						} else {
+							msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
+								strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+								"), retrying..."
+						}
+
+						go discord.SendFollowup(&discord.FollowUpRequest{
+							Token:           queueItem.Interaction.InteractionToken,
+							AppID:           queueItem.Interaction.AppID,
+							UserID:          queueItem.Interaction.UserID,
+							Content:         msg,
+							GenerateContent: false,
+						})
+
+						log.Infof("Retrying load for %s (attempt %d/%d)",
+							queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts)
+					}
 				}
 
+				// Always try to play next, either the retried item or the next one if removed
 				go p.playNext()
+			case audio.PlaybackLoading:
+				log.Tracef("Loading %s", event.Event)
 			default:
 				log.Warnf("Unknown load event: %s", event.Event)
 			}
@@ -562,6 +607,8 @@ func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactio
 			InteractionToken: interactionToken,
 			AppID:            appID,
 		},
+		LoadAttempts: 0,
+		MaxAttempts:  3, // Circuit breaker: max 3 attempts per item
 	}
 	p.Queue.Items = append(p.Queue.Items, item)
 

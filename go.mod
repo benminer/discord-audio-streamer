@@ -82,5 +82,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-// Use PR #1593 which fixes voice encryption mode issues (commit e6ee884)
-replace github.com/bwmarrin/discordgo => github.com/ozraru/discordgo v0.26.2-0.20250917201847-e6ee88434661
+// Use MohmmedAshraf's fork with voice encryption fix + audio glitch fixes
+// Includes PR #1593 (encryption) + increased buffer size (2->100) to prevent stuttering
+replace github.com/bwmarrin/discordgo => github.com/MohmmedAshraf/discordgo v0.0.0-20251023120605-ec69b4c5a86d

@@ -67,10 +67,14 @@ func (l *Loader) Load(job LoadJob) {
 		"-loglevel", "error",
 		"pipe:1")
 
+	var stderr bytes.Buffer
+	ffmpeg.Stderr = &stderr
+
 	start := time.Now()
 
 	done := make(chan struct {
 		output []byte
+		stderr string
 		err    error
 	})
 
@@ -78,8 +82,9 @@ func (l *Loader) Load(job LoadJob) {
 		output, err := ffmpeg.Output()
 		done <- struct {
 			output []byte
+			stderr string
 			err    error
-		}{output, err}
+		}{output, stderr.String(), err}
 	}()
 
 	select {
@@ -90,17 +95,30 @@ func (l *Loader) Load(job LoadJob) {
 			VideoID: &job.VideoID,
 		}
 		log.Tracef("sent load canceled event for %s", job.VideoID)
-		ffmpeg.Process.Kill()
+		if ffmpeg.Process != nil {
+			ffmpeg.Process.Kill()
+		}
 		return
 	case result := <-done:
 		if result.err != nil {
-			log.Errorf("error loading %s: %v", job.VideoID, result.err)
-			sentry.CaptureException(result.err)
+			// Build detailed error message with stderr output
+			errMsg := result.err.Error()
+			if result.stderr != "" {
+				errMsg += " | ffmpeg stderr: " + result.stderr
+			}
+			detailedErr := errors.New(errMsg)
+
+			log.Errorf("error loading %s: %v", job.VideoID, detailedErr)
+			sentry.CaptureException(detailedErr)
 			l.Notifications <- PlaybackNotification{
 				Event:   PlaybackLoadError,
 				VideoID: &job.VideoID,
-				Error:   &result.err,
+				Error:   &detailedErr,
 			}
+			if ffmpeg.Process != nil {
+				ffmpeg.Process.Kill()
+			}
+			return
 		}
 		log.Tracef("loaded %s", job.VideoID)
 		output := io.NopCloser(bytes.NewReader(result.output))
@@ -115,17 +133,22 @@ func (l *Loader) Load(job LoadJob) {
 			},
 		}
 		log.Tracef("sent loaded event for %s", job.VideoID)
-		ffmpeg.Process.Kill()
+		if ffmpeg.Process != nil {
+			ffmpeg.Process.Kill()
+		}
 		return
 	case <-time.After(30 * time.Second):
 		error := errors.New("ffmpeg timed out after 30 seconds")
 		log.Errorf("ffmpeg timed out after 30 seconds for %s", job.VideoID)
+		sentry.CaptureException(error)
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoadError,
 			VideoID: &job.VideoID,
 			Error:   &error,
 		}
-		ffmpeg.Process.Kill()
+		if ffmpeg.Process != nil {
+			ffmpeg.Process.Kill()
+		}
 		return
 	}
 }

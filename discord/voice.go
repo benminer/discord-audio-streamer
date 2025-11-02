@@ -29,7 +29,7 @@ func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId stri
 
 	// Add connection check with timeout
 	maxRetries := 5
-	for i := 0; i < maxRetries; i++ {
+	for range maxRetries {
 		if vc.Status == discordgo.VoiceConnectionStatusReady && vc.OpusSend != nil {
 			return vc, nil
 		}
