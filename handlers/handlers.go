@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"beatbot/controller"
 	"beatbot/discord"
 	"beatbot/gemini"
+	"beatbot/spotify"
 	"beatbot/youtube"
 )
 
@@ -138,6 +140,77 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	}
 
 	query := interaction.Data.Options[0].Value
+
+	if strings.HasPrefix(query, "https://open.spotify.com/") {
+		log.Debugf("Detected Spotify URL: %s", query)
+
+		spotifyReq, err := spotify.ParseSpotifyURL(query)
+		if err != nil {
+			log.Errorf("Error parsing Spotify URL: %v", err)
+			sentry.CaptureException(err)
+			manager.SendError(interaction, "Invalid Spotify URL: "+err.Error(), true)
+			return
+		}
+
+		if spotifyReq.TrackID == "" {
+			log.Debugf("Spotify URL is not a track (playlist or artist)")
+
+			if spotifyReq.PlaylistID != "" {
+				manager.SendFollowup(interaction, "", "Spotify playlists are coming soon! For now, please use track URLs or search queries.", true)
+			} else if spotifyReq.ArtistID != "" {
+				manager.SendFollowup(interaction, "", "Spotify artists are coming soon! For now, please use track URLs or search queries.", true)
+			} else {
+				manager.SendFollowup(interaction, "", "Only Spotify track URLs are supported right now. Playlists and artists coming soon!", true)
+			}
+			return
+		}
+
+		log.Tracef("Fetching Spotify track: %s", spotifyReq.TrackID)
+		trackInfo, err := spotify.GetTrack(spotifyReq.TrackID)
+		if err != nil {
+			log.Errorf("Error fetching Spotify track: %v", err)
+			sentry.CaptureException(err)
+			manager.SendError(interaction, "Error fetching track from Spotify: "+err.Error(), true)
+			return
+		}
+
+		artistsStr := strings.Join(trackInfo.Artists, ", ")
+		youtubeQuery := artistsStr + " - " + trackInfo.Title
+		log.Debugf("Converted Spotify track '%s' by '%s' to YouTube query: %s", trackInfo.Title, artistsStr, youtubeQuery)
+
+		manager.SendFollowup(interaction,
+			"",
+			fmt.Sprintf("Found **%s** by **%s** on Spotify, searching YouTube...", trackInfo.Title, artistsStr),
+			false)
+
+		videos := youtube.Query(youtubeQuery)
+		if len(videos) == 0 {
+			log.Warnf("No YouTube results found for Spotify track: %s", youtubeQuery)
+			manager.SendFollowup(interaction,
+				"",
+				fmt.Sprintf("Couldn't find **%s** by **%s** on YouTube", trackInfo.Title, artistsStr),
+				true)
+			return
+		}
+
+		video := videos[0]
+		log.Debugf("Found YouTube match: %s (ID: %s)", video.Title, video.VideoID)
+
+		firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
+
+		var followUpMessage string
+		if firstSongQueued {
+			followUpMessage = fmt.Sprintf("Now playing the YouTube video titled: **%s** (also mention politely that playback could take a few seconds to start, since it's the first song)", video.Title)
+		} else {
+			followUpMessage = fmt.Sprintf("Now playing the YouTube video titled: **%s**", video.Title)
+		}
+
+		manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
+
+		player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		return
+	}
+
 	videoID := youtube.ParseYoutubeUrl(query)
 
 	var video youtube.VideoResponse
@@ -167,9 +240,9 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
 
 	if firstSongQueued {
-		followUpMessage = "**" + video.Title + "** playing soon (also include politely that playback could take a few seconds to start, since it's the first song and needs to load)"
+		followUpMessage = "Now playing the YouTube video titled: **" + video.Title + "** (also mention politely that playback could take a few seconds to start, since it's the first song and needs to load)"
 	} else {
-		followUpMessage = "**" + video.Title + "** received, loading the song!"
+		followUpMessage = "Now playing the YouTube video titled: **" + video.Title + "**"
 	}
 
 	manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
