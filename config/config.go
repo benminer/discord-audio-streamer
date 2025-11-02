@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 )
 
 type ConfigStruct struct {
@@ -42,6 +43,7 @@ type SpotifyConfig struct {
 type Options struct {
 	EnforceVoiceChannel bool
 	Port                string
+	IdleTimeoutMinutes  int
 }
 
 func (ngrok *NGrokConfig) IsEnabled() bool {
@@ -68,6 +70,7 @@ func NewConfig() {
 		Options: Options{
 			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
 			Port:                os.Getenv("PORT"),
+			IdleTimeoutMinutes:  getIdleTimeout(),
 		},
 		Youtube: YoutubeConfig{
 			APIKey: os.Getenv("YOUTUBE_API_KEY"),
@@ -84,4 +87,16 @@ func NewConfig() {
 	}
 
 	Config = config
+}
+
+func getIdleTimeout() int {
+	timeoutStr := os.Getenv("IDLE_TIMEOUT_MINUTES")
+	if timeoutStr == "" {
+		return 20
+	}
+	timeout, err := strconv.Atoi(timeoutStr)
+	if err != nil || timeout <= 0 {
+		return 20
+	}
+	return timeout
 }

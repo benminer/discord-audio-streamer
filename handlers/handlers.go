@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"net/http"
 	"os"
@@ -67,6 +68,7 @@ type Interaction struct {
 	Member        MemberData      `json:"member"`
 	Version       int             `json:"version"`
 	GuildID       string          `json:"guild_id"`
+	ChannelID     string          `json:"channel_id"`
 }
 
 type Options struct {
@@ -111,6 +113,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	}
 
 	player := manager.Controller.GetPlayer(interaction.GuildID)
+	player.LastTextChannelID = interaction.ChannelID
 
 	if voiceState == nil {
 		manager.SendFollowup(interaction, "The user is not in a voice channel and trying to play a song", "Hey dummy, join a voice channel first", true)
@@ -503,6 +506,8 @@ func (manager *Manager) handlePause(interaction *Interaction) Response {
 func (manager *Manager) handleResume(interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
+	player.LastTextChannelID = interaction.ChannelID
+	player.LastActivityAt = time.Now()
 
 	if !player.Player.IsPlaying() {
 		return Response{
