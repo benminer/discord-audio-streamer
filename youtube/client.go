@@ -91,28 +91,38 @@ func Query(query string) []VideoResponse {
 		return []VideoResponse{}
 	}
 
-	videos := make([]VideoResponse, 0)
+	// Collect all video IDs for batch request
+	videoIDs := make([]string, 0)
+	videoMap := make(map[string]string)
 
 	for _, item := range response.Items {
 		if item.Id.Kind == "youtube#video" {
-			videoCall := service.Videos.List([]string{"contentDetails"}).Id(item.Id.VideoId)
+			videoIDs = append(videoIDs, item.Id.VideoId)
+			videoMap[item.Id.VideoId] = html.UnescapeString(item.Snippet.Title)
+		}
+	}
 
-			videoResponse, err := videoCall.Do()
-			if err != nil {
-				logger.Errorf("error getting video details: %v", err)
-				continue
-			}
+	// Batch request for all video details (single API call instead of N calls)
+	if len(videoIDs) == 0 {
+		return []VideoResponse{}
+	}
 
-			if len(videoResponse.Items) > 0 {
-				duration := videoResponse.Items[0].ContentDetails.Duration
-				minutes := parseDuration(duration)
-				if minutes <= 12 {
-					videos = append(videos, VideoResponse{
-						Title:   html.UnescapeString(item.Snippet.Title),
-						VideoID: item.Id.VideoId,
-					})
-				}
-			}
+	videoCall := service.Videos.List([]string{"contentDetails"}).Id(videoIDs...)
+	videoResponse, err := videoCall.Do()
+	if err != nil {
+		logger.Errorf("error getting video details: %v", err)
+		return []VideoResponse{}
+	}
+
+	videos := make([]VideoResponse, 0)
+	for _, item := range videoResponse.Items {
+		duration := item.ContentDetails.Duration
+		minutes := parseDuration(duration)
+		if minutes <= 12 {
+			videos = append(videos, VideoResponse{
+				Title:   videoMap[item.Id],
+				VideoID: item.Id,
+			})
 		}
 	}
 
@@ -129,7 +139,10 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	logger.Tracef("getting video stream for %s", ytUrl)
 	for i := range 3 {
 		cmd := exec.Command("yt-dlp",
-			"-f", "bestaudio[ext=ogg]/bestaudio",
+			"-f", "bestaudio",
+			"--no-playlist",
+			"--socket-timeout", "10",
+			"--extractor-retries", "1",
 			"--no-audio-multistreams",
 			"-g",
 			"--no-warnings",
@@ -197,14 +210,12 @@ func parseDuration(duration string) float64 {
 		return 999
 	}
 
-	// parse minutes
 	if idx := strings.Index(duration, "M"); idx != -1 {
 		m, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes = m
 		duration = duration[idx+1:]
 	}
 
-	// parse seconds
 	if idx := strings.Index(duration, "S"); idx != -1 {
 		s, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes += s / 60
@@ -216,8 +227,8 @@ func parseDuration(duration string) float64 {
 func TestYoutubeDlpWithOutput() (string, error) {
 	cmd := exec.Command("yt-dlp",
 		"-f", "bestaudio[ext=ogg]/bestaudio",
-		"--no-check-formats",      // Skip format checking which might use ffmpeg
-		"--no-check-certificates", // Skip HTTPS certificate validation
+		"--no-check-formats",
+		"--no-check-certificates",
 		"--verbose",
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
