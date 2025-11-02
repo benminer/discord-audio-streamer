@@ -40,8 +40,9 @@ type SpotifyConfig struct {
 }
 
 type Options struct {
-	EnforceVoiceChannel bool
-	Port                string
+	EnforceVoiceChannel         bool
+	Port                        string
+	PlaybackPollIntervalSeconds string
 }
 
 func (ngrok *NGrokConfig) IsEnabled() bool {
@@ -55,6 +56,10 @@ func (options *Options) EnforceVoiceChannelEnabled() bool {
 var Config *ConfigStruct
 
 func NewConfig() {
+	playbackPollIntervalSeconds := os.Getenv("PLAYBACK_POLL_INTERVAL_SECONDS")
+	if playbackPollIntervalSeconds == "" {
+		playbackPollIntervalSeconds = "10"
+	}
 	config := &ConfigStruct{
 		Discord: DiscordConfig{
 			BotToken:  os.Getenv("DISCORD_BOT_TOKEN"),
@@ -66,8 +71,9 @@ func NewConfig() {
 			AuthToken: os.Getenv("NGROK_AUTHTOKEN"),
 		},
 		Options: Options{
-			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
-			Port:                os.Getenv("PORT"),
+			EnforceVoiceChannel:         os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
+			Port:                        os.Getenv("PORT"),
+			PlaybackPollIntervalSeconds: playbackPollIntervalSeconds,
 		},
 		Youtube: YoutubeConfig{
 			APIKey: os.Getenv("YOUTUBE_API_KEY"),

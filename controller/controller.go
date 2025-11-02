@@ -7,6 +7,7 @@ import (
 	"beatbot/spotify"
 	"beatbot/youtube"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type GuildPlayer struct {
 	Discord           *discordgo.Session
 	GuildID           string
 	CurrentSong       *string
+	LastSongPlayedAt  *time.Time
 	Queue             *GuildQueue
 	VoiceChannelMutex sync.Mutex
 	VoiceChannelID    *string
@@ -138,6 +140,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	session.listenForQueueEvents()
 	session.listenForPlaybackEvents()
 	session.listenForLoadEvents()
+	session.startRoomCheck()
 
 	c.sessions[guildID] = session
 	return session
@@ -151,6 +154,50 @@ func (item *GuildQueueItem) WaitForStreamURL() bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return item.Stream != nil
+}
+
+// disconnect the player if no playback has occurred in a given time frame
+func (p *GuildPlayer) checkAndDisconnectIfNeeded() {
+	intervalInt, err := strconv.Atoi(config.Config.Options.PlaybackPollIntervalSeconds)
+	if err != nil {
+		log.Errorf("Error parsing playback poll interval: %v", err)
+		intervalInt = 30
+		return
+	}
+
+	lastSongPlayedAt := p.LastSongPlayedAt
+	log.Tracef("last song played at: %+v", lastSongPlayedAt)
+	if lastSongPlayedAt == nil {
+		return
+	}
+
+	if time.Since(*lastSongPlayedAt).Seconds() > float64(intervalInt) &&
+		p.CurrentSong == nil && p.VoiceConnection != nil {
+		log.Infof("no playback for %d seconds, disconnecting", intervalInt)
+		p.VoiceConnection.Speaking(false)
+		p.VoiceConnection.Disconnect()
+	}
+}
+
+func (p *GuildPlayer) startLastPlaybackCheck() bool {
+	log.Infof("starting room check for guild %s", p.GuildID)
+
+	ticker := time.NewTicker(5 * time.Second)
+
+	go func() {
+		for range ticker.C {
+			// This code executes every 10 seconds
+			p.checkAndDisconnectIfNeeded()
+
+			// If we need to stop the ticker at some point
+			if p.VoiceConnection == nil {
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	return true
 }
 
 func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
@@ -367,7 +414,11 @@ func (p *GuildPlayer) removeItemByVideoID(videoID string) int {
 	defer p.Queue.Mutex.Unlock()
 	for i, item := range p.Queue.Items {
 		if item.Video.VideoID == videoID {
-			p.Queue.Items = append(p.Queue.Items[:i], p.Queue.Items[i+1:]...)
+			// Use direct slice manipulation instead of append
+			if i < len(p.Queue.Items)-1 {
+				copy(p.Queue.Items[i:], p.Queue.Items[i+1:])
+			}
+			p.Queue.Items = p.Queue.Items[:len(p.Queue.Items)-1]
 			log.Tracef("removed item by videoID: %s", videoID)
 			return i
 		}
@@ -477,6 +528,12 @@ func (p *GuildPlayer) listenForLoadEvents() {
 	}()
 }
 
+func (p *GuildPlayer) onPlaybackEnded() {
+	p.CurrentSong = nil
+	now := time.Now()
+	p.LastSongPlayedAt = &now
+}
+
 func (p *GuildPlayer) listenForPlaybackEvents() {
 	log.Tracef("listening for playback events")
 	go func() {
@@ -494,10 +551,10 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 			case audio.PlaybackResumed:
 				p.VoiceConnection.Speaking(true)
 			case audio.PlaybackStopped:
-				p.CurrentSong = nil
+				p.onPlaybackEnded()
 				p.VoiceConnection.Speaking(false)
 			case audio.PlaybackCompleted:
-				p.CurrentSong = nil
+				p.onPlaybackEnded()
 				p.VoiceConnection.Speaking(false)
 				p.playNext()
 			case audio.PlaybackStarted:
@@ -511,7 +568,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				// if there are more songs in the queue, load the next one
 				p.loadNext()
 			case audio.PlaybackError:
-				p.CurrentSong = nil
+				p.onPlaybackEnded()
 				p.VoiceConnection.Speaking(false)
 
 				err := event.Error

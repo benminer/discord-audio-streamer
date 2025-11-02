@@ -467,7 +467,7 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 	log.Debugf("Received command: %+v", interaction.Data.Name)
 
 	sentry.CurrentHub().ConfigureScope(func(scope *sentry.Scope) {
-		scope.SetContext("interaction", map[string]interface{}{
+		scope.SetContext("interaction", map[string]any{
 			"name":     interaction.Data.Name,
 			"options":  interaction.Data.Options,
 			"guild_id": interaction.GuildID,

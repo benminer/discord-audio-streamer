@@ -25,7 +25,7 @@ func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId stri
 
 	// Add connection check with timeout
 	maxRetries := 5
-	for i := 0; i < maxRetries; i++ {
+	for range maxRetries {
 		if vc.Ready && vc.OpusSend != nil {
 			return vc, nil
 		}
@@ -40,6 +40,42 @@ func JoinVoiceChannel(session *discordgo.Session, guildId string, channelId stri
 
 func LeaveVoiceChannel(vc *discordgo.VoiceConnection) {
 	vc.Close()
+}
+
+func GetGuildVoiceConnection(session *discordgo.Session, guildId string) (*discordgo.VoiceConnection, error) {
+	voiceConnection := session.VoiceConnections[guildId]
+	if voiceConnection == nil {
+		return nil, fmt.Errorf("no voice connection found for guild %s", guildId)
+	}
+	return voiceConnection, nil
+}
+
+func GetVoiceChannelMemberCount(session *discordgo.Session, guildId string) (int, error) {
+	voiceChannel, err := GetGuildVoiceConnection(session, guildId)
+	if err != nil {
+		return 0, err
+	}
+	if voiceChannel == nil {
+		return 0, fmt.Errorf("no voice channel found for guild %s", guildId)
+	}
+	channelId := voiceChannel.ChannelID
+	resp, err := http.Get(fmt.Sprintf("https://discord.com/api/v10/guilds/%s/channels/%s", guildId, channelId))
+
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+	var channel discordgo.Channel
+	err = json.Unmarshal(body, &channel)
+	if err != nil {
+		return 0, err
+	}
+	log.Tracef("channel: %+v", channel)
+	return channel.MemberCount, nil
 }
 
 type DiscordErrorResponse struct {
@@ -85,7 +121,7 @@ func MakeRequestWithRetries(client *http.Client, req *http.Request) (*http.Respo
 
 	retries := 3
 
-	for i := 0; i < retries; i++ {
+	for i := range retries {
 		resp, err := client.Do(req)
 		if err != nil {
 			logger.Errorf("error making request: %v", err)
