@@ -93,7 +93,7 @@ func Query(query string) []VideoResponse {
 
 	// Collect all video IDs for batch request
 	videoIDs := make([]string, 0)
-	videoMap := make(map[string]string) // videoID -> title mapping
+	videoMap := make(map[string]string)
 
 	for _, item := range response.Items {
 		if item.Id.Kind == "youtube#video" {
@@ -114,7 +114,6 @@ func Query(query string) []VideoResponse {
 		return []VideoResponse{}
 	}
 
-	// Filter by duration
 	videos := make([]VideoResponse, 0)
 	for _, item := range videoResponse.Items {
 		duration := item.ContentDetails.Duration
@@ -211,14 +210,12 @@ func parseDuration(duration string) float64 {
 		return 999
 	}
 
-	// parse minutes
 	if idx := strings.Index(duration, "M"); idx != -1 {
 		m, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes = m
 		duration = duration[idx+1:]
 	}
 
-	// parse seconds
 	if idx := strings.Index(duration, "S"); idx != -1 {
 		s, _ := strconv.ParseFloat(duration[:idx], 64)
 		minutes += s / 60
@@ -230,8 +227,8 @@ func parseDuration(duration string) float64 {
 func TestYoutubeDlpWithOutput() (string, error) {
 	cmd := exec.Command("yt-dlp",
 		"-f", "bestaudio[ext=ogg]/bestaudio",
-		"--no-check-formats",      // Skip format checking which might use ffmpeg
-		"--no-check-certificates", // Skip HTTPS certificate validation
+		"--no-check-formats",
+		"--no-check-certificates",
 		"--verbose",
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
