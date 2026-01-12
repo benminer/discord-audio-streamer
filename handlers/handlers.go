@@ -316,6 +316,23 @@ func (manager *Manager) handlePing() Response {
 
 func (manager *Manager) onHelp(interaction *Interaction) {
 	response := gemini.GenerateHelpfulResponse("(user issued the help command, return a nicely formatted help menu)")
+	if response == "" {
+		response = `**Music Control:**
+/play (or /queue) - Queue a song. Takes a search query, YouTube URL, or Spotify track URL
+/skip - Skip the current song and play the next in queue
+/pause (or /stop) - Pause the current song
+/resume - Resume playback
+/volume - Set playback volume (0-100)
+
+**Queue Management:**
+/view - View the current queue
+/remove - Remove a song from the queue by index number
+/reset - Clear everything and reset the player
+
+**Other:**
+/help - Show this help menu
+/ping - Check if the bot is alive`
+	}
 	manager.SendRequest(interaction, response, false)
 }
 
