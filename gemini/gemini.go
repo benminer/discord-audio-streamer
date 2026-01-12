@@ -34,7 +34,7 @@ func generateResponse(prompt string) string {
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		log.Fatalf("failed to create client: %v", err)
+		log.Errorf("failed to create client: %v", err)
 		return ""
 	}
 
@@ -45,7 +45,7 @@ func generateResponse(prompt string) string {
 
 	resp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
 	if err != nil {
-		log.Fatalf("failed to generate content: %v", err)
+		log.Errorf("failed to generate content: %v", err)
 		return ""
 	}
 
