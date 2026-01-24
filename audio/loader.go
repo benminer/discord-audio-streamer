@@ -58,27 +58,12 @@ func (l *Loader) Load(job LoadJob) {
 		VideoID: &job.VideoID,
 	}
 
-	// IMPORTANT: FFmpeg Streaming vs Memory Buffering Trade-offs
-	//
-	// CURRENT APPROACH: Streaming from FFmpeg stdout pipe
-	// - Low memory footprint (~4KB buffers instead of 55+ MB for 5min song)
-	// - No GC pressure/pauses (was causing audio stutters)
-	// - Faster startup (no waiting for entire file to download)
-	// - Requires io.ReadFull() in player.go to ensure complete frames
-	//
-	// ALTERNATIVE APPROACH: Buffer entire file to memory (previous implementation)
-	// - Use: output, err := ffmpeg.Output() instead of StdoutPipe()
-	// - Then: io.NopCloser(bytes.NewReader(result.output))
-	// - Pros: More reliable, simpler code, no partial read issues
-	// - Cons: Huge memory allocations (55MB+ per song), GC pauses causing stutters
-	//
-	// If reverting to buffered approach:
-	// 1. Replace StdoutPipe() with Output() call
-	// 2. Remove Start() call and use Output() blocking behavior
-	// 3. Increase timeout from 5s to 30s for full download
-	// 4. Can use binary.Read() directly in player.go (no ReadFull needed)
-	//
-	// Current implementation chosen because GC stutter > network stutter in practice
+	// Memory-based buffering approach:
+	// - Loads entire audio into memory before playback starts
+	// - More reliable than streaming (no partial reads, no mid-stream failures)
+	// - Uses bytes.Buffer for efficient memory growth
+	// - Go 1.24+ GC handles ~55MB allocations well without noticeable pauses
+	// - Simpler player.go code with binary.Read()
 
 	ffmpeg := exec.Command("ffmpeg",
 		"-i", job.URL,
@@ -92,7 +77,7 @@ func (l *Loader) Load(job LoadJob) {
 	var stderr bytes.Buffer
 	ffmpeg.Stderr = &stderr
 
-	// Get stdout pipe for streaming
+	// Get stdout pipe for reading
 	stdout, err := ffmpeg.StdoutPipe()
 	if err != nil {
 		detailedErr := errors.New("failed to create stdout pipe: " + err.Error())
@@ -121,34 +106,82 @@ func (l *Loader) Load(job LoadJob) {
 		return
 	}
 
-	// Give FFmpeg a moment to start and validate the stream
-	started := make(chan bool, 1)
+	// Buffer the entire audio output into memory
+	type result struct {
+		buf *bytes.Buffer
+		err error
+	}
+	done := make(chan result, 1)
+
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		started <- true
+		var buf bytes.Buffer
+		_, err := io.Copy(&buf, stdout)
+		done <- result{&buf, err}
 	}()
 
-	// Wait for FFmpeg to start or handle cancellation
+	// Wait for FFmpeg to complete, handle cancellation or timeout
 	select {
 	case <-l.canceled:
 		l.logger.Debugf("load for %s canceled", job.VideoID)
 		if ffmpeg.Process != nil {
 			ffmpeg.Process.Kill()
+			ffmpeg.Wait() // Reap zombie process
 		}
+		// Drain the done channel to let the goroutine exit cleanly
+		go func() { <-done }()
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoadCanceled,
 			VideoID: &job.VideoID,
 		}
 		log.Tracef("sent load canceled event for %s", job.VideoID)
 		return
-	case <-started:
-		// FFmpeg started successfully, return streaming pipe
-		l.logger.Tracef("ffmpeg started for %s, streaming", job.VideoID)
+
+	case res := <-done:
+		// Check for copy errors
+		if res.err != nil {
+			errMsg := "failed to read ffmpeg output: " + res.err.Error()
+			if stderr.Len() > 0 {
+				errMsg += " | ffmpeg stderr: " + stderr.String()
+			}
+			detailedErr := errors.New(errMsg)
+			log.Errorf("error loading %s: %v", job.VideoID, detailedErr)
+			sentry.CaptureException(detailedErr)
+			if ffmpeg.Process != nil {
+				ffmpeg.Process.Kill()
+				ffmpeg.Wait() // Reap zombie process
+			}
+			l.Notifications <- PlaybackNotification{
+				Event:   PlaybackLoadError,
+				VideoID: &job.VideoID,
+				Error:   &detailedErr,
+			}
+			return
+		}
+
+		// Wait for FFmpeg to exit and check for errors
+		if err := ffmpeg.Wait(); err != nil {
+			errMsg := "ffmpeg exited with error: " + err.Error()
+			if stderr.Len() > 0 {
+				errMsg += " | ffmpeg stderr: " + stderr.String()
+			}
+			detailedErr := errors.New(errMsg)
+			log.Errorf("error loading %s: %v", job.VideoID, detailedErr)
+			sentry.CaptureException(detailedErr)
+			l.Notifications <- PlaybackNotification{
+				Event:   PlaybackLoadError,
+				VideoID: &job.VideoID,
+				Error:   &detailedErr,
+			}
+			return
+		}
+
+		log.Tracef("loaded %s (%d bytes)", job.VideoID, res.buf.Len())
+		output := io.NopCloser(bytes.NewReader(res.buf.Bytes()))
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoaded,
 			VideoID: &job.VideoID,
 			LoadResult: &LoadResult{
-				ffmpegOut: stdout,
+				ffmpegOut: output,
 				VideoID:   job.VideoID,
 				Title:     job.Title,
 				Duration:  time.Since(start),
@@ -156,23 +189,25 @@ func (l *Loader) Load(job LoadJob) {
 		}
 		log.Tracef("sent loaded event for %s", job.VideoID)
 		return
-	case <-time.After(5 * time.Second):
-		// Timeout waiting for FFmpeg to start
-		stderrStr := stderr.String()
-		errMsg := "ffmpeg failed to start within 5 seconds"
-		if stderrStr != "" {
-			errMsg += " | ffmpeg stderr: " + stderrStr
+
+	case <-time.After(30 * time.Second):
+		errMsg := "ffmpeg timed out after 30 seconds"
+		if stderr.Len() > 0 {
+			errMsg += " | ffmpeg stderr: " + stderr.String()
 		}
-		error := errors.New(errMsg)
-		log.Errorf("ffmpeg start timeout for %s: %v", job.VideoID, error)
-		sentry.CaptureException(error)
+		detailedErr := errors.New(errMsg)
+		log.Errorf("ffmpeg timed out for %s: %v", job.VideoID, detailedErr)
+		sentry.CaptureException(detailedErr)
 		if ffmpeg.Process != nil {
 			ffmpeg.Process.Kill()
+			ffmpeg.Wait() // Reap zombie process
 		}
+		// Drain the done channel to let the goroutine exit cleanly
+		go func() { <-done }()
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoadError,
 			VideoID: &job.VideoID,
-			Error:   &error,
+			Error:   &detailedErr,
 		}
 		return
 	}

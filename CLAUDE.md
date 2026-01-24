@@ -24,13 +24,13 @@
 - Handles Opus encoding, fade-outs, pause/resume
 - Uses atomic.Bool for thread-safe state (`paused`, `stopping`)
 - Reused across songs - must reset state properly
-- **Critical**: Use `io.ReadFull()` when reading from FFmpeg pipes (see comments in file)
+- Uses simple `binary.Read()` for reliable frame reading from memory buffer
 
-**`audio/loader.go`** - FFmpeg stream loader
-- **Streams from FFmpeg stdout** (not memory buffering)
-- Memory buffering = huge allocations = GC pauses = audio stutters
-- See detailed comments in file about streaming vs buffering trade-offs
-- If audio quality degrades, check that player.go uses `io.ReadFull()`
+**`audio/loader.go`** - FFmpeg audio loader
+- Buffers FFmpeg output into memory using `bytes.Buffer`
+- Waits for complete audio download before signaling playback ready
+- 30 second timeout for full download
+- Simpler and more reliable than streaming approach
 
 **`controller/controller.go`** - Per-guild player management
 - Manages queue, voice connections, event routing
@@ -58,11 +58,11 @@
 
 ### Important Architectural Decisions
 
-#### Audio Streaming (Not Buffering)
-- FFmpeg streams via stdout pipe, not loaded to memory
-- **Why**: 55MB+ allocations caused GC pauses → audio stutters
-- **Trade-off**: Must use `io.ReadFull()` to avoid partial reads
-- **Revert guide**: See comments in `audio/loader.go`
+#### Audio Memory Buffering
+- FFmpeg output is buffered into memory via `bytes.Buffer` before playback
+- **Why**: Streaming approach had reliability issues (mid-stream failures, partial reads)
+- Go 1.24+ GC handles ~55MB allocations well without noticeable audio pauses
+- Player uses simple `binary.Read()` for reliable audio frame reading
 
 #### Fade-Out on All Exits
 - 5-frame (100ms) cubic fade prevents audio artifacts
@@ -123,10 +123,10 @@ vc.Status == discordgo.VoiceConnectionStatusReady  // enum
 ## Common Issues & Solutions
 
 ### Audio Stuttering
-1. **Check if streaming** - Should NOT be buffering to memory
-2. **Check io.ReadFull usage** - Binary.Read can cause artifacts with pipes
-3. **GC pressure** - Large allocations cause pauses
-4. **Network issues** - Can't fix, but confirm it's not code
+1. **Check network** - Slow connections may cause loading delays
+2. **Check FFmpeg stderr** - Look for decode errors in logs
+3. **GC pressure** - Unlikely with Go 1.24+ but monitor if issues arise
+4. **Discord voice buffer** - OpusSend channel may be full
 
 ### Audio Artifacts/Distortion on Pause/Skip
 - Needs fade-out (already implemented)
@@ -201,7 +201,7 @@ Should be clean with atomic.Bool usage.
 
 ## Things NOT to Change Without Discussion
 
-1. **FFmpeg streaming approach** - Reverting to buffering affects memory/GC
+1. **FFmpeg memory buffering** - Streaming caused reliability issues
 2. **Fade-out curve/duration** - Tuned to avoid artifacts
 3. **Fork choice** - MohmmedAshraf's has specific fixes we need
 4. **OpusSend buffer size** - 100 is in the fork, don't change in our code

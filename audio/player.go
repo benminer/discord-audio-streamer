@@ -92,17 +92,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 		default:
 			// Handle fade-out when pausing or stopping
 			if p.fadeOutRemaining > 0 {
-				// IMPORTANT: io.ReadFull() is required for streaming FFmpeg pipes
-				// binary.Read() can return partial data from pipes, causing artifacts
-				// ReadFull() blocks until we get exactly 3840 bytes (1920 samples * 2 bytes)
-				// See loader.go for streaming vs buffering trade-offs
-				byteBuffer := make([]byte, len(buffer)*2)
-				_, err := io.ReadFull(data.ffmpegOut, byteBuffer)
-				if err == nil {
-					for i := 0; i < len(buffer); i++ {
-						buffer[i] = int16(binary.LittleEndian.Uint16(byteBuffer[i*2:]))
-					}
-				}
+				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err != nil {
 					if err == io.EOF || err == io.ErrUnexpectedEOF {
 						p.fadeOutRemaining = 0
@@ -155,14 +145,8 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 			}
 
 			if p.paused.Load() {
-				// Drain FFmpeg buffer to prevent stale data buildup - use ReadFull for complete frame
-				byteBuffer := make([]byte, len(buffer)*2)
-				_, err := io.ReadFull(data.ffmpegOut, byteBuffer)
-				if err == nil {
-					for i := 0; i < len(buffer); i++ {
-						buffer[i] = int16(binary.LittleEndian.Uint16(byteBuffer[i*2:]))
-					}
-				}
+				// Drain buffer to prevent stale data buildup
+				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 					p.logger.Warnf("Error draining buffer during pause: %v", err)
 				}
@@ -187,14 +171,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 
 			var attempts int
 			for attempts < 3 {
-				// Use ReadFull to ensure we get complete frames from streaming pipe
-				byteBuffer := make([]byte, len(buffer)*2)
-				_, err := io.ReadFull(data.ffmpegOut, byteBuffer)
-				if err == nil {
-					for i := 0; i < len(buffer); i++ {
-						buffer[i] = int16(binary.LittleEndian.Uint16(byteBuffer[i*2:]))
-					}
-				}
+				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
 					p.logger.Trace("Reached end of audio stream")
 					p.Notifications <- PlaybackNotification{
