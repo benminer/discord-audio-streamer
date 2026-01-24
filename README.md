@@ -1,14 +1,14 @@
-# 🎵 Discord Music Bot
+# Discord Music Bot
 
 A lightweight Discord bot for streaming audio to voice channels in private servers. This is a personal project built for fun and learning - not intended as a commercial product or service.
 
-## 🔍 About
+## About
 
 A simple bot implementation for playing audio in Discord voice channels using [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
-## 🛠️ Prerequisites
+## Prerequisites
 
-1. **Go** - Go programming language runtime
+1. **Go 1.24+** - Go programming language runtime
 
    - Download from [golang.org](https://golang.org/dl/)
    - Verify installation with: `go version`
@@ -18,38 +18,33 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    - Install from [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)
    - Verify installation with: `yt-dlp --version`
 
-3. **ngrok** - Tunneling service for local development or self-hosting
+3. **FFmpeg** - Audio processing
+
+   - Install from [ffmpeg.org](https://ffmpeg.org/download.html) or via package manager
+   - Verify installation with: `ffmpeg -version`
+
+4. **ngrok** - Tunneling service for local development or self-hosting
 
    - Sign up at [ngrok.com](https://ngrok.com)
    - Set up your authtoken and reserved domain
    - Required environment variables:
      - `NGROK_AUTHTOKEN`: Your ngrok authentication token
-     - `NGROK_DOMAIN`: Your reserved ngrok domain (this isn't required, but it'll change every time you restart)
+     - `NGROK_DOMAIN`: Your reserved ngrok domain (optional, but URL changes on each restart without it)
    - Documentation: [ngrok docs](https://ngrok.com/docs)
 
-4. **Docker** - Containerization tool
+5. **Docker** (optional) - Containerization tool
 
    - Install from [Docker](https://docs.docker.com/get-docker/)
    - Verify installation with: `docker --version`
 
-5. **Gemini** - Optional AI integration for song requests. Used to make responses more natural and human-like. It's set to caveman mode by default lol
+## Discord Setup
 
-   - Get an API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - Required environment variables:
-     - `GEMINI_API_KEY`: Your Gemini API key
-     - `GEMINI_ENABLED`: Set to "true" to enable Gemini integration, or "false" to disable it.
-
-## Discord
-
-1. Create a new application in the Discord Developer Portal
-
-   - Documentation: [Discord Developer Portal](https://discord.com/developers/applications)
+1. Create a new application in the [Discord Developer Portal](https://discord.com/developers/applications)
 
 2. Create a bot for your application
-
    - Documentation: [Discord Bot](https://discord.com/developers/docs/interactions/application-commands#registering-a-command)
 
-## 🚀 Setup
+## Setup
 
 1. Clone this repository:
 
@@ -58,15 +53,35 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    cd discord-audio-streamer
    ```
 
-2. Set up your environment variables:
+2. Create a `.env` file with the required parameters:
 
    ```bash
-   cp common.env .env
+   # Required
+   DISCORD_BOT_TOKEN=your_bot_token
+   DISCORD_APP_ID=your_app_id
+   YOUTUBE_API_KEY=your_youtube_api_key
+
+   # Optional - Ngrok
+   NGROK_AUTHTOKEN=your_ngrok_token
+   NGROK_DOMAIN=your_reserved_domain
+
+   # Optional - Spotify integration
+   SPOTIFY_ENABLED=false
+   SPOTIFY_CLIENT_ID=your_spotify_client_id
+   SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+
+   # Optional - Gemini AI
+   GEMINI_ENABLED=false
+   GEMINI_API_KEY=your_gemini_api_key
+
+   # Optional - Idle timeout (minutes before disconnecting from empty channel)
+   IDLE_TIMEOUT_MINUTES=20
+
+   # Optional - Sentry error tracking
+   SENTRY_DSN=your_sentry_dsn
    ```
 
-3. Configure your `.env` file with the required parameters found in `common.env`
-
-## 🔨 Build & Run
+## Build and Run
 
 1. Install dependencies:
 
@@ -85,7 +100,7 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    ./discord-bot
    ```
 
-## 🐳 Docker
+## Docker
 
 1.  Build the Docker image:
 
@@ -93,7 +108,7 @@ A simple bot implementation for playing audio in Discord voice channels using [y
     docker build -t discord-music-bot:latest ./
     ```
 
-    **Note for Apple Silicon users:** If you are building the Docker image on an Apple Silicon Mac, you may need to use `docker buildx` to build an image that is compatible with your architecture. For example:
+    **Note for Apple Silicon users:** You may need to use `docker buildx` to build an image compatible with your architecture:
 
     ```bash
     docker buildx build --platform linux/amd64 -t discord-music-bot:latest .
@@ -116,25 +131,43 @@ A simple bot implementation for playing audio in Discord voice channels using [y
       -e YOUTUBE_API_KEY=$YOUTUBE_API_KEY \
       -e GEMINI_API_KEY=$GEMINI_API_KEY \
       -e GEMINI_ENABLED=$GEMINI_ENABLED \
+      -e SPOTIFY_CLIENT_ID=$SPOTIFY_CLIENT_ID \
+      -e SPOTIFY_CLIENT_SECRET=$SPOTIFY_CLIENT_SECRET \
+      -e SPOTIFY_ENABLED=$SPOTIFY_ENABLED \
+      -e IDLE_TIMEOUT_MINUTES=$IDLE_TIMEOUT_MINUTES \
       -e NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN \
       -e NGROK_DOMAIN=$NGROK_DOMAIN \
       -e SENTRY_DSN=$SENTRY_DSN \
       discord-music-bot:latest
     ```
 
-    I recommend setting at least 1GB, with 2GB of swap, since songs are stored in memory while streaming.
+    Recommended: at least 1GB memory with 2GB swap, since songs are buffered in memory during playback.
 
-## 💻 Development
+## Optional Features
+
+### Spotify Integration
+
+Parses Spotify track URLs and searches YouTube for the corresponding song. Only individual track URLs are supported (playlists coming soon).
+
+- Get credentials from [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+- Set `SPOTIFY_ENABLED=true` and configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`
+
+### Gemini AI
+
+Generates personality-driven responses for song announcements, help messages, and idle disconnect farewells. Configured as a sassy DJ personality.
+
+- Get an API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+- Set `GEMINI_ENABLED=true` and configure `GEMINI_API_KEY`
+
+## Development
 
 This project was created for personal use in a private Discord server. While you're welcome to use and modify it, please note it's not maintained as a product or service.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
-This project makes use of several excellent open-source libraries that I couldn't have built this without.
-
-- [DiscordGo](https://github.com/bwmarrin/discordgo) - A powerful Go package for creating Discord bots
+- [DiscordGo](https://github.com/bwmarrin/discordgo) - Go package for Discord bots (uses [MohmmedAshraf's fork](https://github.com/MohmmedAshraf/discordgo) with voice encryption fixes)
 - [Opus](https://gopkg.in/hraban/opus.v2) - Go bindings for the Opus audio codec
 
-## 📝 License
+## License
 
 MIT License - See LICENSE file for details.
