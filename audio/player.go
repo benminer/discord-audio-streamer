@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"sync"
@@ -57,12 +58,19 @@ func NewPlayer() (*Player, error) {
 	return player, nil
 }
 
-func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection) error {
+func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *discordgo.VoiceConnection) error {
+	// Start tracing span for the playback session
+	span := sentry.StartSpan(ctx, "audio.playback")
+	span.Description = "Audio playback session"
+	span.SetTag("video_id", data.VideoID)
+	span.SetTag("title", data.Title)
+
 	p.mutex.Lock()
 
 	defer func() {
 		*p.playing = false
 		p.mutex.Unlock()
+		span.Finish()
 	}()
 
 	*p.playing = true
@@ -84,10 +92,12 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 		case _, ok := <-p.completed:
 			if !ok {
 				p.logger.Trace("Playback stopped by channel close")
+				span.Status = sentry.SpanStatusCanceled
 				return nil
 			} else {
 				p.logger.Trace("Playback stopped by done signal")
 			}
+			span.Status = sentry.SpanStatusCanceled
 			return nil
 		default:
 			// Handle fade-out when pausing or stopping
@@ -99,6 +109,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 						continue
 					}
 					p.logger.Warnf("Error reading during fade-out: %v", err)
+					sentry.CaptureException(err)
 					continue
 				}
 
@@ -117,7 +128,10 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 
 				// Encode and send
 				encoded, err := p.encoder.Encode(buffer, opusBuffer)
-				if err == nil {
+				if err != nil {
+					p.logger.Warnf("Error encoding during fade-out: %v", err)
+					sentry.CaptureException(err)
+				} else {
 					select {
 					case voiceChannel.OpusSend <- opusBuffer[:encoded]:
 					case <-p.completed:
@@ -130,6 +144,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 				// If we were stopping and fade-out is complete, exit
 				if p.stopping.Load() && p.fadeOutRemaining == 0 {
 					p.logger.Debug("Fade-out complete, stopping playback")
+					span.Status = sentry.SpanStatusCanceled
 					return nil
 				}
 
@@ -149,13 +164,17 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 					p.logger.Warnf("Error draining buffer during pause: %v", err)
+					sentry.CaptureException(err)
 				}
 
 				// Send silence frame to maintain stream continuity
 				silenceBuffer := make([]int16, 960*2)
 				silenceOpus := make([]byte, 960*4)
 				encoded, err := p.encoder.Encode(silenceBuffer, silenceOpus)
-				if err == nil {
+				if err != nil {
+					p.logger.Warnf("Error encoding silence during pause: %v", err)
+					sentry.CaptureException(err)
+				} else {
 					select {
 					case voiceChannel.OpusSend <- silenceOpus[:encoded]:
 					case <-p.completed:
@@ -174,6 +193,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
 					p.logger.Trace("Reached end of audio stream")
+					span.Status = sentry.SpanStatusOK
 					p.Notifications <- PlaybackNotification{
 						Event:   PlaybackCompleted,
 						VideoID: &data.VideoID,
@@ -185,6 +205,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 					p.logger.Warnf("Error reading from buffer (attempt %d/3): %v", attempts, err)
 					sentry.CaptureException(err)
 					if attempts == 3 {
+						span.Status = sentry.SpanStatusInternalError
 						p.Notifications <- PlaybackNotification{
 							Event:   PlaybackError,
 							VideoID: &data.VideoID,
@@ -234,6 +255,7 @@ func (p *Player) Play(data *LoadResult, voiceChannel *discordgo.VoiceConnection)
 			case voiceChannel.OpusSend <- opusBuffer[:encoded]:
 			case <-p.completed:
 				p.logger.Debug("Playback stopped by channel close")
+				span.Status = sentry.SpanStatusCanceled
 				p.Notifications <- PlaybackNotification{
 					Event:   PlaybackStopped,
 					VideoID: &data.VideoID,

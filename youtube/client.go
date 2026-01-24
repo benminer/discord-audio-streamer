@@ -11,6 +11,7 @@ import (
 
 	"beatbot/config"
 
+	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 
 	"google.golang.org/api/option"
@@ -71,11 +72,20 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 
 func Query(query string) []VideoResponse {
 	logger := log.WithFields(log.Fields{"module": "youtube", "function": "Query"})
+
+	// Start span for YouTube API search
+	span := sentry.StartSpan(context.Background(), "youtube.search")
+	span.Description = "Search YouTube API"
+	span.SetTag("query", query)
+	defer span.Finish()
+
 	api_key := config.Config.Youtube.APIKey
 
 	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
 	if err != nil {
 		logger.Errorf("error creating YouTube client: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return []VideoResponse{}
 	}
 
@@ -88,6 +98,8 @@ func Query(query string) []VideoResponse {
 	response, err := call.Do()
 	if err != nil {
 		logger.Errorf("error querying YouTube: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return []VideoResponse{}
 	}
 
@@ -111,6 +123,8 @@ func Query(query string) []VideoResponse {
 	videoResponse, err := videoCall.Do()
 	if err != nil {
 		logger.Errorf("error getting video details: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return []VideoResponse{}
 	}
 
@@ -126,12 +140,21 @@ func Query(query string) []VideoResponse {
 		}
 	}
 
+	span.Status = sentry.SpanStatusOK
+	span.SetData("results_count", len(videos))
 	logger.Tracef("found %d videos", len(videos))
 	return videos
 }
 
 func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	logger := log.WithFields(log.Fields{"module": "youtube", "video_id": videoResponse.VideoID, "function": "GetVideoStream"})
+
+	// Start span for yt-dlp execution
+	span := sentry.StartSpan(context.Background(), "youtube.get_stream")
+	span.Description = "Get video stream URL via yt-dlp"
+	span.SetTag("video_id", videoResponse.VideoID)
+	defer span.Finish()
+
 	var output []byte
 	var err error
 
@@ -157,6 +180,8 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 			}).Error("yt-dlp command failed")
 
 			if i == 2 {
+				span.Status = sentry.SpanStatusInternalError
+				sentry.CaptureException(fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output)))
 				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output))
 			}
 			continue
@@ -171,6 +196,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 		expiration = 0
 	}
 
+	span.Status = sentry.SpanStatusOK
 	return &YoutubeStream{
 		StreamURL:  streamUrl,
 		Expiration: expiration,

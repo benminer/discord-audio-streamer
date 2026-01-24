@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 	spotifyclient "github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -34,6 +35,7 @@ func NewSpotifyClient() error {
 	}
 	token, err := config.Token(ctx)
 	if err != nil {
+		sentry.CaptureException(err)
 		return err
 	}
 
@@ -45,20 +47,39 @@ func NewSpotifyClient() error {
 
 func Search(query string) (spotifyclient.SearchResult, error) {
 	ctx := context.Background()
+
+	// Start span for Spotify search
+	span := sentry.StartSpan(ctx, "spotify.search")
+	span.Description = "Search Spotify API"
+	span.SetTag("query", query)
+	defer span.Finish()
+
 	results, err := Spotify.Search(ctx, query, spotifyclient.SearchTypeTrack)
 	if err != nil {
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return spotifyclient.SearchResult{}, err
 	}
 
+	span.Status = sentry.SpanStatusOK
 	return *results, nil
 }
 
 func GetTrack(trackID string) (*TrackInfo, error) {
 	log.Tracef("Fetching track from Spotify API: %s", trackID)
 	ctx := context.Background()
+
+	// Start span for Spotify API call
+	span := sentry.StartSpan(ctx, "spotify.get_track")
+	span.Description = "Get track from Spotify API"
+	span.SetTag("track_id", trackID)
+	defer span.Finish()
+
 	track, err := Spotify.GetTrack(ctx, spotifyclient.ID(trackID))
 	if err != nil {
 		log.Errorf("Failed to fetch Spotify track %s: %v", trackID, err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return nil, err
 	}
 
@@ -68,6 +89,7 @@ func GetTrack(trackID string) (*TrackInfo, error) {
 	}
 
 	log.Debugf("Successfully fetched Spotify track: '%s' by %v", track.Name, artists)
+	span.Status = sentry.SpanStatusOK
 	return &TrackInfo{
 		Title:   track.Name,
 		Artists: artists,
@@ -76,8 +98,17 @@ func GetTrack(trackID string) (*TrackInfo, error) {
 
 func GetArtistTopSongs(artistID string) ([]string, error) {
 	ctx := context.Background()
+
+	// Start span for Spotify artist top tracks
+	span := sentry.StartSpan(ctx, "spotify.get_artist_top_songs")
+	span.Description = "Get artist top songs from Spotify API"
+	span.SetTag("artist_id", artistID)
+	defer span.Finish()
+
 	results, err := Spotify.GetArtistsTopTracks(ctx, spotifyclient.ID(artistID), "US")
 	if err != nil {
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return nil, err
 	}
 
@@ -86,6 +117,7 @@ func GetArtistTopSongs(artistID string) ([]string, error) {
 		names = append(names, track.Name)
 	}
 
+	span.Status = sentry.SpanStatusOK
 	return names, nil
 }
 

@@ -237,7 +237,7 @@ func (p *GuildPlayer) loadNext() {
 			return
 		}
 
-		go p.Loader.Load(audio.LoadJob{
+		go p.Loader.Load(context.Background(), audio.LoadJob{
 			URL:     next.Stream.StreamURL,
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
@@ -272,7 +272,7 @@ func (p *GuildPlayer) playNext() {
 		if next.LoadResult == nil {
 			// load the stream
 			// playback will start when the loader has finished
-			go p.Loader.Load(audio.LoadJob{
+			go p.Loader.Load(context.Background(), audio.LoadJob{
 				URL:     next.Stream.StreamURL,
 				VideoID: next.Video.VideoID,
 				Title:   next.Video.Title,
@@ -292,7 +292,7 @@ func (p *GuildPlayer) play(data *audio.LoadResult) {
 	log.Debugf("playing: %s", data.Title)
 	p.LastActivityAt = time.Now()
 
-	if err := p.Player.Play(data, p.VoiceConnection); err != nil {
+	if err := p.Player.Play(context.Background(), data, p.VoiceConnection); err != nil {
 		sentry.CaptureException(err)
 		log.Errorf("Error starting stream: %v", err)
 	}
@@ -300,6 +300,20 @@ func (p *GuildPlayer) play(data *audio.LoadResult) {
 
 func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	log.Tracef("song added: %+v", event.Item.Video.Title)
+
+	// Add breadcrumb for queue add
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "queue",
+		Message:  "Song added to queue: " + event.Item.Video.Title,
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"video_id":   event.Item.Video.VideoID,
+			"title":      event.Item.Video.Title,
+			"guild_id":   p.GuildID,
+			"guild_name": p.getGuildName(),
+		},
+	})
+
 	stream, err := youtube.GetVideoStream(event.Item.Video)
 	if err != nil {
 		log.Errorf("Error getting video stream: %s", err)
@@ -325,7 +339,7 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	if shouldPlay {
 		next := p.GetNext()
 		log.Tracef("no song playing, starting load job for: %s", next.Video.Title)
-		go p.Loader.Load(audio.LoadJob{
+		go p.Loader.Load(context.Background(), audio.LoadJob{
 			URL:     next.Stream.StreamURL,
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
@@ -370,9 +384,54 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	p.VoiceChannelID = &voiceState.ChannelID
 	p.VoiceJoinedAt = &now
 
+	// Add breadcrumb for voice channel join
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "voice",
+		Message:  "Joined voice channel: " + p.getChannelName(voiceState.ChannelID),
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"channel_id":   voiceState.ChannelID,
+			"channel_name": p.getChannelName(voiceState.ChannelID),
+			"guild_id":     p.GuildID,
+			"guild_name":   p.getGuildName(),
+		},
+	})
+
 	log.Tracef("joined voice channel: %s", voiceState.ChannelID)
 
 	return nil
+}
+
+// getGuildName looks up the guild name from Discord, falling back to ID if unavailable
+func (p *GuildPlayer) getGuildName() string {
+	if p.Discord == nil {
+		return p.GuildID
+	}
+	guild, err := p.Discord.State.Guild(p.GuildID)
+	if err != nil {
+		// Try API call if not in cache
+		guild, err = p.Discord.Guild(p.GuildID)
+		if err != nil {
+			return p.GuildID
+		}
+	}
+	return guild.Name
+}
+
+// getChannelName looks up a channel name from Discord, falling back to ID if unavailable
+func (p *GuildPlayer) getChannelName(channelID string) string {
+	if p.Discord == nil || channelID == "" {
+		return channelID
+	}
+	channel, err := p.Discord.State.Channel(channelID)
+	if err != nil {
+		// Try API call if not in cache
+		channel, err = p.Discord.Channel(channelID)
+		if err != nil {
+			return channelID
+		}
+	}
+	return channel.Name
 }
 
 func (p *GuildPlayer) findQueueItemByVideoID(videoID string) (*GuildQueueItem, int) {
@@ -421,6 +480,15 @@ func (p *GuildPlayer) listenForQueueEvents() {
 				p.handleAdd(event)
 			case EventSkip:
 				log.Printf("Skipping to next song in queue")
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "queue",
+					Message:  "Skip requested",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id":   p.GuildID,
+						"guild_name": p.getGuildName(),
+					},
+				})
 				p.Player.Stop()
 				p.playNext()
 				// PlaybackStopped event will play next song
@@ -556,13 +624,50 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 
 			switch event.Event {
 			case audio.PlaybackPaused:
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "playback",
+					Message:  "Playback paused",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id":   p.GuildID,
+						"guild_name": p.getGuildName(),
+					},
+				})
 				p.VoiceConnection.Speaking(false)
 			case audio.PlaybackResumed:
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "playback",
+					Message:  "Playback resumed",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id":   p.GuildID,
+						"guild_name": p.getGuildName(),
+					},
+				})
 				p.VoiceConnection.Speaking(true)
 			case audio.PlaybackStopped:
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "playback",
+					Message:  "Playback stopped",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id":   p.GuildID,
+						"guild_name": p.getGuildName(),
+					},
+				})
 				p.CurrentSong = nil
 				p.VoiceConnection.Speaking(false)
 			case audio.PlaybackCompleted:
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "playback",
+					Message:  "Playback completed",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id":   p.GuildID,
+						"guild_name": p.getGuildName(),
+						"video_id":   videoID,
+					},
+				})
 				p.CurrentSong = nil
 				p.VoiceConnection.Speaking(false)
 				p.playNext()
@@ -570,6 +675,17 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				if queueItem != nil {
 					log.Tracef("playback started for %s", queueItem.Video.Title)
 					p.CurrentSong = &queueItem.Video.Title
+					sentry.AddBreadcrumb(&sentry.Breadcrumb{
+						Category: "playback",
+						Message:  "Playback started: " + queueItem.Video.Title,
+						Level:    sentry.LevelInfo,
+						Data: map[string]interface{}{
+							"guild_id":   p.GuildID,
+							"guild_name": p.getGuildName(),
+							"video_id":   queueItem.Video.VideoID,
+							"title":      queueItem.Video.Title,
+						},
+					})
 				}
 				p.VoiceConnection.Speaking(true)
 				// once a song starts playback, we can pop it from the queue
