@@ -75,8 +75,14 @@
 - Mutex in Play() held for entire duration - avoid adding more mutex contention
 
 #### Spotify Integration
-- Flow: Spotify URL → parse track ID → fetch metadata → YouTube search → queue
-- Only track URLs supported; playlists and artist URLs return "coming soon" message
+- **Track URLs**: Spotify URL → parse track ID → fetch metadata → YouTube search → queue
+- **Playlist URLs**: Fetch first N tracks (configurable) → parallel YouTube search → queue all found
+  - Uses `sync.WaitGroup` + goroutines for parallel YouTube searches
+  - Results sorted by position to maintain playlist order
+  - Duplicates already in queue are skipped
+  - Partial failures handled gracefully (queue what's found, report what's missing)
+  - Sentry spans: `spotify.get_playlist_tracks`, `youtube.parallel_search`
+- Artist URLs return "coming soon" message
 - Optional feature, disabled by default (`SPOTIFY_ENABLED=false`)
 - Requires Spotify API credentials (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`)
 
@@ -158,6 +164,7 @@ Key vars in `.env`:
 - `SPOTIFY_CLIENT_ID` - Spotify API client ID (optional)
 - `SPOTIFY_CLIENT_SECRET` - Spotify API client secret (optional)
 - `SPOTIFY_ENABLED` - Enable Spotify URL parsing (default: false)
+- `SPOTIFY_PLAYLIST_LIMIT` - Max tracks to fetch from playlists (default: 10, max: 50)
 - `GEMINI_API_KEY` - Google Gemini API key (optional)
 - `GEMINI_ENABLED` - Enable AI responses (default: false)
 - `IDLE_TIMEOUT_MINUTES` - Idle disconnect timeout (default: 20)
