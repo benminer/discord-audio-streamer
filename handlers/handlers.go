@@ -817,6 +817,37 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 	}
 }
 
+func (manager *Manager) handleShuffle(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	count := player.Shuffle()
+
+	if count == 0 {
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "the queue is empty, nothing to shuffle",
+			},
+		}
+	}
+
+	if count == 1 {
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "only one song in the queue, nothing to shuffle",
+			},
+		}
+	}
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: "@" + interaction.Member.User.Username + " shuffled the queue (" + strconv.Itoa(count) + " songs)",
+		},
+	}
+}
+
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -875,6 +906,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleResume(interaction)
 	case "reset":
 		return manager.handleReset(interaction)
+	case "shuffle":
+		return manager.handleShuffle(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:

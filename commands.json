@@ -108,5 +108,10 @@
     "name": "purge",
     "type": 1,
     "description": "Purges the queue"
+  },
+  {
+    "name": "shuffle",
+    "type": 1,
+    "description": "Shuffles the current queue"
   }
 ]

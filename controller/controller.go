@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -868,4 +869,20 @@ func (p *GuildPlayer) IsEmpty() bool {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 	return len(p.Queue.Items) == 0
+}
+
+func (p *GuildPlayer) Shuffle() int {
+	p.Queue.Mutex.Lock()
+	defer p.Queue.Mutex.Unlock()
+
+	if len(p.Queue.Items) <= 1 {
+		return len(p.Queue.Items)
+	}
+
+	// Shuffle only affects queued songs; currently playing song (if any) is not in queue
+	rand.Shuffle(len(p.Queue.Items), func(i, j int) {
+		p.Queue.Items[i], p.Queue.Items[j] = p.Queue.Items[j], p.Queue.Items[i]
+	})
+
+	return len(p.Queue.Items)
 }
