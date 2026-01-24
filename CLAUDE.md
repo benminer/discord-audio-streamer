@@ -82,6 +82,10 @@
   - Duplicates already in queue are skipped
   - Partial failures handled gracefully (queue what's found, report what's missing)
   - Sentry spans: `spotify.get_playlist_tracks`, `youtube.parallel_search`
+- **Album URLs**: Fetch first 15 tracks → parallel YouTube search → queue all found
+  - Same parallel processing pattern as playlists
+  - Hardcoded limit of 15 tracks (sufficient for most albums)
+  - Sentry spans: `spotify.get_album_tracks`, `youtube.parallel_search`
 - Artist URLs return "coming soon" message
 - Optional feature, disabled by default (`SPOTIFY_ENABLED=false`)
 - Requires Spotify API credentials (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`)

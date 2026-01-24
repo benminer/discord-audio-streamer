@@ -18,6 +18,7 @@ var Spotify *spotifyclient.Client
 type SpotifyRequest struct {
 	TrackID    string
 	PlaylistID string
+	AlbumID    string
 	ArtistID   string
 }
 
@@ -33,6 +34,13 @@ type PlaylistTrackInfo struct {
 
 type PlaylistResult struct {
 	Name        string
+	Tracks      []PlaylistTrackInfo
+	TotalTracks int
+}
+
+type AlbumResult struct {
+	Name        string
+	Artist      string
 	Tracks      []PlaylistTrackInfo
 	TotalTracks int
 }
@@ -219,6 +227,94 @@ func GetPlaylistTracks(playlistID string, limit int) (*PlaylistResult, error) {
 	}, nil
 }
 
+func GetAlbumTracks(albumID string) (*AlbumResult, error) {
+	log.Tracef("Fetching album tracks from Spotify API: %s", albumID)
+	ctx := context.Background()
+
+	span := sentry.StartSpan(ctx, "spotify.get_album_tracks")
+	span.Description = "Get album tracks from Spotify API"
+	span.SetTag("album_id", albumID)
+	defer span.Finish()
+
+	// Fetch the album to get name, artist, and total track count
+	album, err := Spotify.GetAlbum(ctx, spotifyclient.ID(albumID))
+	if err != nil {
+		log.Errorf("Failed to fetch Spotify album %s: %v", albumID, err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+
+		errStr := err.Error()
+		if strings.Contains(errStr, "404") || strings.Contains(errStr, "Not Found") {
+			return nil, errors.New("album not found")
+		}
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "Forbidden") {
+			return nil, errors.New("album is not accessible")
+		}
+		return nil, err
+	}
+
+	albumName := album.Name
+	totalTracks := int(album.Tracks.Total)
+
+	// Get primary artist name
+	artistName := "Unknown Artist"
+	if len(album.Artists) > 0 {
+		artistName = album.Artists[0].Name
+	}
+
+	if totalTracks == 0 {
+		log.Warnf("Spotify album %s is empty", albumID)
+		span.Status = sentry.SpanStatusOK
+		return nil, errors.New("album is empty")
+	}
+
+	// Fetch album tracks with limit of 15
+	const albumLimit = 15
+	albumTracks, err := Spotify.GetAlbumTracks(ctx, spotifyclient.ID(albumID), spotifyclient.Limit(albumLimit))
+	if err != nil {
+		log.Errorf("Failed to fetch Spotify album tracks %s: %v", albumID, err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return nil, err
+	}
+
+	tracks := make([]PlaylistTrackInfo, 0, albumLimit)
+	for i, track := range albumTracks.Tracks {
+		artists := make([]string, 0, len(track.Artists))
+		for _, artist := range track.Artists {
+			artists = append(artists, artist.Name)
+		}
+
+		tracks = append(tracks, PlaylistTrackInfo{
+			TrackInfo: TrackInfo{
+				Title:   track.Name,
+				Artists: artists,
+			},
+			Position: i,
+		})
+	}
+
+	if len(tracks) == 0 {
+		log.Warnf("Spotify album %s has no playable tracks", albumID)
+		span.Status = sentry.SpanStatusOK
+		return nil, errors.New("album contains no playable tracks")
+	}
+
+	log.Debugf("Successfully fetched %d tracks from Spotify album '%s' by %s (total: %d)", len(tracks), albumName, artistName, totalTracks)
+	span.Status = sentry.SpanStatusOK
+	span.SetData("tracks_count", len(tracks))
+	span.SetData("total_tracks", totalTracks)
+	span.SetData("album_name", albumName)
+	span.SetData("artist_name", artistName)
+
+	return &AlbumResult{
+		Name:        albumName,
+		Artist:      artistName,
+		Tracks:      tracks,
+		TotalTracks: totalTracks,
+	}, nil
+}
+
 func ParseSpotifyURL(url string) (SpotifyRequest, error) {
 	if strings.HasPrefix(url, "https://open.spotify.com/") {
 		parts := strings.Split(url, "/")
@@ -236,6 +332,9 @@ func ParseSpotifyURL(url string) (SpotifyRequest, error) {
 		case "playlist":
 			request.PlaylistID = id
 			log.Tracef("Parsed Spotify playlist URL: %s", id)
+		case "album":
+			request.AlbumID = id
+			log.Tracef("Parsed Spotify album URL: %s", id)
 		case "artist":
 			request.ArtistID = id
 			log.Tracef("Parsed Spotify artist URL: %s", id)
