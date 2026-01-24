@@ -2,11 +2,14 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"net/http"
@@ -147,6 +150,12 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	if strings.HasPrefix(query, "https://open.spotify.com/") {
 		log.Debugf("Detected Spotify URL: %s", query)
 
+		// Check if Spotify is enabled
+		if !config.Config.Spotify.Enabled {
+			manager.SendFollowup(interaction, "", "Spotify integration is not enabled. Ask the bot admin to set SPOTIFY_ENABLED=true.", true)
+			return
+		}
+
 		spotifyReq, err := spotify.ParseSpotifyURL(query)
 		if err != nil {
 			log.Errorf("Error parsing Spotify URL: %v", err)
@@ -155,16 +164,20 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 			return
 		}
 
-		if spotifyReq.TrackID == "" {
-			log.Debugf("Spotify URL is not a track (playlist or artist)")
+		// Handle playlist URLs
+		if spotifyReq.PlaylistID != "" {
+			manager.handleSpotifyPlaylist(interaction, player, spotifyReq.PlaylistID)
+			return
+		}
 
-			if spotifyReq.PlaylistID != "" {
-				manager.SendFollowup(interaction, "", "Spotify playlists are coming soon! For now, please use track URLs or search queries.", true)
-			} else if spotifyReq.ArtistID != "" {
-				manager.SendFollowup(interaction, "", "Spotify artists are coming soon! For now, please use track URLs or search queries.", true)
-			} else {
-				manager.SendFollowup(interaction, "", "Only Spotify track URLs are supported right now. Playlists and artists coming soon!", true)
-			}
+		// Handle artist URLs (still coming soon)
+		if spotifyReq.ArtistID != "" {
+			manager.SendFollowup(interaction, "", "Spotify artists are coming soon! For now, please use track URLs, playlist URLs, or search queries.", true)
+			return
+		}
+
+		if spotifyReq.TrackID == "" {
+			manager.SendFollowup(interaction, "", "Invalid Spotify URL. Please use a track or playlist URL.", true)
 			return
 		}
 
@@ -250,6 +263,265 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 
 	manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
 	player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+}
+
+// searchResult holds the result of a single YouTube search for playlist processing
+type searchResult struct {
+	Position int
+	Video    youtube.VideoResponse
+	Query    string
+	Found    bool
+}
+
+func (manager *Manager) handleSpotifyPlaylist(interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
+	log.Debugf("Processing Spotify playlist: %s", playlistID)
+
+	// Send immediate acknowledgment
+	manager.SendFollowup(interaction, "", "Found a Spotify playlist, fetching tracks...", false)
+
+	// Add breadcrumb for playlist fetch
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "spotify_playlist",
+		Message:  "Fetching Spotify playlist: " + playlistID,
+		Level:    sentry.LevelInfo,
+	})
+
+	// Fetch playlist tracks
+	playlistResult, err := spotify.GetPlaylistTracks(playlistID, config.Config.Spotify.PlaylistLimit)
+	if err != nil {
+		log.Errorf("Error fetching Spotify playlist: %v", err)
+		sentry.CaptureException(err)
+
+		// Provide user-friendly error messages
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "not found"):
+			manager.SendFollowup(interaction, "", "That playlist doesn't exist or has been deleted.", true)
+		case strings.Contains(errMsg, "private") || strings.Contains(errMsg, "not accessible"):
+			manager.SendFollowup(interaction, "", "That playlist is private. Make it public or use track URLs instead.", true)
+		case strings.Contains(errMsg, "empty"):
+			manager.SendFollowup(interaction, "", "That playlist is empty.", true)
+		case strings.Contains(errMsg, "no playable tracks"):
+			manager.SendFollowup(interaction, "", "That playlist contains no playable tracks (only podcasts or episodes).", true)
+		default:
+			manager.SendFollowup(interaction, "", "Error fetching playlist from Spotify: "+errMsg, true)
+		}
+		return
+	}
+
+	// Add breadcrumb for successful fetch
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "spotify_playlist",
+		Message:  fmt.Sprintf("Fetched %d tracks from playlist '%s'", len(playlistResult.Tracks), playlistResult.Name),
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"playlist_id":   playlistID,
+			"playlist_name": playlistResult.Name,
+			"track_count":   len(playlistResult.Tracks),
+			"total_tracks":  playlistResult.TotalTracks,
+		},
+	})
+
+	// Use context with timeout for graceful cancellation if Discord interaction times out
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Start parallel YouTube search span
+	searchSpan := sentry.StartSpan(ctx, "youtube.parallel_search")
+	searchSpan.Description = "Parallel YouTube search for playlist tracks"
+	searchSpan.SetTag("track_count", strconv.Itoa(len(playlistResult.Tracks)))
+
+	// Search YouTube for each track in parallel with concurrency limit
+	results := make(chan searchResult, len(playlistResult.Tracks))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10) // Limit to 10 concurrent YouTube API searches
+
+	for i, track := range playlistResult.Tracks {
+		wg.Add(1)
+		go func(position int, track spotify.PlaylistTrackInfo) {
+			defer wg.Done()
+			sem <- struct{}{}        // Acquire semaphore
+			defer func() { <-sem }() // Release semaphore
+
+			artistsStr := strings.Join(track.Artists, ", ")
+			query := artistsStr + " - " + track.Title
+
+			videos := youtube.Query(query)
+
+			if len(videos) > 0 {
+				results <- searchResult{
+					Position: position,
+					Video:    videos[0],
+					Query:    query,
+					Found:    true,
+				}
+			} else {
+				log.Warnf("No YouTube results for playlist track: %s", query)
+				results <- searchResult{
+					Position: position,
+					Query:    query,
+					Found:    false,
+				}
+			}
+		}(i, track)
+	}
+
+	// Close channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	var searchResults []searchResult
+	for result := range results {
+		searchResults = append(searchResults, result)
+	}
+
+	// Sort by position to maintain playlist order
+	sort.Slice(searchResults, func(i, j int) bool {
+		return searchResults[i].Position < searchResults[j].Position
+	})
+
+	// Separate found and not found
+	var foundVideos []youtube.VideoResponse
+	var notFoundQueries []string
+	for _, r := range searchResults {
+		if r.Found {
+			foundVideos = append(foundVideos, r.Video)
+		} else {
+			notFoundQueries = append(notFoundQueries, r.Query)
+		}
+	}
+
+	// Check for duplicates in queue
+	var videosToQueue []youtube.VideoResponse
+	var duplicateCount int
+
+	// Get current queue video IDs
+	queueVideoIDs := make(map[string]bool)
+	player.Queue.Mutex.Lock()
+	for _, item := range player.Queue.Items {
+		queueVideoIDs[item.Video.VideoID] = true
+	}
+	player.Queue.Mutex.Unlock()
+
+	for _, video := range foundVideos {
+		if queueVideoIDs[video.VideoID] {
+			duplicateCount++
+			log.Debugf("Skipping duplicate: %s (already in queue)", video.Title)
+		} else {
+			videosToQueue = append(videosToQueue, video)
+			// Mark as in queue for subsequent checks
+			queueVideoIDs[video.VideoID] = true
+		}
+	}
+
+	// Finish search span
+	searchSpan.Status = sentry.SpanStatusOK
+	searchSpan.SetData("found_count", len(foundVideos))
+	searchSpan.SetData("not_found_count", len(notFoundQueries))
+	searchSpan.SetData("duplicate_count", duplicateCount)
+	searchSpan.SetData("queued_count", len(videosToQueue))
+	searchSpan.Finish()
+
+	// Add breadcrumb for search results
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "spotify_playlist",
+		Message:  fmt.Sprintf("Parallel YouTube search completed: %d found, %d not found, %d duplicates", len(foundVideos), len(notFoundQueries), duplicateCount),
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"playlist_id":      playlistID,
+			"tracks_requested": len(playlistResult.Tracks),
+			"tracks_found":     len(foundVideos),
+			"tracks_not_found": len(notFoundQueries),
+			"duplicates":       duplicateCount,
+			"queued":           len(videosToQueue),
+		},
+	})
+
+	// Handle no videos found
+	if len(videosToQueue) == 0 {
+		if duplicateCount > 0 {
+			manager.SendFollowup(interaction, "", fmt.Sprintf("All tracks from **%s** are already in the queue!", playlistResult.Name), true)
+		} else {
+			manager.SendFollowup(interaction, "", fmt.Sprintf("Couldn't find any tracks from **%s** on YouTube.", playlistResult.Name), true)
+		}
+		return
+	}
+
+	// Queue all found videos
+	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
+
+	for _, video := range videosToQueue {
+		player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+	}
+
+	// Add breadcrumb for queued songs
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "queue",
+		Message:  fmt.Sprintf("Queued %d songs from Spotify playlist", len(videosToQueue)),
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"playlist_id":   playlistID,
+			"playlist_name": playlistResult.Name,
+			"songs_queued":  len(videosToQueue),
+		},
+	})
+
+	// Build response message
+	var responseBuilder strings.Builder
+	responseBuilder.WriteString(fmt.Sprintf("**Queued %d tracks from \"%s\":**\n", len(videosToQueue), playlistResult.Name))
+
+	for i, video := range videosToQueue {
+		responseBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, video.Title))
+	}
+
+	// Add notes about skipped tracks
+	var notes []string
+	if len(notFoundQueries) > 0 {
+		notes = append(notes, fmt.Sprintf("%d tracks couldn't be found on YouTube", len(notFoundQueries)))
+	}
+	if duplicateCount > 0 {
+		notes = append(notes, fmt.Sprintf("%d tracks were already in queue", duplicateCount))
+	}
+	if playlistResult.TotalTracks > len(playlistResult.Tracks) {
+		notes = append(notes, fmt.Sprintf("showing first %d of %d total tracks", len(playlistResult.Tracks), playlistResult.TotalTracks))
+	}
+
+	if len(notes) > 0 {
+		responseBuilder.WriteString("\n(")
+		responseBuilder.WriteString(strings.Join(notes, ", "))
+		responseBuilder.WriteString(")")
+	}
+
+	// Add first song note
+	if firstSongQueued {
+		responseBuilder.WriteString("\n\n(Playback will start shortly - first song needs to load)")
+	}
+
+	backupContent := responseBuilder.String()
+
+	// Generate AI response with truncated track list to reduce token cost for large playlists
+	trackListPreview := backupContent
+	if len(videosToQueue) > 10 {
+		// Build a shorter preview for the AI prompt
+		var previewBuilder strings.Builder
+		previewBuilder.WriteString(fmt.Sprintf("**Queued %d tracks from \"%s\"** (showing first 5):\n", len(videosToQueue), playlistResult.Name))
+		for i := 0; i < 5 && i < len(videosToQueue); i++ {
+			previewBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, videosToQueue[i].Title))
+		}
+		previewBuilder.WriteString("...")
+		trackListPreview = previewBuilder.String()
+	}
+
+	aiPrompt := fmt.Sprintf("User %s queued a Spotify playlist called '%s' with %d tracks. Here's a preview:\n%s",
+		interaction.Member.User.Username,
+		playlistResult.Name,
+		len(videosToQueue),
+		trackListPreview)
+
+	manager.SendFollowup(interaction, aiPrompt, backupContent, false)
 }
 
 func (manager *Manager) SendRequest(interaction *Interaction, content string, ephemeral bool) {

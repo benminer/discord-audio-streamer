@@ -26,6 +26,17 @@ type TrackInfo struct {
 	Artists []string
 }
 
+type PlaylistTrackInfo struct {
+	TrackInfo
+	Position int
+}
+
+type PlaylistResult struct {
+	Name        string
+	Tracks      []PlaylistTrackInfo
+	TotalTracks int
+}
+
 func NewSpotifyClient() error {
 	ctx := context.Background()
 	config := &clientcredentials.Config{
@@ -119,6 +130,93 @@ func GetArtistTopSongs(artistID string) ([]string, error) {
 
 	span.Status = sentry.SpanStatusOK
 	return names, nil
+}
+
+func GetPlaylistTracks(playlistID string, limit int) (*PlaylistResult, error) {
+	log.Tracef("Fetching playlist tracks from Spotify API: %s (limit: %d)", playlistID, limit)
+	ctx := context.Background()
+
+	span := sentry.StartSpan(ctx, "spotify.get_playlist_tracks")
+	span.Description = "Get playlist tracks from Spotify API"
+	span.SetTag("playlist_id", playlistID)
+	defer span.Finish()
+
+	// Fetch the playlist to get name and total track count
+	playlist, err := Spotify.GetPlaylist(ctx, spotifyclient.ID(playlistID))
+	if err != nil {
+		log.Errorf("Failed to fetch Spotify playlist %s: %v", playlistID, err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+
+		// Note: zmb3/spotify client doesn't provide typed errors, so we parse error strings.
+		// This is fragile but necessary for user-friendly error messages.
+		errStr := err.Error()
+		if strings.Contains(errStr, "404") || strings.Contains(errStr, "Not Found") {
+			return nil, errors.New("playlist not found")
+		}
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "Forbidden") {
+			return nil, errors.New("playlist is private or not accessible")
+		}
+		return nil, err
+	}
+
+	playlistName := playlist.Name
+	totalTracks := int(playlist.Tracks.Total)
+
+	if totalTracks == 0 {
+		log.Warnf("Spotify playlist %s is empty", playlistID)
+		span.Status = sentry.SpanStatusOK
+		return nil, errors.New("playlist is empty")
+	}
+
+	// Fetch playlist items with the specified limit
+	items, err := Spotify.GetPlaylistItems(ctx, spotifyclient.ID(playlistID), spotifyclient.Limit(limit))
+	if err != nil {
+		log.Errorf("Failed to fetch Spotify playlist items %s: %v", playlistID, err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return nil, err
+	}
+
+	tracks := make([]PlaylistTrackInfo, 0, limit)
+	for i, item := range items.Items {
+		// Skip non-track items (podcasts, episodes, etc.)
+		if item.Track.Track == nil {
+			continue
+		}
+
+		track := item.Track.Track
+		artists := make([]string, 0, len(track.Artists))
+		for _, artist := range track.Artists {
+			artists = append(artists, artist.Name)
+		}
+
+		tracks = append(tracks, PlaylistTrackInfo{
+			TrackInfo: TrackInfo{
+				Title:   track.Name,
+				Artists: artists,
+			},
+			Position: i,
+		})
+	}
+
+	if len(tracks) == 0 {
+		log.Warnf("Spotify playlist %s has no playable tracks (only podcasts or episodes)", playlistID)
+		span.Status = sentry.SpanStatusOK
+		return nil, errors.New("playlist contains no playable tracks (only podcasts or episodes)")
+	}
+
+	log.Debugf("Successfully fetched %d tracks from Spotify playlist '%s' (total: %d)", len(tracks), playlistName, totalTracks)
+	span.Status = sentry.SpanStatusOK
+	span.SetData("tracks_count", len(tracks))
+	span.SetData("total_tracks", totalTracks)
+	span.SetData("playlist_name", playlistName)
+
+	return &PlaylistResult{
+		Name:        playlistName,
+		Tracks:      tracks,
+		TotalTracks: totalTracks,
+	}, nil
 }
 
 func ParseSpotifyURL(url string) (SpotifyRequest, error) {
