@@ -46,6 +46,16 @@
 - Uses MohmmedAshraf's fork with encryption fixes + buffer size tweaks
 - Context-based timeouts, Status field instead of Ready boolean
 
+**`spotify/client.go`** - Spotify URL parsing
+- OAuth2 client credentials authentication
+- Parses track URLs → converts to YouTube search queries
+- Playlists and artist URLs not yet supported
+
+**`gemini/gemini.go`** - AI response generation
+- Uses `gemini-2.0-flash` model
+- Generates sassy DJ personality responses for song announcements
+- Also used for help responses and idle disconnect messages
+
 ### Important Architectural Decisions
 
 #### Audio Streaming (Not Buffering)
@@ -63,6 +73,24 @@
 - Use `atomic.Bool` for shared state accessed by multiple goroutines
 - Player state (`paused`, `stopping`) uses atomics, not mutexes
 - Mutex in Play() held for entire duration - avoid adding more mutex contention
+
+#### Spotify Integration
+- Flow: Spotify URL → parse track ID → fetch metadata → YouTube search → queue
+- Only track URLs supported; playlists and artist URLs return "coming soon" message
+- Optional feature, disabled by default (`SPOTIFY_ENABLED=false`)
+- Requires Spotify API credentials (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`)
+
+#### Gemini AI Integration
+- Optional feature for generating personality-driven responses
+- Used for: song queue announcements, help messages, idle disconnect farewells
+- Configured as a sassy, pretentious AI DJ personality
+- Disabled by default (`GEMINI_ENABLED=false`)
+
+#### Idle Timeout
+- Bot disconnects from voice after 20 minutes of inactivity
+- Configurable via `IDLE_TIMEOUT_MINUTES` env var
+- Sends Gemini-generated farewell message if Gemini is enabled
+- Implemented via `startIdleChecker()` goroutine per guild
 
 ## Discord Voice Setup
 
@@ -127,7 +155,13 @@ Key vars in `.env`:
 - `DISCORD_BOT_TOKEN` - Required
 - `DISCORD_APP_ID` - Required
 - `YOUTUBE_API_KEY` - Required for searches
-- `AUDIO_QUALITY` - Was tested, not implemented (didn't help)
+- `SPOTIFY_CLIENT_ID` - Spotify API client ID (optional)
+- `SPOTIFY_CLIENT_SECRET` - Spotify API client secret (optional)
+- `SPOTIFY_ENABLED` - Enable Spotify URL parsing (default: false)
+- `GEMINI_API_KEY` - Google Gemini API key (optional)
+- `GEMINI_ENABLED` - Enable AI responses (default: false)
+- `IDLE_TIMEOUT_MINUTES` - Idle disconnect timeout (default: 20)
+- `SENTRY_DSN` - Sentry error tracking (optional)
 
 ### Log Levels
 - TRACE - Very verbose, use for debugging specific issues
