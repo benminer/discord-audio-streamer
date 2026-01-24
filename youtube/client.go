@@ -24,10 +24,9 @@ type VideoResponse struct {
 }
 
 type YoutubeStream struct {
-	StreamURL  string
-	Expiration int64
-	Title      string
-	VideoID    string
+	StreamURL string
+	Title     string
+	VideoID   string
 }
 
 func ParseYoutubeUrl(_url string) string {
@@ -190,42 +189,13 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 	}
 
 	streamUrl := strings.TrimSpace(string(output))
-	expiration, expErr := getExpiration(streamUrl)
-	if expErr != nil {
-		logger.Warnf("error getting expiration: %v", expErr)
-		expiration = 0
-	}
 
 	span.Status = sentry.SpanStatusOK
 	return &YoutubeStream{
-		StreamURL:  streamUrl,
-		Expiration: expiration,
-		Title:      videoResponse.Title,
-		VideoID:    videoResponse.VideoID,
+		StreamURL: streamUrl,
+		Title:     videoResponse.Title,
+		VideoID:   videoResponse.VideoID,
 	}, nil
-}
-
-func getExpiration(streamURL string) (int64, error) {
-	expireIndex := strings.Index(streamURL, "expire/")
-	if expireIndex == -1 {
-		return 0, fmt.Errorf("no expiration found in URL")
-	}
-
-	startIndex := expireIndex + len("expire/")
-
-	endIndex := strings.Index(streamURL[startIndex:], "/")
-	if endIndex == -1 {
-		return 0, fmt.Errorf("malformed expiration in URL")
-	}
-
-	expireStr := streamURL[startIndex : startIndex+endIndex]
-
-	expiration, err := strconv.ParseInt(expireStr, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("error parsing expiration: %v", err)
-	}
-
-	return expiration, nil
 }
 
 func parseDuration(duration string) float64 {
