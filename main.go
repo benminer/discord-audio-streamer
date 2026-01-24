@@ -37,6 +37,7 @@ func main() {
 
 	if err := sentry.Init(sentry.ClientOptions{
 		Dsn:              os.Getenv("SENTRY_DSN"),
+		Environment:      os.Getenv("SENTRY_ENVIRONMENT"),
 		TracesSampleRate: 1.0,
 	}); err != nil {
 		log.Fatalf("sentry.Init: %s", err)

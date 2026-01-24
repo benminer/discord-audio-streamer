@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/genai"
 
@@ -29,12 +30,20 @@ func generateResponse(prompt string) string {
 		return ""
 	}
 
+	// Start span for Gemini AI generation
+	span := sentry.StartSpan(ctx, "gemini.generate")
+	span.Description = "Generate AI response"
+	span.SetTag("model", "gemini-2.0-flash")
+	defer span.Finish()
+
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.Config.Gemini.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
 		log.Errorf("failed to create client: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return ""
 	}
 
@@ -46,6 +55,8 @@ func generateResponse(prompt string) string {
 	resp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
 	if err != nil {
 		log.Errorf("failed to generate content: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
 		return ""
 	}
 
@@ -60,6 +71,7 @@ func generateResponse(prompt string) string {
 		}
 	}
 	response := sb.String()
+	span.Status = sentry.SpanStatusOK
 	return response
 }
 

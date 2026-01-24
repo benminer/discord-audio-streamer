@@ -2,6 +2,7 @@ package audio
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os/exec"
@@ -45,12 +46,20 @@ func NewLoader() *Loader {
 	}
 }
 
-func (l *Loader) Load(job LoadJob) {
+func (l *Loader) Load(ctx context.Context, job LoadJob) {
 	l.logger.Debugf("starting load for %s", job.VideoID)
+
+	// Start tracing span for the entire load operation
+	span := sentry.StartSpan(ctx, "audio.load")
+	span.Description = "Load audio via FFmpeg"
+	span.SetTag("video_id", job.VideoID)
+	span.SetTag("title", job.Title)
+
 	l.mutex.Lock()
 	defer func() {
 		l.mutex.Unlock()
 		l.completed <- true
+		span.Finish()
 	}()
 
 	l.Notifications <- PlaybackNotification{
@@ -83,6 +92,7 @@ func (l *Loader) Load(job LoadJob) {
 		detailedErr := errors.New("failed to create stdout pipe: " + err.Error())
 		log.Errorf("error creating pipe for %s: %v", job.VideoID, detailedErr)
 		sentry.CaptureException(detailedErr)
+		span.Status = sentry.SpanStatusInternalError
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoadError,
 			VideoID: &job.VideoID,
@@ -98,6 +108,7 @@ func (l *Loader) Load(job LoadJob) {
 		detailedErr := errors.New("failed to start ffmpeg: " + err.Error())
 		log.Errorf("error starting ffmpeg for %s: %v", job.VideoID, detailedErr)
 		sentry.CaptureException(detailedErr)
+		span.Status = sentry.SpanStatusInternalError
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoadError,
 			VideoID: &job.VideoID,
@@ -123,6 +134,7 @@ func (l *Loader) Load(job LoadJob) {
 	select {
 	case <-l.canceled:
 		l.logger.Debugf("load for %s canceled", job.VideoID)
+		span.Status = sentry.SpanStatusCanceled
 		if ffmpeg.Process != nil {
 			ffmpeg.Process.Kill()
 			ffmpeg.Wait() // Reap zombie process
@@ -146,6 +158,7 @@ func (l *Loader) Load(job LoadJob) {
 			detailedErr := errors.New(errMsg)
 			log.Errorf("error loading %s: %v", job.VideoID, detailedErr)
 			sentry.CaptureException(detailedErr)
+			span.Status = sentry.SpanStatusInternalError
 			if ffmpeg.Process != nil {
 				ffmpeg.Process.Kill()
 				ffmpeg.Wait() // Reap zombie process
@@ -167,6 +180,7 @@ func (l *Loader) Load(job LoadJob) {
 			detailedErr := errors.New(errMsg)
 			log.Errorf("error loading %s: %v", job.VideoID, detailedErr)
 			sentry.CaptureException(detailedErr)
+			span.Status = sentry.SpanStatusInternalError
 			l.Notifications <- PlaybackNotification{
 				Event:   PlaybackLoadError,
 				VideoID: &job.VideoID,
@@ -174,6 +188,11 @@ func (l *Loader) Load(job LoadJob) {
 			}
 			return
 		}
+
+		// Success - record buffer size and set OK status
+		span.Status = sentry.SpanStatusOK
+		span.SetData("buffer_bytes", res.buf.Len())
+		span.SetData("load_duration_ms", time.Since(start).Milliseconds())
 
 		log.Tracef("loaded %s (%d bytes)", job.VideoID, res.buf.Len())
 		output := io.NopCloser(bytes.NewReader(res.buf.Bytes()))
@@ -198,6 +217,7 @@ func (l *Loader) Load(job LoadJob) {
 		detailedErr := errors.New(errMsg)
 		log.Errorf("ffmpeg timed out for %s: %v", job.VideoID, detailedErr)
 		sentry.CaptureException(detailedErr)
+		span.Status = sentry.SpanStatusDeadlineExceeded
 		if ffmpeg.Process != nil {
 			ffmpeg.Process.Kill()
 			ffmpeg.Wait() // Reap zombie process

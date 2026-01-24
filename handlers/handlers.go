@@ -562,6 +562,13 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 	log.Debugf("Received command: %+v", interaction.Data.Name)
 
 	sentry.CurrentHub().ConfigureScope(func(scope *sentry.Scope) {
+		// Set user context for better Sentry user tracking
+		scope.SetUser(sentry.User{
+			ID:       interaction.Member.User.ID,
+			Username: interaction.Member.User.Username,
+		})
+
+		// Set interaction context (guild name comes from breadcrumbs in controller.go)
 		scope.SetContext("interaction", map[string]interface{}{
 			"name":     interaction.Data.Name,
 			"options":  interaction.Data.Options,
@@ -569,6 +576,10 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 			"user_id":  interaction.Member.User.ID,
 			"username": interaction.Member.User.Username,
 		})
+
+		// Set tags for filtering
+		scope.SetTag("guild_id", interaction.GuildID)
+		scope.SetTag("command", interaction.Data.Name)
 	})
 
 	switch interaction.Data.Name {
