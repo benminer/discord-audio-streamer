@@ -74,6 +74,15 @@
 - Player state (`paused`, `stopping`) uses atomics, not mutexes
 - Mutex in Play() held for entire duration - avoid adding more mutex contention
 
+#### YouTube Playlist Integration
+- **Playlist URLs**: Fetch videos from YouTube API → deduplicate against queue → queue all found
+  - Default limit: 15 videos (configurable via `YOUTUBE_PLAYLIST_LIMIT`, max 50)
+  - Handles `youtube.com/playlist?list=...` and `youtube.com/watch?v=...&list=...` URLs
+  - Duplicates already in queue are skipped
+  - Private/deleted playlists handled gracefully with user-friendly errors
+  - Sentry span: `youtube.get_playlist_videos`
+- Simpler than Spotify since we already have video IDs (no YouTube search step needed)
+
 #### Spotify Integration
 - **Track URLs**: Spotify URL → parse track ID → fetch metadata → YouTube search → queue
 - **Playlist URLs**: Fetch first N tracks (configurable) → parallel YouTube search → queue all found
@@ -165,6 +174,7 @@ Key vars in `.env`:
 - `DISCORD_BOT_TOKEN` - Required
 - `DISCORD_APP_ID` - Required
 - `YOUTUBE_API_KEY` - Required for searches
+- `YOUTUBE_PLAYLIST_LIMIT` - Max videos to fetch from YouTube playlists (default: 15, max: 50)
 - `SPOTIFY_CLIENT_ID` - Spotify API client ID (optional)
 - `SPOTIFY_CLIENT_SECRET` - Spotify API client secret (optional)
 - `SPOTIFY_ENABLED` - Enable Spotify URL parsing (default: false)

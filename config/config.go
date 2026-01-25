@@ -26,7 +26,8 @@ type NGrokConfig struct {
 }
 
 type YoutubeConfig struct {
-	APIKey string
+	APIKey        string
+	PlaylistLimit int
 }
 
 type GeminiConfig struct {
@@ -74,7 +75,8 @@ func NewConfig() {
 			IdleTimeoutMinutes:  getIdleTimeout(),
 		},
 		Youtube: YoutubeConfig{
-			APIKey: os.Getenv("YOUTUBE_API_KEY"),
+			APIKey:        os.Getenv("YOUTUBE_API_KEY"),
+			PlaylistLimit: getYouTubePlaylistLimit(),
 		},
 		Gemini: GeminiConfig{
 			Enabled: os.Getenv("GEMINI_ENABLED") == "true",
@@ -114,6 +116,21 @@ func getPlaylistLimit() int {
 	}
 	if limit > 50 {
 		return 50 // Cap at 50 for API and performance reasons
+	}
+	return limit
+}
+
+func getYouTubePlaylistLimit() int {
+	limitStr := os.Getenv("YOUTUBE_PLAYLIST_LIMIT")
+	if limitStr == "" {
+		return 15
+	}
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		return 15
+	}
+	if limit > 50 {
+		return 50 // Cap at 50 (YouTube API max per page)
 	}
 	return limit
 }

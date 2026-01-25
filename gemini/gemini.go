@@ -121,7 +121,7 @@ Keep it concise - a few sentences max. You can curse if it feels natural.
 Here are the available commands:
 
 **Music Control:**
-/play (or /queue) - Queue a song. Takes a search query, YouTube URL, or Spotify track URL
+/play (or /queue) - Queue a song. Takes a search query, YouTube URL/playlist, or Spotify URL. Note: YouTube links with ?list= will queue the whole playlist
 /skip - Skip the current song and play the next in queue
 /pause (or /stop) - Pause the current song
 /resume - Resume playback

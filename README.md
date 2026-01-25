@@ -65,10 +65,14 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    NGROK_AUTHTOKEN=your_ngrok_token
    NGROK_DOMAIN=your_reserved_domain
 
+   # Optional - YouTube playlist limit
+   YOUTUBE_PLAYLIST_LIMIT=15
+
    # Optional - Spotify integration
    SPOTIFY_ENABLED=false
    SPOTIFY_CLIENT_ID=your_spotify_client_id
    SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+   SPOTIFY_PLAYLIST_LIMIT=10
 
    # Optional - Gemini AI
    GEMINI_ENABLED=false
@@ -145,12 +149,20 @@ A simple bot implementation for playing audio in Discord voice channels using [y
 
 ## Optional Features
 
+### YouTube Playlist Support
+
+Queue entire YouTube playlists with a single command. Just paste a YouTube playlist URL.
+
+- Default limit: 15 videos per playlist
+- Set `YOUTUBE_PLAYLIST_LIMIT` to change (max 50)
+
 ### Spotify Integration
 
-Parses Spotify track URLs and searches YouTube for the corresponding song. Only individual track URLs are supported (playlists coming soon).
+Parses Spotify track, playlist, and album URLs and searches YouTube for the corresponding songs.
 
 - Get credentials from [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
 - Set `SPOTIFY_ENABLED=true` and configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`
+- Set `SPOTIFY_PLAYLIST_LIMIT` to change the default playlist limit (default 10, max 50)
 
 ### Gemini AI
 

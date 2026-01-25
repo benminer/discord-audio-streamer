@@ -233,6 +233,14 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		return
 	}
 
+	// Check for YouTube playlist URL first
+	youtubeURL := youtube.ParseYouTubeURL(query)
+	if youtubeURL.PlaylistID != "" {
+		log.Debugf("Detected YouTube playlist URL: %s", youtubeURL.PlaylistID)
+		manager.handleYouTubePlaylist(interaction, player, youtubeURL.PlaylistID)
+		return
+	}
+
 	videoID := youtube.ParseYoutubeUrl(query)
 
 	var video youtube.VideoResponse
@@ -622,6 +630,164 @@ func (manager *Manager) handleSpotifyAlbum(interaction *Interaction, player *con
 	})
 }
 
+func (manager *Manager) handleYouTubePlaylist(interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
+	log.Debugf("Processing YouTube playlist: %s", playlistID)
+
+	// Send immediate acknowledgment
+	manager.SendFollowup(interaction, "", "Found a YouTube playlist, fetching videos...", false)
+
+	// Add Sentry breadcrumb
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "youtube_playlist",
+		Message:  "Fetching YouTube playlist: " + playlistID,
+		Level:    sentry.LevelInfo,
+	})
+
+	// Fetch playlist videos
+	playlistResult, err := youtube.GetPlaylistVideos(playlistID, config.Config.Youtube.PlaylistLimit)
+	if err != nil {
+		log.Errorf("Error fetching YouTube playlist: %v", err)
+		sentry.CaptureException(err)
+
+		// Provide user-friendly error messages
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "not found"):
+			manager.SendFollowup(interaction, "", "That playlist doesn't exist or has been deleted.", true)
+		case strings.Contains(errMsg, "private"):
+			manager.SendFollowup(interaction, "", "That playlist is private.", true)
+		case strings.Contains(errMsg, "empty"):
+			manager.SendFollowup(interaction, "", "That playlist is empty or contains no accessible videos.", true)
+		default:
+			manager.SendFollowup(interaction, "", "Error fetching playlist from YouTube: "+errMsg, true)
+		}
+		return
+	}
+
+	// Convert playlist videos to VideoResponse slice
+	videos := make([]youtube.VideoResponse, 0, len(playlistResult.Videos))
+	for _, v := range playlistResult.Videos {
+		videos = append(videos, youtube.VideoResponse{
+			Title:   v.Title,
+			VideoID: v.VideoID,
+		})
+	}
+
+	// Check for duplicates against current queue
+	var videosToQueue []youtube.VideoResponse
+	var duplicateCount int
+
+	queueVideoIDs := make(map[string]bool)
+	player.Queue.Mutex.Lock()
+	for _, item := range player.Queue.Items {
+		queueVideoIDs[item.Video.VideoID] = true
+	}
+	player.Queue.Mutex.Unlock()
+
+	for _, video := range videos {
+		if queueVideoIDs[video.VideoID] {
+			duplicateCount++
+			log.Debugf("Skipping duplicate: %s (already in queue)", video.Title)
+		} else {
+			videosToQueue = append(videosToQueue, video)
+			queueVideoIDs[video.VideoID] = true
+		}
+	}
+
+	// Add Sentry breadcrumb for results
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "youtube_playlist",
+		Message:  fmt.Sprintf("YouTube playlist processed: %d to queue, %d duplicates", len(videosToQueue), duplicateCount),
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"playlist_id":    playlistID,
+			"playlist_name":  playlistResult.Name,
+			"videos_fetched": len(videos),
+			"duplicates":     duplicateCount,
+			"queued":         len(videosToQueue),
+		},
+	})
+
+	// Handle no videos to queue
+	if len(videosToQueue) == 0 {
+		if duplicateCount > 0 {
+			manager.SendFollowup(interaction, "", fmt.Sprintf("All videos from **%s** are already in the queue!", playlistResult.Name), true)
+		} else {
+			manager.SendFollowup(interaction, "", fmt.Sprintf("Couldn't find any videos in **%s**.", playlistResult.Name), true)
+		}
+		return
+	}
+
+	// Queue all videos
+	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
+
+	for _, video := range videosToQueue {
+		player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+	}
+
+	// Add Sentry breadcrumb for queued songs
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "queue",
+		Message:  fmt.Sprintf("Queued %d videos from YouTube playlist", len(videosToQueue)),
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"playlist_id":   playlistID,
+			"playlist_name": playlistResult.Name,
+			"songs_queued":  len(videosToQueue),
+		},
+	})
+
+	// Build response message
+	var responseBuilder strings.Builder
+	responseBuilder.WriteString(fmt.Sprintf("**Queued %d videos from \"%s\":**\n", len(videosToQueue), playlistResult.Name))
+
+	for i, video := range videosToQueue {
+		responseBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, video.Title))
+	}
+
+	// Add notes about skipped videos
+	var notes []string
+	if duplicateCount > 0 {
+		notes = append(notes, fmt.Sprintf("%d videos were already in queue", duplicateCount))
+	}
+	if playlistResult.TotalVideos > len(playlistResult.Videos) {
+		notes = append(notes, fmt.Sprintf("showing first %d of %d total videos", len(playlistResult.Videos), playlistResult.TotalVideos))
+	}
+
+	if len(notes) > 0 {
+		responseBuilder.WriteString("\n(")
+		responseBuilder.WriteString(strings.Join(notes, ", "))
+		responseBuilder.WriteString(")")
+	}
+
+	// Add first song note
+	if firstSongQueued {
+		responseBuilder.WriteString("\n\n(Playback will start shortly - first video needs to load)")
+	}
+
+	backupContent := responseBuilder.String()
+
+	// Generate AI response with truncated track list to reduce token cost for large playlists
+	trackListPreview := backupContent
+	if len(videosToQueue) > 10 {
+		var previewBuilder strings.Builder
+		previewBuilder.WriteString(fmt.Sprintf("**Queued %d videos from \"%s\"** (showing first 5):\n", len(videosToQueue), playlistResult.Name))
+		for i := 0; i < 5 && i < len(videosToQueue); i++ {
+			previewBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, videosToQueue[i].Title))
+		}
+		previewBuilder.WriteString("...")
+		trackListPreview = previewBuilder.String()
+	}
+
+	aiPrompt := fmt.Sprintf("User %s queued a YouTube playlist called '%s' with %d videos. Here's a preview:\n%s",
+		interaction.Member.User.Username,
+		playlistResult.Name,
+		len(videosToQueue),
+		trackListPreview)
+
+	manager.SendFollowup(interaction, aiPrompt, backupContent, false)
+}
+
 func (manager *Manager) SendRequest(interaction *Interaction, content string, ephemeral bool) {
 	payload := map[string]interface{}{
 		"content": content,
@@ -688,7 +854,7 @@ func (manager *Manager) onHelp(interaction *Interaction) {
 	response := gemini.GenerateHelpfulResponse("(user issued the help command, return a nicely formatted help menu)")
 	if response == "" {
 		response = `**Music Control:**
-/play (or /queue) - Queue a song. Takes a search query, YouTube URL, or Spotify track/playlist/album URL
+/play (or /queue) - Queue a song. Takes a search query, YouTube URL/playlist, or Spotify URL. Note: YouTube links with ?list= will queue the whole playlist
 /skip - Skip the current song and play the next in queue
 /pause (or /stop) - Pause the current song
 /resume - Resume playback
