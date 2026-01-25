@@ -52,13 +52,10 @@ func NewSpotifyClient() error {
 		ClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
 		TokenURL:     spotifyauth.TokenURL,
 	}
-	token, err := config.Token(ctx)
-	if err != nil {
-		sentry.CaptureException(err)
-		return err
-	}
 
-	httpClient := spotifyauth.New().Client(ctx, token)
+	// Use config.Client() which returns an HTTP client that automatically
+	// refreshes tokens when they expire (Spotify tokens last 1 hour)
+	httpClient := config.Client(ctx)
 	client := spotifyclient.New(httpClient)
 	Spotify = client
 	return nil
