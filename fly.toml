@@ -1,0 +1,34 @@
+# fly.toml - Fly.io configuration for Discord Music Bot
+# See: https://fly.io/docs/reference/configuration/
+
+app = "beatbot-discord"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RELEASE = "true"
+  PORT = "8080"
+  GIN_MODE = "release"
+  ENFORCE_VOICE_CHANNEL = "true"
+  SENTRY_ENVIRONMENT = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"    # Bot must stay running for Discord events
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "10s"
+
+[[vm]]
+  memory = "6gb"
+  cpu_kind = "shared"
+  cpus = 2
