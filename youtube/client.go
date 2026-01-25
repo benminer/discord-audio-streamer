@@ -29,6 +29,27 @@ type YoutubeStream struct {
 	VideoID   string
 }
 
+// PlaylistVideoInfo represents a video within a YouTube playlist
+type PlaylistVideoInfo struct {
+	VideoID  string
+	Title    string
+	Position int
+}
+
+// PlaylistResult contains playlist metadata and videos
+type PlaylistResult struct {
+	ID          string
+	Name        string
+	Videos      []PlaylistVideoInfo
+	TotalVideos int
+}
+
+// YouTubeURLResult contains parsed YouTube URL information
+type YouTubeURLResult struct {
+	VideoID    string
+	PlaylistID string
+}
+
 func ParseYoutubeUrl(_url string) string {
 	parsedURL, err := url.Parse(_url)
 	if err != nil {
@@ -40,6 +61,28 @@ func ParseYoutubeUrl(_url string) string {
 	}
 
 	return ""
+}
+
+// ParseYouTubeURL parses a YouTube URL and returns video ID and playlist ID if present
+// Handles:
+// - youtube.com/watch?v=VIDEO_ID - single video
+// - youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID - video in playlist context
+// - youtube.com/playlist?list=PLAYLIST_ID - playlist URL
+func ParseYouTubeURL(_url string) YouTubeURLResult {
+	parsedURL, err := url.Parse(_url)
+	if err != nil {
+		return YouTubeURLResult{}
+	}
+
+	if parsedURL.Host != "www.youtube.com" && parsedURL.Host != "youtube.com" {
+		return YouTubeURLResult{}
+	}
+
+	query := parsedURL.Query()
+	return YouTubeURLResult{
+		VideoID:    query.Get("v"),
+		PlaylistID: query.Get("list"),
+	}
 }
 
 func GetVideoByID(videoID string) (VideoResponse, error) {
@@ -67,6 +110,103 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 	}
 
 	return VideoResponse{}, fmt.Errorf("no video found")
+}
+
+// GetPlaylistVideos fetches videos from a YouTube playlist
+func GetPlaylistVideos(playlistID string, limit int) (*PlaylistResult, error) {
+	logger := log.WithFields(log.Fields{"module": "youtube", "function": "GetPlaylistVideos", "playlist_id": playlistID})
+
+	// Start Sentry span
+	span := sentry.StartSpan(context.Background(), "youtube.get_playlist_videos")
+	span.Description = "Fetch YouTube playlist videos"
+	span.SetTag("playlist_id", playlistID)
+	span.SetTag("limit", strconv.Itoa(limit))
+	defer span.Finish()
+
+	apiKey := config.Config.Youtube.APIKey
+	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(apiKey))
+	if err != nil {
+		logger.Errorf("error creating YouTube client: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return nil, fmt.Errorf("error creating YouTube client: %v", err)
+	}
+
+	// Fetch playlist metadata
+	playlistCall := service.Playlists.List([]string{"snippet", "contentDetails"}).Id(playlistID)
+	playlistResponse, err := playlistCall.Do()
+	if err != nil {
+		logger.Errorf("error fetching playlist: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		// Check for common error patterns
+		errStr := err.Error()
+		if strings.Contains(errStr, "404") || strings.Contains(errStr, "playlistNotFound") {
+			return nil, fmt.Errorf("playlist not found")
+		}
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "playlistForbidden") {
+			return nil, fmt.Errorf("playlist is private")
+		}
+		return nil, fmt.Errorf("error fetching playlist: %v", err)
+	}
+
+	if len(playlistResponse.Items) == 0 {
+		span.Status = sentry.SpanStatusNotFound
+		return nil, fmt.Errorf("playlist not found")
+	}
+
+	playlist := playlistResponse.Items[0]
+	playlistName := html.UnescapeString(playlist.Snippet.Title)
+	totalVideos := int(playlist.ContentDetails.ItemCount)
+
+	logger.Debugf("Found playlist: %s with %d total videos", playlistName, totalVideos)
+
+	// Fetch playlist items
+	itemsCall := service.PlaylistItems.List([]string{"snippet"}).
+		PlaylistId(playlistID).
+		MaxResults(int64(limit))
+
+	itemsResponse, err := itemsCall.Do()
+	if err != nil {
+		logger.Errorf("error fetching playlist items: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return nil, fmt.Errorf("error fetching playlist items: %v", err)
+	}
+
+	videos := make([]PlaylistVideoInfo, 0, len(itemsResponse.Items))
+	for i, item := range itemsResponse.Items {
+		// Skip deleted or private videos (they have empty video IDs or specific titles)
+		videoID := item.Snippet.ResourceId.VideoId
+		if videoID == "" {
+			logger.Debugf("Skipping item at position %d: no video ID (likely deleted/private)", i)
+			continue
+		}
+
+		videos = append(videos, PlaylistVideoInfo{
+			VideoID:  videoID,
+			Title:    html.UnescapeString(item.Snippet.Title),
+			Position: i,
+		})
+	}
+
+	if len(videos) == 0 {
+		span.Status = sentry.SpanStatusNotFound
+		return nil, fmt.Errorf("playlist is empty or contains no accessible videos")
+	}
+
+	span.Status = sentry.SpanStatusOK
+	span.SetData("videos_fetched", len(videos))
+	span.SetData("total_videos", totalVideos)
+
+	logger.Debugf("Fetched %d videos from playlist", len(videos))
+
+	return &PlaylistResult{
+		ID:          playlistID,
+		Name:        playlistName,
+		Videos:      videos,
+		TotalVideos: totalVideos,
+	}, nil
 }
 
 func Query(query string) []VideoResponse {
