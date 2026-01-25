@@ -219,12 +219,20 @@ func (p *GuildPlayer) popQueue() {
 
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
-	if len(p.Queue.Items) > 1 {
-		p.Queue.Items = p.Queue.Items[1:]
-		logger.Tracef("popped queue, next up: %s", p.Queue.Items[0].Video.Title)
-	} else {
-		logger.Tracef("no more songs in queue, resetting to empty")
-		p.Queue.Items = []*GuildQueueItem{}
+	if len(p.Queue.Items) > 0 {
+		// Clear LoadResult reference to allow GC to reclaim ~55MB audio buffer
+		if p.Queue.Items[0].LoadResult != nil {
+			p.Queue.Items[0].LoadResult = nil
+		}
+		p.Queue.Items[0] = nil // Clear pointer to allow GC
+
+		if len(p.Queue.Items) > 1 {
+			p.Queue.Items = p.Queue.Items[1:]
+			logger.Tracef("popped queue, next up: %s", p.Queue.Items[0].Video.Title)
+		} else {
+			logger.Tracef("no more songs in queue, resetting to empty")
+			p.Queue.Items = []*GuildQueueItem{}
+		}
 	}
 }
 
@@ -451,7 +459,13 @@ func (p *GuildPlayer) removeItemByVideoID(videoID string) int {
 	defer p.Queue.Mutex.Unlock()
 	for i, item := range p.Queue.Items {
 		if item.Video.VideoID == videoID {
-			p.Queue.Items = append(p.Queue.Items[:i], p.Queue.Items[i+1:]...)
+			// Clear references before removing to allow GC to reclaim memory
+			if p.Queue.Items[i].LoadResult != nil {
+				p.Queue.Items[i].LoadResult = nil
+			}
+			copy(p.Queue.Items[i:], p.Queue.Items[i+1:])
+			p.Queue.Items[len(p.Queue.Items)-1] = nil // Clear trailing reference
+			p.Queue.Items = p.Queue.Items[:len(p.Queue.Items)-1]
 			log.Tracef("removed item by videoID: %s", videoID)
 			return i
 		}
@@ -831,7 +845,12 @@ func (p *GuildPlayer) Remove(index int) string {
 	}
 
 	removed := p.Queue.Items[index-1]
+	// Clear LoadResult before removing to allow GC to reclaim memory
+	if removed != nil && removed.LoadResult != nil {
+		removed.LoadResult = nil
+	}
 	copy(p.Queue.Items[index-1:], p.Queue.Items[index:])
+	p.Queue.Items[len(p.Queue.Items)-1] = nil // Clear trailing reference
 	p.Queue.Items = p.Queue.Items[:len(p.Queue.Items)-1]
 
 	if removed == nil {
