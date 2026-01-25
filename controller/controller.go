@@ -586,29 +586,69 @@ func (p *GuildPlayer) listenForLoadEvents() {
 						log.Infof("Removed %s from queue after %d failed load attempts",
 							queueItem.Video.Title, queueItem.MaxAttempts)
 					} else {
-						// Retry - notify user we're retrying
-						var msg string
-						if strings.Contains(errStr, "ffmpeg timed out") {
-							msg = "⚠️ Timeout loading **" + queueItem.Video.Title + "** (attempt " +
-								strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
-								"), retrying..."
-						} else if errStr != "" {
-							msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
-								strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
-								"), retrying...\nError: " + errStr
-						} else {
-							msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
-								strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
-								"), retrying..."
-						}
+						// Check if this is a 403 error - refresh stream URL before retry
+						if strings.Contains(errStr, "403 Forbidden") {
+							log.Infof("Got 403, refreshing stream URL for %s", queueItem.Video.Title)
 
-						go discord.SendFollowup(&discord.FollowUpRequest{
-							Token:           queueItem.Interaction.InteractionToken,
-							AppID:           queueItem.Interaction.AppID,
-							UserID:          queueItem.Interaction.UserID,
-							Content:         msg,
-							GenerateContent: false,
-						})
+							// Notify user we're reloading the track (with attempt count for consistency)
+							discord.SendFollowup(&discord.FollowUpRequest{
+								Token:  queueItem.Interaction.InteractionToken,
+								AppID:  queueItem.Interaction.AppID,
+								UserID: queueItem.Interaction.UserID,
+								Content: "🔄 YouTube rejected the stream, reloading **" + queueItem.Video.Title +
+									"** (attempt " + strconv.Itoa(queueItem.LoadAttempts) + "/" +
+									strconv.Itoa(queueItem.MaxAttempts) + ")...",
+								GenerateContent: false,
+							})
+
+							newStream, streamErr := youtube.GetVideoStream(queueItem.Video)
+							if streamErr == nil {
+								queueItem.Stream = newStream
+								log.Infof("Successfully refreshed stream URL for %s", queueItem.Video.Title)
+
+								go discord.SendFollowup(&discord.FollowUpRequest{
+									Token:           queueItem.Interaction.InteractionToken,
+									AppID:           queueItem.Interaction.AppID,
+									UserID:          queueItem.Interaction.UserID,
+									Content:         "✅ Stream reloaded successfully, retrying...",
+									GenerateContent: false,
+								})
+							} else {
+								log.Warnf("Failed to refresh stream URL: %v", streamErr)
+
+								go discord.SendFollowup(&discord.FollowUpRequest{
+									Token:           queueItem.Interaction.InteractionToken,
+									AppID:           queueItem.Interaction.AppID,
+									UserID:          queueItem.Interaction.UserID,
+									Content:         "⚠️ Could not reload stream, will retry with original URL",
+									GenerateContent: false,
+								})
+							}
+						} else {
+							// Retry - notify user we're retrying (non-403 errors)
+							var msg string
+							if strings.Contains(errStr, "ffmpeg timed out") {
+								msg = "⚠️ Timeout loading **" + queueItem.Video.Title + "** (attempt " +
+									strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+									"), retrying..."
+							} else if errStr != "" {
+								msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
+									strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+									"), retrying...\nError: " + errStr
+							} else {
+								msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
+									strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+									"), retrying..."
+							}
+
+							go discord.SendFollowup(&discord.FollowUpRequest{
+								Token:           queueItem.Interaction.InteractionToken,
+								AppID:           queueItem.Interaction.AppID,
+								UserID:          queueItem.Interaction.UserID,
+								Content:         msg,
+								GenerateContent: false,
+							})
+						}
 
 						log.Infof("Retrying load for %s (attempt %d/%d)",
 							queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts)

@@ -166,6 +166,7 @@ func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
 			"--socket-timeout", "10",
 			"--extractor-retries", "1",
 			"--no-audio-multistreams",
+			"--no-cache-dir",
 			"-g",
 			"--no-warnings",
 			ytUrl)
