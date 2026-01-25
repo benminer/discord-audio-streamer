@@ -27,9 +27,9 @@ fi
 
 docker run -d --name discord-music-bot \
   --restart always \
-  --memory="1g" \
-  --memory-reservation="512m" \
-  --memory-swap="2g" \
+  --memory="1.5g" \
+  --memory-reservation="768m" \
+  --memory-swap="2.5g" \
   --cpus="2" \
   --cpu-shares="2048" \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
