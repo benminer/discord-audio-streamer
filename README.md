@@ -23,14 +23,22 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    - Install from [ffmpeg.org](https://ffmpeg.org/download.html) or via package manager
    - Verify installation with: `ffmpeg -version`
 
-4. **ngrok** - Tunneling service for local development or self-hosting
+4. **Tunneling Service** - For local development or self-hosting (choose one):
 
+   **Option A: ngrok**
    - Sign up at [ngrok.com](https://ngrok.com)
    - Set up your authtoken and reserved domain
    - Required environment variables:
      - `NGROK_AUTHTOKEN`: Your ngrok authentication token
      - `NGROK_DOMAIN`: Your reserved ngrok domain (optional, but URL changes on each restart without it)
    - Documentation: [ngrok docs](https://ngrok.com/docs)
+
+   **Option B: Cloudflare Tunnel** (recommended for production)
+   - Sign up for [Cloudflare Zero Trust](https://one.dash.cloudflare.com/)
+   - Create a tunnel in the Zero Trust dashboard
+   - Required environment variables:
+     - `CLOUDFLARE_TUNNEL_TOKEN`: Your tunnel token from Cloudflare dashboard
+   - See [Cloudflare Tunnel Setup](#cloudflare-tunnel) section below for details
 
 5. **Docker** (optional) - Containerization tool
 
@@ -61,9 +69,12 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    DISCORD_APP_ID=your_app_id
    YOUTUBE_API_KEY=your_youtube_api_key
 
-   # Optional - Ngrok
+   # Optional - Tunneling (choose one)
+   # Ngrok
    NGROK_AUTHTOKEN=your_ngrok_token
    NGROK_DOMAIN=your_reserved_domain
+   # Cloudflare Tunnel (recommended for production)
+   CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token
 
    # Optional - YouTube playlist limit
    YOUTUBE_PLAYLIST_LIMIT=15
@@ -146,6 +157,68 @@ A simple bot implementation for playing audio in Discord voice channels using [y
     ```
 
     Recommended: at least 1GB memory with 2GB swap, since songs are buffered in memory during playback.
+
+## Cloudflare Tunnel
+
+Cloudflare Tunnel provides a secure way to expose your bot to the internet without opening ports on your firewall. This is the recommended approach for production deployments.
+
+### Setup
+
+1. **Create a Cloudflare account and add a domain**
+   - Sign up at [Cloudflare](https://dash.cloudflare.com/)
+   - Add and configure your domain with Cloudflare DNS
+
+2. **Create a tunnel in Cloudflare Zero Trust**
+   - Go to [Cloudflare Zero Trust](https://one.dash.cloudflare.com/)
+   - Navigate to **Networks** → **Tunnels**
+   - Click **Create a tunnel**
+   - Choose **Cloudflared** as the connector
+   - Name your tunnel (e.g., `discord-bot`)
+   - Copy the tunnel token shown on the install page
+
+3. **Configure the tunnel route**
+   - In the tunnel configuration, add a **Public Hostname**:
+     - Subdomain: your choice (e.g., `bot`)
+     - Domain: your domain
+     - Service Type: `HTTP`
+     - URL: `discord-bot:8080` (the service name and port from docker-compose)
+
+4. **Set the environment variable**
+   ```bash
+   CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token_here
+   ```
+
+### Running with Docker Compose
+
+The easiest way to run with Cloudflare Tunnel is using Docker Compose:
+
+```bash
+# Create your .env file with all required variables including CLOUDFLARE_TUNNEL_TOKEN
+cp .env.common .env
+# Edit .env with your values
+
+# Start both the bot and cloudflared tunnel
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop services
+docker compose down
+```
+
+### Manual cloudflared Setup (without Docker)
+
+If you prefer to run cloudflared separately:
+
+1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+
+2. Run the tunnel:
+   ```bash
+   cloudflared tunnel run --token YOUR_TUNNEL_TOKEN
+   ```
+
+3. Configure the tunnel route in the Cloudflare dashboard to point to `http://localhost:8080`
 
 ## Optional Features
 

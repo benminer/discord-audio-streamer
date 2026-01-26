@@ -1,0 +1,57 @@
+version: "3.8"
+
+services:
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discord-music-bot
+    restart: always
+    mem_limit: 1.5g
+    mem_reservation: 512m
+    memswap_limit: 3g
+    cpus: 2
+    cpu_shares: 2048
+    environment:
+      - DISCORD_APP_ID=${DISCORD_APP_ID}
+      - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - ENFORCE_VOICE_CHANNEL=${ENFORCE_VOICE_CHANNEL:-true}
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - YOUTUBE_PLAYLIST_LIMIT=${YOUTUBE_PLAYLIST_LIMIT:-15}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_ENABLED=${GEMINI_ENABLED:-false}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - SPOTIFY_ENABLED=${SPOTIFY_ENABLED:-false}
+      - SPOTIFY_PLAYLIST_LIMIT=${SPOTIFY_PLAYLIST_LIMIT:-10}
+      - IDLE_TIMEOUT_MINUTES=${IDLE_TIMEOUT_MINUTES:-20}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-production}
+      - RELEASE=true
+      - PORT=8080
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s
+      start_period: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: always
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - bot-network
+    depends_on:
+      discord-bot:
+        condition: service_healthy
+
+networks:
+  bot-network:
+    driver: bridge

@@ -183,6 +183,7 @@ Key vars in `.env`:
 - `GEMINI_ENABLED` - Enable AI responses (default: false)
 - `IDLE_TIMEOUT_MINUTES` - Idle disconnect timeout (default: 20)
 - `SENTRY_DSN` - Sentry error tracking (optional)
+- `CLOUDFLARE_TUNNEL_TOKEN` - Cloudflare Tunnel token (optional, alternative to ngrok)
 
 ### Log Levels
 - TRACE - Very verbose, use for debugging specific issues
