@@ -266,7 +266,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	}
 }
 
-func (p *Player) Pause() {
+func (p *Player) Pause(ctx context.Context) {
+	_ = ctx // ctx available for future Sentry tracing if needed
 	p.logger.Info("Pausing playback - starting fade-out")
 	if p.fadeOutRemaining == 0 {
 		p.fadeOutRemaining = 5 // 5 frames = 100ms fade-out
@@ -277,7 +278,8 @@ func (p *Player) Pause() {
 	}
 }
 
-func (p *Player) Resume() {
+func (p *Player) Resume(ctx context.Context) {
+	_ = ctx // ctx available for future Sentry tracing if needed
 	p.logger.Info("Resuming playback")
 	p.fadeOutRemaining = 0 // Cancel any ongoing fade-out
 	p.paused.Store(false)

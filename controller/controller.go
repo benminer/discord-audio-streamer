@@ -5,6 +5,7 @@ import (
 	"beatbot/config"
 	"beatbot/discord"
 	"beatbot/gemini"
+	"beatbot/sentryhelper"
 	"beatbot/spotify"
 	"beatbot/youtube"
 	"context"
@@ -66,6 +67,7 @@ type GuildQueueItem struct {
 	Interaction  *GuildQueueItemInteraction
 	LoadAttempts int
 	MaxAttempts  int
+	Context      context.Context // Sentry context for tracing
 }
 
 type GuildQueue struct {
@@ -166,7 +168,7 @@ func (item *GuildQueueItem) WaitForStreamURL() bool {
 	return item.Stream != nil
 }
 
-func (p *GuildPlayer) Reset(interaction *GuildQueueItemInteraction) {
+func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInteraction) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
@@ -246,7 +248,11 @@ func (p *GuildPlayer) loadNext() {
 			return
 		}
 
-		go p.Loader.Load(context.Background(), audio.LoadJob{
+		ctx := next.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		go p.Loader.Load(ctx, audio.LoadJob{
 			URL:     next.Stream.StreamURL,
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
@@ -258,6 +264,13 @@ func (p *GuildPlayer) playNext() {
 	next := p.GetNext()
 	if next != nil {
 		log.Tracef("next up: %s", next.Video.Title)
+
+		// Get context from queue item
+		ctx := next.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
 		// Wait up to 30 seconds for stream to be ready
 		if next.Stream == nil {
 			log.Debugf("waiting for stream to be ready for %s", next.Video.Title)
@@ -281,7 +294,7 @@ func (p *GuildPlayer) playNext() {
 		if next.LoadResult == nil {
 			// load the stream
 			// playback will start when the loader has finished
-			go p.Loader.Load(context.Background(), audio.LoadJob{
+			go p.Loader.Load(ctx, audio.LoadJob{
 				URL:     next.Stream.StreamURL,
 				VideoID: next.Video.VideoID,
 				Title:   next.Video.Title,
@@ -289,7 +302,7 @@ func (p *GuildPlayer) playNext() {
 		} else {
 			// if song has already been loaded, play it
 			log.Tracef("next song is already loaded, playing")
-			go p.play(next.LoadResult)
+			go p.play(ctx, next.LoadResult)
 		}
 	} else {
 		log.Tracef("no more songs in queue, stopping player")
@@ -297,12 +310,12 @@ func (p *GuildPlayer) playNext() {
 	}
 }
 
-func (p *GuildPlayer) play(data *audio.LoadResult) {
+func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 	log.Debugf("playing: %s", data.Title)
 	p.LastActivityAt = time.Now()
 
-	if err := p.Player.Play(context.Background(), data, p.VoiceConnection); err != nil {
-		sentry.CaptureException(err)
+	if err := p.Player.Play(ctx, data, p.VoiceConnection); err != nil {
+		sentryhelper.CaptureException(ctx, err)
 		log.Errorf("Error starting stream: %v", err)
 	}
 }
@@ -310,8 +323,14 @@ func (p *GuildPlayer) play(data *audio.LoadResult) {
 func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	log.Tracef("song added: %+v", event.Item.Video.Title)
 
+	// Get context from queue item (isolated per-command)
+	ctx := event.Item.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Add breadcrumb for queue add
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "queue",
 		Message:  "Song added to queue: " + event.Item.Video.Title,
 		Level:    sentry.LevelInfo,
@@ -323,10 +342,10 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 		},
 	})
 
-	stream, err := youtube.GetVideoStream(event.Item.Video)
+	stream, err := youtube.GetVideoStream(ctx, event.Item.Video)
 	if err != nil {
 		log.Errorf("Error getting video stream: %s", err)
-		sentry.CaptureException(err)
+		sentryhelper.CaptureException(ctx, err)
 		go discord.UpdateMessage(&discord.FollowUpRequest{
 			Token:   event.Item.Interaction.InteractionToken,
 			AppID:   event.Item.Interaction.AppID,
@@ -348,7 +367,11 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	if shouldPlay {
 		next := p.GetNext()
 		log.Tracef("no song playing, starting load job for: %s", next.Video.Title)
-		go p.Loader.Load(context.Background(), audio.LoadJob{
+		nextCtx := next.Context
+		if nextCtx == nil {
+			nextCtx = context.Background()
+		}
+		go p.Loader.Load(nextCtx, audio.LoadJob{
 			URL:     next.Stream.StreamURL,
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
@@ -393,7 +416,7 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	p.VoiceChannelID = &voiceState.ChannelID
 	p.VoiceJoinedAt = &now
 
-	// Add breadcrumb for voice channel join
+	// Add breadcrumb for voice channel join (uses global scope since this is a guild-level operation)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
 		Category: "voice",
 		Message:  "Joined voice channel: " + p.getChannelName(voiceState.ChannelID),
@@ -532,7 +555,11 @@ func (p *GuildPlayer) listenForLoadEvents() {
 				if queueItem != nil && event.LoadResult != nil {
 					if queueIndex == 0 && p.CurrentSong == nil {
 						log.Tracef("loaded song is next up, playing")
-						go p.play(event.LoadResult)
+						ctx := queueItem.Context
+						if ctx == nil {
+							ctx = context.Background()
+						}
+						go p.play(ctx, event.LoadResult)
 					} else {
 						log.Tracef("loaded song read for index %d, setting load result", queueIndex)
 						queueItem.LoadResult = event.LoadResult
@@ -601,7 +628,11 @@ func (p *GuildPlayer) listenForLoadEvents() {
 								GenerateContent: false,
 							})
 
-							newStream, streamErr := youtube.GetVideoStream(queueItem.Video)
+							retryCtx := queueItem.Context
+							if retryCtx == nil {
+								retryCtx = context.Background()
+							}
+							newStream, streamErr := youtube.GetVideoStream(retryCtx, queueItem.Video)
 							if streamErr == nil {
 								queueItem.Stream = newStream
 								log.Infof("Successfully refreshed stream URL for %s", queueItem.Video.Title)
@@ -804,7 +835,8 @@ func (p *GuildPlayer) startIdleChecker() {
 
 					if p.LastTextChannelID != "" {
 						prompt := fmt.Sprintf("The bot has been idle in the voice channel for %d minutes with no activity, so it's disconnecting now", config.Config.Options.IdleTimeoutMinutes)
-						message := gemini.GenerateResponse(prompt)
+						// Use background context since this is from the idle checker goroutine
+						message := gemini.GenerateResponse(context.Background(), prompt)
 
 						if message == "" {
 							message = fmt.Sprintf("Been sitting here idle for %d minutes with nothing to do. I'm out - let me know when you actually want to hear something.", config.Config.Options.IdleTimeoutMinutes)
@@ -841,7 +873,7 @@ func (p *GuildPlayer) startIdleChecker() {
 	}()
 }
 
-func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactionToken string, appID string) {
+func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, userID string, interactionToken string, appID string) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
@@ -857,6 +889,9 @@ func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactio
 		},
 		LoadAttempts: 0,
 		MaxAttempts:  3, // Circuit breaker: max 3 attempts per item
+		// Detach from original transaction since load/playback happens later.
+		// The hub is preserved for breadcrumb isolation.
+		Context: sentryhelper.DetachFromTransaction(ctx),
 	}
 	p.Queue.Items = append(p.Queue.Items, item)
 
@@ -866,8 +901,9 @@ func (p *GuildPlayer) Add(video youtube.VideoResponse, userID string, interactio
 		Item: item,
 	}:
 	default:
+		// This is a warning, not an error - queue is full but not broken
 		msg := "Queue notifications channel is full for guild " + p.GuildID
-		sentry.CaptureMessage(msg)
+		sentryhelper.CaptureMessage(ctx, msg)
 		log.Warn(msg)
 	}
 }

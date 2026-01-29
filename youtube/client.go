@@ -85,10 +85,10 @@ func ParseYouTubeURL(_url string) YouTubeURLResult {
 	}
 }
 
-func GetVideoByID(videoID string) (VideoResponse, error) {
+func GetVideoByID(ctx context.Context, videoID string) (VideoResponse, error) {
 	api_key := config.Config.Youtube.APIKey
 
-	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
+	service, err := ytapi.NewService(ctx, option.WithAPIKey(api_key))
 	if err != nil {
 		log.Errorf("error creating YouTube client: %v", err)
 		return VideoResponse{}, fmt.Errorf("error creating YouTube client: %v", err)
@@ -113,18 +113,18 @@ func GetVideoByID(videoID string) (VideoResponse, error) {
 }
 
 // GetPlaylistVideos fetches videos from a YouTube playlist
-func GetPlaylistVideos(playlistID string, limit int) (*PlaylistResult, error) {
+func GetPlaylistVideos(ctx context.Context, playlistID string, limit int) (*PlaylistResult, error) {
 	logger := log.WithFields(log.Fields{"module": "youtube", "function": "GetPlaylistVideos", "playlist_id": playlistID})
 
 	// Start Sentry span
-	span := sentry.StartSpan(context.Background(), "youtube.get_playlist_videos")
+	span := sentry.StartSpan(ctx, "youtube.get_playlist_videos")
 	span.Description = "Fetch YouTube playlist videos"
 	span.SetTag("playlist_id", playlistID)
 	span.SetTag("limit", strconv.Itoa(limit))
 	defer span.Finish()
 
 	apiKey := config.Config.Youtube.APIKey
-	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(apiKey))
+	service, err := ytapi.NewService(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		logger.Errorf("error creating YouTube client: %v", err)
 		sentry.CaptureException(err)
@@ -209,18 +209,18 @@ func GetPlaylistVideos(playlistID string, limit int) (*PlaylistResult, error) {
 	}, nil
 }
 
-func Query(query string) []VideoResponse {
+func Query(ctx context.Context, query string) []VideoResponse {
 	logger := log.WithFields(log.Fields{"module": "youtube", "function": "Query"})
 
 	// Start span for YouTube API search
-	span := sentry.StartSpan(context.Background(), "youtube.search")
+	span := sentry.StartSpan(ctx, "youtube.search")
 	span.Description = "Search YouTube API"
 	span.SetTag("query", query)
 	defer span.Finish()
 
 	api_key := config.Config.Youtube.APIKey
 
-	service, err := ytapi.NewService(context.Background(), option.WithAPIKey(api_key))
+	service, err := ytapi.NewService(ctx, option.WithAPIKey(api_key))
 	if err != nil {
 		logger.Errorf("error creating YouTube client: %v", err)
 		sentry.CaptureException(err)
@@ -285,11 +285,11 @@ func Query(query string) []VideoResponse {
 	return videos
 }
 
-func GetVideoStream(videoResponse VideoResponse) (*YoutubeStream, error) {
+func GetVideoStream(ctx context.Context, videoResponse VideoResponse) (*YoutubeStream, error) {
 	logger := log.WithFields(log.Fields{"module": "youtube", "video_id": videoResponse.VideoID, "function": "GetVideoStream"})
 
 	// Start span for yt-dlp execution
-	span := sentry.StartSpan(context.Background(), "youtube.get_stream")
+	span := sentry.StartSpan(ctx, "youtube.get_stream")
 	span.Description = "Get video stream URL via yt-dlp"
 	span.SetTag("video_id", videoResponse.VideoID)
 	defer span.Finish()

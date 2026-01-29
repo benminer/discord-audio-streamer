@@ -61,9 +61,7 @@ func NewSpotifyClient() error {
 	return nil
 }
 
-func Search(query string) (spotifyclient.SearchResult, error) {
-	ctx := context.Background()
-
+func Search(ctx context.Context, query string) (spotifyclient.SearchResult, error) {
 	// Start span for Spotify search
 	span := sentry.StartSpan(ctx, "spotify.search")
 	span.Description = "Search Spotify API"
@@ -81,9 +79,8 @@ func Search(query string) (spotifyclient.SearchResult, error) {
 	return *results, nil
 }
 
-func GetTrack(trackID string) (*TrackInfo, error) {
+func GetTrack(ctx context.Context, trackID string) (*TrackInfo, error) {
 	log.Tracef("Fetching track from Spotify API: %s", trackID)
-	ctx := context.Background()
 
 	// Start span for Spotify API call
 	span := sentry.StartSpan(ctx, "spotify.get_track")
@@ -112,9 +109,7 @@ func GetTrack(trackID string) (*TrackInfo, error) {
 	}, nil
 }
 
-func GetArtistTopSongs(artistID string) ([]string, error) {
-	ctx := context.Background()
-
+func GetArtistTopSongs(ctx context.Context, artistID string) ([]string, error) {
 	// Start span for Spotify artist top tracks
 	span := sentry.StartSpan(ctx, "spotify.get_artist_top_songs")
 	span.Description = "Get artist top songs from Spotify API"
@@ -137,9 +132,8 @@ func GetArtistTopSongs(artistID string) ([]string, error) {
 	return names, nil
 }
 
-func GetPlaylistTracks(playlistID string, limit int) (*PlaylistResult, error) {
+func GetPlaylistTracks(ctx context.Context, playlistID string, limit int) (*PlaylistResult, error) {
 	log.Tracef("Fetching playlist tracks from Spotify API: %s (limit: %d)", playlistID, limit)
-	ctx := context.Background()
 
 	span := sentry.StartSpan(ctx, "spotify.get_playlist_tracks")
 	span.Description = "Get playlist tracks from Spotify API"
@@ -224,9 +218,8 @@ func GetPlaylistTracks(playlistID string, limit int) (*PlaylistResult, error) {
 	}, nil
 }
 
-func GetAlbumTracks(albumID string) (*AlbumResult, error) {
+func GetAlbumTracks(ctx context.Context, albumID string) (*AlbumResult, error) {
 	log.Tracef("Fetching album tracks from Spotify API: %s", albumID)
-	ctx := context.Background()
 
 	span := sentry.StartSpan(ctx, "spotify.get_album_tracks")
 	span.Description = "Get album tracks from Spotify API"

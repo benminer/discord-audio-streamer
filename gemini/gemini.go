@@ -23,9 +23,7 @@ func printResponse(resp *genai.GenerateContentResponse) {
 	fmt.Println("---")
 }
 
-func generateResponse(prompt string) string {
-	ctx := context.Background()
-
+func generateResponse(ctx context.Context, prompt string) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
@@ -96,17 +94,17 @@ func buildPrompt(customPrompt string) string {
 	return strings.Join(instructions, "\n")
 }
 
-func GenerateResponse(prompt string) string {
+func GenerateResponse(ctx context.Context, prompt string) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
 
 	instructions := buildPrompt(prompt)
 
-	return generateResponse(instructions)
+	return generateResponse(ctx, instructions)
 }
 
-func GenerateHelpfulResponse(prompt string) string {
+func GenerateHelpfulResponse(ctx context.Context, prompt string) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
@@ -137,5 +135,5 @@ Here are the available commands:
 /ping - Check if the bot is alive
 Prompt: ` + prompt
 
-	return generateResponse(instructions)
+	return generateResponse(ctx, instructions)
 }

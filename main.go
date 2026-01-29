@@ -110,9 +110,9 @@ func run(ctx context.Context) error {
 
 	router.GET("/youtube/search", func(c *gin.Context) {
 		query := c.Query("query")
-		videos := youtube.Query(query)
+		videos := youtube.Query(c.Request.Context(), query)
 
-		stream, err := youtube.GetVideoStream(videos[0])
+		stream, err := youtube.GetVideoStream(c.Request.Context(), videos[0])
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get video stream"})
 			return
@@ -131,7 +131,7 @@ func run(ctx context.Context) error {
 				return
 			}
 			prompt := string(bodyBytes)
-			response := gemini.GenerateResponse(prompt)
+			response := gemini.GenerateResponse(c.Request.Context(), prompt)
 			c.JSON(http.StatusOK, gin.H{
 				"response": response,
 			})
@@ -144,7 +144,7 @@ func run(ctx context.Context) error {
 				return
 			}
 			prompt := string(bodyBytes)
-			response := gemini.GenerateHelpfulResponse(prompt)
+			response := gemini.GenerateHelpfulResponse(c.Request.Context(), prompt)
 			c.JSON(http.StatusOK, gin.H{
 				"response": response,
 			})
