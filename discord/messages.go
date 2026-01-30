@@ -2,6 +2,7 @@ package discord
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -24,7 +25,8 @@ func buildRequest(request *FollowUpRequest) map[string]interface{} {
 	var content string = request.Content
 
 	if request.GenerateContent {
-		content = gemini.GenerateResponse(request.Content)
+		// Use background context since this is called from async goroutines
+		content = gemini.GenerateResponse(context.Background(), request.Content)
 		if content == "" {
 			content = request.Content
 		}

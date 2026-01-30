@@ -23,6 +23,7 @@ import (
 	"beatbot/controller"
 	"beatbot/discord"
 	"beatbot/gemini"
+	"beatbot/sentryhelper"
 	"beatbot/spotify"
 	"beatbot/youtube"
 )
@@ -105,12 +106,20 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 // TODO: I should probably just load in the members info on interaction
 // and cache it temporarily
 // could use this to assure permissions, etc.
-func (manager *Manager) QueryAndQueue(interaction *Interaction) {
+func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in QueryAndQueue: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
 	log.Debugf("Querying and queuing: %+v", interaction.Member.User.ID)
 	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
 	if err != nil {
 		log.Errorf("Error getting voice state: %v", err)
-		sentry.CaptureException(err)
+		sentryhelper.CaptureException(ctx, err)
 		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
 		return
 	}
@@ -119,7 +128,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	player.LastTextChannelID = interaction.ChannelID
 
 	if voiceState == nil {
-		manager.SendFollowup(interaction, "The user is not in a voice channel and trying to play a song", "Hey dummy, join a voice channel first", true)
+		manager.SendFollowup(ctx, interaction, "The user is not in a voice channel and trying to play a song", "Hey dummy, join a voice channel first", true)
 		return
 	}
 
@@ -136,10 +145,10 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		if err != nil {
 			errStr := err.Error()
 			if errStr != "" && errStr == "voice state not found" {
-				manager.SendFollowup(interaction, "You gotta join a voice channel first!", "Error joining voice channel: "+errStr, true)
+				manager.SendFollowup(ctx, interaction, "You gotta join a voice channel first!", "Error joining voice channel: "+errStr, true)
 				return
 			}
-			sentry.CaptureException(err)
+			sentryhelper.CaptureException(ctx, err)
 			manager.SendError(interaction, "Error joining voice channel: "+errStr, true)
 			return
 		}
@@ -152,46 +161,46 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 
 		// Check if Spotify is enabled
 		if !config.Config.Spotify.Enabled {
-			manager.SendFollowup(interaction, "", "Spotify integration is not enabled. Ask the bot admin to set SPOTIFY_ENABLED=true.", true)
+			manager.SendFollowup(ctx, interaction, "", "Spotify integration is not enabled. Ask the bot admin to set SPOTIFY_ENABLED=true.", true)
 			return
 		}
 
 		spotifyReq, err := spotify.ParseSpotifyURL(query)
 		if err != nil {
 			log.Errorf("Error parsing Spotify URL: %v", err)
-			sentry.CaptureException(err)
+			sentryhelper.CaptureException(ctx, err)
 			manager.SendError(interaction, "Invalid Spotify URL: "+err.Error(), true)
 			return
 		}
 
 		// Handle playlist URLs
 		if spotifyReq.PlaylistID != "" {
-			manager.handleSpotifyPlaylist(interaction, player, spotifyReq.PlaylistID)
+			manager.handleSpotifyPlaylist(ctx, interaction, player, spotifyReq.PlaylistID)
 			return
 		}
 
 		// Handle album URLs
 		if spotifyReq.AlbumID != "" {
-			manager.handleSpotifyAlbum(interaction, player, spotifyReq.AlbumID)
+			manager.handleSpotifyAlbum(ctx, interaction, player, spotifyReq.AlbumID)
 			return
 		}
 
 		// Handle artist URLs (still coming soon)
 		if spotifyReq.ArtistID != "" {
-			manager.SendFollowup(interaction, "", "Spotify artists are coming soon! For now, please use track URLs, playlist URLs, or search queries.", true)
+			manager.SendFollowup(ctx, interaction, "", "Spotify artists are coming soon! For now, please use track URLs, playlist URLs, or search queries.", true)
 			return
 		}
 
 		if spotifyReq.TrackID == "" {
-			manager.SendFollowup(interaction, "", "Invalid Spotify URL. Please use a track, playlist, or album URL.", true)
+			manager.SendFollowup(ctx, interaction, "", "Invalid Spotify URL. Please use a track, playlist, or album URL.", true)
 			return
 		}
 
 		log.Tracef("Fetching Spotify track: %s", spotifyReq.TrackID)
-		trackInfo, err := spotify.GetTrack(spotifyReq.TrackID)
+		trackInfo, err := spotify.GetTrack(ctx, spotifyReq.TrackID)
 		if err != nil {
 			log.Errorf("Error fetching Spotify track: %v", err)
-			sentry.CaptureException(err)
+			sentryhelper.CaptureException(ctx, err)
 			manager.SendError(interaction, "Error fetching track from Spotify: "+err.Error(), true)
 			return
 		}
@@ -200,15 +209,15 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		youtubeQuery := artistsStr + " - " + trackInfo.Title
 		log.Debugf("Converted Spotify track '%s' by '%s' to YouTube query: %s", trackInfo.Title, artistsStr, youtubeQuery)
 
-		manager.SendFollowup(interaction,
+		manager.SendFollowup(ctx, interaction,
 			"",
 			fmt.Sprintf("Found **%s** by **%s** on Spotify, searching YouTube...", trackInfo.Title, artistsStr),
 			false)
 
-		videos := youtube.Query(youtubeQuery)
+		videos := youtube.Query(ctx, youtubeQuery)
 		if len(videos) == 0 {
 			log.Warnf("No YouTube results found for Spotify track: %s", youtubeQuery)
-			manager.SendFollowup(interaction,
+			manager.SendFollowup(ctx, interaction,
 				"",
 				fmt.Sprintf("Couldn't find **%s** by **%s** on YouTube", trackInfo.Title, artistsStr),
 				true)
@@ -227,9 +236,9 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 			followUpMessage = fmt.Sprintf("Now playing the YouTube video titled: **%s**", video.Title)
 		}
 
-		manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
+		manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
 
-		player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
 		return
 	}
 
@@ -237,7 +246,7 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 	youtubeURL := youtube.ParseYouTubeURL(query)
 	if youtubeURL.PlaylistID != "" {
 		log.Debugf("Detected YouTube playlist URL: %s", youtubeURL.PlaylistID)
-		manager.handleYouTubePlaylist(interaction, player, youtubeURL.PlaylistID)
+		manager.handleYouTubePlaylist(ctx, interaction, player, youtubeURL.PlaylistID)
 		return
 	}
 
@@ -247,19 +256,19 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 
 	// user passed in a youtube url
 	if videoID != "" {
-		videoResponse, err := youtube.GetVideoByID(videoID)
+		videoResponse, err := youtube.GetVideoByID(ctx, videoID)
 		if err != nil {
-			sentry.CaptureException(err)
+			sentryhelper.CaptureException(ctx, err)
 			manager.SendError(interaction, "Error getting video stream: "+err.Error(), true)
 			return
 		}
 
 		video = videoResponse
 	} else {
-		videos := youtube.Query(query)
+		videos := youtube.Query(ctx, query)
 
 		if len(videos) == 0 {
-			manager.SendFollowup(interaction, "There wasn't anything found for "+query, "No videos found for the given query", true)
+			manager.SendFollowup(ctx, interaction, "There wasn't anything found for "+query, "No videos found for the given query", true)
 			return
 		}
 
@@ -275,8 +284,8 @@ func (manager *Manager) QueryAndQueue(interaction *Interaction) {
 		followUpMessage = "Now playing the YouTube video titled: **" + video.Title + "**"
 	}
 
-	manager.SendFollowup(interaction, followUpMessage, followUpMessage, false)
-	player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+	manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
+	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
 }
 
 // searchResult holds the result of a single YouTube search for collection processing
@@ -306,7 +315,7 @@ func (c SpotifyCollection) DisplayName() string {
 }
 
 // handleSpotifyCollection processes tracks from a Spotify playlist or album
-func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player *controller.GuildPlayer, collection SpotifyCollection) {
+func (manager *Manager) handleSpotifyCollection(ctx context.Context, interaction *Interaction, player *controller.GuildPlayer, collection SpotifyCollection) {
 	category := "spotify_" + collection.Type
 
 	// Add breadcrumb for successful fetch
@@ -320,7 +329,7 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 		breadcrumbData["artist"] = collection.Artist
 	}
 
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: category,
 		Message:  fmt.Sprintf("Fetched %d tracks from %s '%s'", len(collection.Tracks), collection.Type, collection.Name),
 		Level:    sentry.LevelInfo,
@@ -328,11 +337,11 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 	})
 
 	// Use context with timeout for graceful cancellation if Discord interaction times out
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	searchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Start parallel YouTube search span
-	searchSpan := sentry.StartSpan(ctx, "youtube.parallel_search")
+	searchSpan := sentry.StartSpan(searchCtx, "youtube.parallel_search")
 	searchSpan.Description = fmt.Sprintf("Parallel YouTube search for %s tracks", collection.Type)
 	searchSpan.SetTag("track_count", strconv.Itoa(len(collection.Tracks)))
 
@@ -351,7 +360,7 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 			artistsStr := strings.Join(track.Artists, ", ")
 			query := artistsStr + " - " + track.Title
 
-			videos := youtube.Query(query)
+			videos := youtube.Query(searchCtx, query)
 
 			if len(videos) > 0 {
 				results <- searchResult{
@@ -431,7 +440,7 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 	searchSpan.Finish()
 
 	// Add breadcrumb for search results
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: category,
 		Message:  fmt.Sprintf("Parallel YouTube search completed: %d found, %d not found, %d duplicates", len(foundVideos), len(notFoundQueries), duplicateCount),
 		Level:    sentry.LevelInfo,
@@ -450,9 +459,9 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 	// Handle no videos found
 	if len(videosToQueue) == 0 {
 		if duplicateCount > 0 {
-			manager.SendFollowup(interaction, "", fmt.Sprintf("All tracks from **%s** are already in the queue!", displayName), true)
+			manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("All tracks from **%s** are already in the queue!", displayName), true)
 		} else {
-			manager.SendFollowup(interaction, "", fmt.Sprintf("Couldn't find any tracks from **%s** on YouTube.", displayName), true)
+			manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("Couldn't find any tracks from **%s** on YouTube.", displayName), true)
 		}
 		return
 	}
@@ -461,7 +470,7 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
 
 	for _, video := range videosToQueue {
-		player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
 	}
 
 	// Add breadcrumb for queued songs
@@ -474,7 +483,7 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 		queueBreadcrumbData["artist"] = collection.Artist
 	}
 
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "queue",
 		Message:  fmt.Sprintf("Queued %d songs from Spotify %s", len(videosToQueue), collection.Type),
 		Level:    sentry.LevelInfo,
@@ -534,47 +543,47 @@ func (manager *Manager) handleSpotifyCollection(interaction *Interaction, player
 		len(videosToQueue),
 		trackListPreview)
 
-	manager.SendFollowup(interaction, aiPrompt, backupContent, false)
+	manager.SendFollowup(ctx, interaction, aiPrompt, backupContent, false)
 }
 
-func (manager *Manager) handleSpotifyPlaylist(interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
+func (manager *Manager) handleSpotifyPlaylist(ctx context.Context, interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
 	log.Debugf("Processing Spotify playlist: %s", playlistID)
 
 	// Send immediate acknowledgment
-	manager.SendFollowup(interaction, "", "Found a Spotify playlist, fetching tracks...", false)
+	manager.SendFollowup(ctx, interaction, "", "Found a Spotify playlist, fetching tracks...", false)
 
 	// Add breadcrumb for playlist fetch
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "spotify_playlist",
 		Message:  "Fetching Spotify playlist: " + playlistID,
 		Level:    sentry.LevelInfo,
 	})
 
 	// Fetch playlist tracks
-	playlistResult, err := spotify.GetPlaylistTracks(playlistID, config.Config.Spotify.PlaylistLimit)
+	playlistResult, err := spotify.GetPlaylistTracks(ctx, playlistID, config.Config.Spotify.PlaylistLimit)
 	if err != nil {
 		log.Errorf("Error fetching Spotify playlist: %v", err)
-		sentry.CaptureException(err)
+		sentryhelper.CaptureException(ctx, err)
 
 		// Provide user-friendly error messages
 		errMsg := err.Error()
 		switch {
 		case strings.Contains(errMsg, "not found"):
-			manager.SendFollowup(interaction, "", "That playlist doesn't exist or has been deleted.", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist doesn't exist or has been deleted.", true)
 		case strings.Contains(errMsg, "private") || strings.Contains(errMsg, "not accessible"):
-			manager.SendFollowup(interaction, "", "That playlist is private. Make it public or use track URLs instead.", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist is private. Make it public or use track URLs instead.", true)
 		case strings.Contains(errMsg, "empty"):
-			manager.SendFollowup(interaction, "", "That playlist is empty.", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist is empty.", true)
 		case strings.Contains(errMsg, "no playable tracks"):
-			manager.SendFollowup(interaction, "", "That playlist contains no playable tracks (only podcasts or episodes).", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist contains no playable tracks (only podcasts or episodes).", true)
 		default:
-			manager.SendFollowup(interaction, "", "Error fetching playlist from Spotify: "+errMsg, true)
+			manager.SendFollowup(ctx, interaction, "", "Error fetching playlist from Spotify: "+errMsg, true)
 		}
 		return
 	}
 
 	// Process the collection using the shared handler
-	manager.handleSpotifyCollection(interaction, player, SpotifyCollection{
+	manager.handleSpotifyCollection(ctx, interaction, player, SpotifyCollection{
 		Type:        "playlist",
 		ID:          playlistID,
 		Name:        playlistResult.Name,
@@ -583,44 +592,44 @@ func (manager *Manager) handleSpotifyPlaylist(interaction *Interaction, player *
 	})
 }
 
-func (manager *Manager) handleSpotifyAlbum(interaction *Interaction, player *controller.GuildPlayer, albumID string) {
+func (manager *Manager) handleSpotifyAlbum(ctx context.Context, interaction *Interaction, player *controller.GuildPlayer, albumID string) {
 	log.Debugf("Processing Spotify album: %s", albumID)
 
 	// Send immediate acknowledgment
-	manager.SendFollowup(interaction, "", "Found a Spotify album, fetching tracks...", false)
+	manager.SendFollowup(ctx, interaction, "", "Found a Spotify album, fetching tracks...", false)
 
 	// Add breadcrumb for album fetch
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "spotify_album",
 		Message:  "Fetching Spotify album: " + albumID,
 		Level:    sentry.LevelInfo,
 	})
 
 	// Fetch album tracks
-	albumResult, err := spotify.GetAlbumTracks(albumID)
+	albumResult, err := spotify.GetAlbumTracks(ctx, albumID)
 	if err != nil {
 		log.Errorf("Error fetching Spotify album: %v", err)
-		sentry.CaptureException(err)
+		sentryhelper.CaptureException(ctx, err)
 
 		// Provide user-friendly error messages
 		errMsg := err.Error()
 		switch {
 		case strings.Contains(errMsg, "not found"):
-			manager.SendFollowup(interaction, "", "That album doesn't exist or has been deleted.", true)
+			manager.SendFollowup(ctx, interaction, "", "That album doesn't exist or has been deleted.", true)
 		case strings.Contains(errMsg, "not accessible"):
-			manager.SendFollowup(interaction, "", "That album is not accessible.", true)
+			manager.SendFollowup(ctx, interaction, "", "That album is not accessible.", true)
 		case strings.Contains(errMsg, "empty"):
-			manager.SendFollowup(interaction, "", "That album is empty.", true)
+			manager.SendFollowup(ctx, interaction, "", "That album is empty.", true)
 		case strings.Contains(errMsg, "no playable tracks"):
-			manager.SendFollowup(interaction, "", "That album contains no playable tracks.", true)
+			manager.SendFollowup(ctx, interaction, "", "That album contains no playable tracks.", true)
 		default:
-			manager.SendFollowup(interaction, "", "Error fetching album from Spotify: "+errMsg, true)
+			manager.SendFollowup(ctx, interaction, "", "Error fetching album from Spotify: "+errMsg, true)
 		}
 		return
 	}
 
 	// Process the collection using the shared handler
-	manager.handleSpotifyCollection(interaction, player, SpotifyCollection{
+	manager.handleSpotifyCollection(ctx, interaction, player, SpotifyCollection{
 		Type:        "album",
 		ID:          albumID,
 		Name:        albumResult.Name,
@@ -630,36 +639,36 @@ func (manager *Manager) handleSpotifyAlbum(interaction *Interaction, player *con
 	})
 }
 
-func (manager *Manager) handleYouTubePlaylist(interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
+func (manager *Manager) handleYouTubePlaylist(ctx context.Context, interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
 	log.Debugf("Processing YouTube playlist: %s", playlistID)
 
 	// Send immediate acknowledgment
-	manager.SendFollowup(interaction, "", "Found a YouTube playlist, fetching videos...", false)
+	manager.SendFollowup(ctx, interaction, "", "Found a YouTube playlist, fetching videos...", false)
 
 	// Add Sentry breadcrumb
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "youtube_playlist",
 		Message:  "Fetching YouTube playlist: " + playlistID,
 		Level:    sentry.LevelInfo,
 	})
 
 	// Fetch playlist videos
-	playlistResult, err := youtube.GetPlaylistVideos(playlistID, config.Config.Youtube.PlaylistLimit)
+	playlistResult, err := youtube.GetPlaylistVideos(ctx, playlistID, config.Config.Youtube.PlaylistLimit)
 	if err != nil {
 		log.Errorf("Error fetching YouTube playlist: %v", err)
-		sentry.CaptureException(err)
+		sentryhelper.CaptureException(ctx, err)
 
 		// Provide user-friendly error messages
 		errMsg := err.Error()
 		switch {
 		case strings.Contains(errMsg, "not found"):
-			manager.SendFollowup(interaction, "", "That playlist doesn't exist or has been deleted.", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist doesn't exist or has been deleted.", true)
 		case strings.Contains(errMsg, "private"):
-			manager.SendFollowup(interaction, "", "That playlist is private.", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist is private.", true)
 		case strings.Contains(errMsg, "empty"):
-			manager.SendFollowup(interaction, "", "That playlist is empty or contains no accessible videos.", true)
+			manager.SendFollowup(ctx, interaction, "", "That playlist is empty or contains no accessible videos.", true)
 		default:
-			manager.SendFollowup(interaction, "", "Error fetching playlist from YouTube: "+errMsg, true)
+			manager.SendFollowup(ctx, interaction, "", "Error fetching playlist from YouTube: "+errMsg, true)
 		}
 		return
 	}
@@ -695,7 +704,7 @@ func (manager *Manager) handleYouTubePlaylist(interaction *Interaction, player *
 	}
 
 	// Add Sentry breadcrumb for results
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "youtube_playlist",
 		Message:  fmt.Sprintf("YouTube playlist processed: %d to queue, %d duplicates", len(videosToQueue), duplicateCount),
 		Level:    sentry.LevelInfo,
@@ -711,9 +720,9 @@ func (manager *Manager) handleYouTubePlaylist(interaction *Interaction, player *
 	// Handle no videos to queue
 	if len(videosToQueue) == 0 {
 		if duplicateCount > 0 {
-			manager.SendFollowup(interaction, "", fmt.Sprintf("All videos from **%s** are already in the queue!", playlistResult.Name), true)
+			manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("All videos from **%s** are already in the queue!", playlistResult.Name), true)
 		} else {
-			manager.SendFollowup(interaction, "", fmt.Sprintf("Couldn't find any videos in **%s**.", playlistResult.Name), true)
+			manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("Couldn't find any videos in **%s**.", playlistResult.Name), true)
 		}
 		return
 	}
@@ -722,11 +731,11 @@ func (manager *Manager) handleYouTubePlaylist(interaction *Interaction, player *
 	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
 
 	for _, video := range videosToQueue {
-		player.Add(video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
 	}
 
 	// Add Sentry breadcrumb for queued songs
-	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
 		Category: "queue",
 		Message:  fmt.Sprintf("Queued %d videos from YouTube playlist", len(videosToQueue)),
 		Level:    sentry.LevelInfo,
@@ -785,7 +794,7 @@ func (manager *Manager) handleYouTubePlaylist(interaction *Interaction, player *
 		len(videosToQueue),
 		trackListPreview)
 
-	manager.SendFollowup(interaction, aiPrompt, backupContent, false)
+	manager.SendFollowup(ctx, interaction, aiPrompt, backupContent, false)
 }
 
 func (manager *Manager) SendRequest(interaction *Interaction, content string, ephemeral bool) {
@@ -818,13 +827,13 @@ func (manager *Manager) SendError(interaction *Interaction, content string, ephe
 	manager.SendRequest(interaction, content, ephemeral)
 }
 
-func (manager *Manager) SendFollowup(interaction *Interaction, content string, backupContent string, ephemeral bool) {
+func (manager *Manager) SendFollowup(ctx context.Context, interaction *Interaction, content string, backupContent string, ephemeral bool) {
 	userName := interaction.Member.User.Username
 	toSend := backupContent
 
 	// pass in an empty string to skip the AI generation
 	if content != "" {
-		genText := gemini.GenerateResponse("User: " + userName + "\nEvent: " + content)
+		genText := gemini.GenerateResponse(ctx, "User: "+userName+"\nEvent: "+content)
 		if genText != "" {
 			toSend = genText
 		}
@@ -850,8 +859,16 @@ func (manager *Manager) handlePing() Response {
 	}
 }
 
-func (manager *Manager) onHelp(interaction *Interaction) {
-	response := gemini.GenerateHelpfulResponse("(user issued the help command, return a nicely formatted help menu)")
+func (manager *Manager) onHelp(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in onHelp: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
+	response := gemini.GenerateHelpfulResponse(ctx, "(user issued the help command, return a nicely formatted help menu)")
 	if response == "" {
 		response = `**Music Control:**
 /play (or /queue) - Queue a song. Takes a search query, YouTube URL/playlist, or Spotify URL. Note: YouTube links with ?list= will queue the whole playlist
@@ -872,26 +889,34 @@ func (manager *Manager) onHelp(interaction *Interaction) {
 	manager.SendRequest(interaction, response, false)
 }
 
-func (manager *Manager) handleHelp(interaction *Interaction) Response {
-	go manager.onHelp(interaction)
+func (manager *Manager) handleHelp(ctx context.Context, transaction *sentry.Span, interaction *Interaction) Response {
+	go manager.onHelp(ctx, transaction, interaction)
 	return Response{
 		Type: 5,
 	}
 }
 
-func (manager *Manager) handleQueue(interaction *Interaction) Response {
-	go manager.QueryAndQueue(interaction)
+func (manager *Manager) handleQueue(ctx context.Context, transaction *sentry.Span, interaction *Interaction) Response {
+	go manager.QueryAndQueue(ctx, transaction, interaction)
 
 	return Response{
 		Type: 5,
 	}
 }
 
-func (manager *Manager) onView(interaction *Interaction) {
+func (manager *Manager) onView(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in onView: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil {
-		manager.SendFollowup(interaction, "The queue is empty and nothing is playing", "The queue is empty and nothing is playing", false)
+		manager.SendFollowup(ctx, interaction, "The queue is empty and nothing is playing", "The queue is empty and nothing is playing", false)
 	}
 
 	formatted_queue := ""
@@ -903,21 +928,29 @@ func (manager *Manager) onView(interaction *Interaction) {
 		formatted_queue += fmt.Sprintf("\nNow playing: **%s**", *player.CurrentSong)
 	}
 
-	manager.SendFollowup(interaction, "", formatted_queue, false)
+	manager.SendFollowup(ctx, interaction, "", formatted_queue, false)
 }
 
-func (manager *Manager) handleView(interaction *Interaction) Response {
-	go manager.onView(interaction)
+func (manager *Manager) handleView(ctx context.Context, transaction *sentry.Span, interaction *Interaction) Response {
+	go manager.onView(ctx, transaction, interaction)
 	return Response{
 		Type: 5,
 	}
 }
 
-func (manager *Manager) onSkip(interaction *Interaction) {
+func (manager *Manager) onSkip(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in onSkip: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if !player.Player.IsPlaying() && player.CurrentSong == nil {
-		manager.SendFollowup(interaction, "user tried to skip but nothing is playing", "Nothing to skip", true)
+		manager.SendFollowup(ctx, interaction, "user tried to skip but nothing is playing", "Nothing to skip", true)
 		return
 	}
 
@@ -935,32 +968,41 @@ func (manager *Manager) onSkip(interaction *Interaction) {
 		response += "\n\nNo more songs in queue"
 	}
 
-	manager.SendFollowup(interaction, response, response, false)
+	manager.SendFollowup(ctx, interaction, response, response, false)
 }
 
-func (manager *Manager) handlePurge(interaction *Interaction) {
+func (manager *Manager) handlePurge(ctx context.Context, interaction *Interaction) {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	go player.Clear()
 
-	manager.SendFollowup(interaction, "Queue purged", "Queue purged", false)
+	manager.SendFollowup(ctx, interaction, "Queue purged", "Queue purged", false)
 }
 
-func (manager *Manager) handleSkip(interaction *Interaction) Response {
-	go manager.onSkip(interaction)
+func (manager *Manager) handleSkip(ctx context.Context, transaction *sentry.Span, interaction *Interaction) Response {
+	go manager.onSkip(ctx, transaction, interaction)
 	return Response{
 		Type: 5,
 	}
 }
 
-func (manager *Manager) handleReset(interaction *Interaction) Response {
+func (manager *Manager) handleReset(ctx context.Context, transaction *sentry.Span, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	go player.Reset(&controller.GuildQueueItemInteraction{
-		UserID:           interaction.Member.User.ID,
-		InteractionToken: interaction.Token,
-		AppID:            manager.AppID,
-	})
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				sentryhelper.CaptureException(ctx, fmt.Errorf("panic in handleReset: %v", err))
+				transaction.Status = sentry.SpanStatusInternalError
+			}
+			transaction.Finish()
+		}()
+		player.Reset(ctx, &controller.GuildQueueItemInteraction{
+			UserID:           interaction.Member.User.ID,
+			InteractionToken: interaction.Token,
+			AppID:            manager.AppID,
+		})
+	}()
 
 	return Response{
 		Type: 5,
@@ -1033,7 +1075,7 @@ func (manager *Manager) handleVolume(interaction *Interaction) Response {
 }
 
 // todo: need to assure the user is in the voice channel
-func (manager *Manager) handlePause(interaction *Interaction) Response {
+func (manager *Manager) handlePause(ctx context.Context, interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
@@ -1046,7 +1088,7 @@ func (manager *Manager) handlePause(interaction *Interaction) Response {
 		}
 	}
 
-	go player.Player.Pause()
+	go player.Player.Pause(ctx)
 
 	return Response{
 		Type: 4,
@@ -1056,7 +1098,7 @@ func (manager *Manager) handlePause(interaction *Interaction) Response {
 	}
 }
 
-func (manager *Manager) handleResume(interaction *Interaction) Response {
+func (manager *Manager) handleResume(ctx context.Context, interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 	player.LastTextChannelID = interaction.ChannelID
@@ -1071,7 +1113,7 @@ func (manager *Manager) handleResume(interaction *Interaction) Response {
 		}
 	}
 
-	go player.Player.Resume()
+	go player.Player.Resume(ctx)
 
 	return Response{
 		Type: 4,
@@ -1113,9 +1155,28 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 }
 
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
+	// Create transaction with cloned hub for scope isolation (breadcrumbs per-command)
+	ctx, transaction := sentryhelper.StartCommandTransaction(
+		context.Background(),
+		interaction.Data.Name,
+		interaction.GuildID,
+		interaction.Member.User.ID,
+	)
+
+	// For sync responses (Type: 4), finish transaction when handler returns.
+	// For async responses (Type: 5), the goroutine will finish the transaction.
+	finishTransaction := true
+	defer func() {
+		if finishTransaction {
+			transaction.Finish()
+		}
+	}()
+
 	defer func() {
 		if err := recover(); err != nil {
 			log.Errorf("Panic in command handling: %v", err)
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in command %s: %v", interaction.Data.Name, err))
+			transaction.Status = sentry.SpanStatusInternalError
 			response = Response{
 				Type: 4,
 				Data: ResponseData{
@@ -1128,14 +1189,12 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 
 	log.Debugf("Received command: %+v", interaction.Data.Name)
 
-	sentry.CurrentHub().ConfigureScope(func(scope *sentry.Scope) {
-		// Set user context for better Sentry user tracking
+	// Configure scope on the cloned hub (isolated to this command)
+	sentryhelper.ConfigureScope(ctx, func(scope *sentry.Scope) {
 		scope.SetUser(sentry.User{
 			ID:       interaction.Member.User.ID,
 			Username: interaction.Member.User.Username,
 		})
-
-		// Set interaction context (guild name comes from breadcrumbs in controller.go)
 		scope.SetContext("interaction", map[string]interface{}{
 			"name":     interaction.Data.Name,
 			"options":  interaction.Data.Options,
@@ -1143,33 +1202,34 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 			"user_id":  interaction.Member.User.ID,
 			"username": interaction.Member.User.Username,
 		})
-
-		// Set tags for filtering
-		scope.SetTag("guild_id", interaction.GuildID)
-		scope.SetTag("command", interaction.Data.Name)
 	})
 
 	switch interaction.Data.Name {
 	case "ping":
 		return manager.handlePing()
 	case "help":
-		return manager.handleHelp(interaction)
+		finishTransaction = false // goroutine will finish
+		return manager.handleHelp(ctx, transaction, interaction)
 	case "queue", "play":
-		return manager.handleQueue(interaction)
+		finishTransaction = false // goroutine will finish
+		return manager.handleQueue(ctx, transaction, interaction)
 	case "view":
-		return manager.handleView(interaction)
+		finishTransaction = false // goroutine will finish
+		return manager.handleView(ctx, transaction, interaction)
 	case "remove":
 		return manager.handleRemove(interaction)
 	case "skip":
-		return manager.handleSkip(interaction)
+		finishTransaction = false // goroutine will finish
+		return manager.handleSkip(ctx, transaction, interaction)
 	case "pause", "stop":
-		return manager.handlePause(interaction)
+		return manager.handlePause(ctx, interaction)
 	case "volume":
 		return manager.handleVolume(interaction)
 	case "resume":
-		return manager.handleResume(interaction)
+		return manager.handleResume(ctx, interaction)
 	case "reset":
-		return manager.handleReset(interaction)
+		finishTransaction = false // goroutine will finish
+		return manager.handleReset(ctx, transaction, interaction)
 	case "shuffle":
 		return manager.handleShuffle(interaction)
 	// case "purge":
