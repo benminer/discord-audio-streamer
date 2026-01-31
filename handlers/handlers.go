@@ -125,7 +125,6 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 	}
 
 	player := manager.Controller.GetPlayer(interaction.GuildID)
-	player.LastTextChannelID = interaction.ChannelID
 
 	if voiceState == nil {
 		manager.SendFollowup(ctx, interaction, "The user is not in a voice channel and trying to play a song", "Hey dummy, join a voice channel first", true)
@@ -1101,7 +1100,6 @@ func (manager *Manager) handlePause(ctx context.Context, interaction *Interactio
 func (manager *Manager) handleResume(ctx context.Context, interaction *Interaction) Response {
 	userName := interaction.Member.User.Username
 	player := manager.Controller.GetPlayer(interaction.GuildID)
-	player.LastTextChannelID = interaction.ChannelID
 	player.LastActivityAt = time.Now()
 
 	if !player.Player.IsPlaying() {
@@ -1156,7 +1154,6 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 
 func (manager *Manager) handleRadio(interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
-	player.LastTextChannelID = interaction.ChannelID
 
 	enabled := player.ToggleRadio()
 
@@ -1224,6 +1221,12 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 			"username": interaction.Member.User.Username,
 		})
 	})
+
+	// Always track the last text channel so we can send messages (e.g. radio announcements)
+	if interaction.GuildID != "" && interaction.ChannelID != "" {
+		player := manager.Controller.GetPlayer(interaction.GuildID)
+		player.LastTextChannelID = interaction.ChannelID
+	}
 
 	switch interaction.Data.Name {
 	case "ping":
