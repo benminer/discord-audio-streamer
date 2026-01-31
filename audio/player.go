@@ -112,6 +112,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				if err != nil {
 					if err == io.EOF || err == io.ErrUnexpectedEOF {
 						p.fadeOutRemaining = 0
+						if p.stopping.Load() {
+							p.logger.Debug("EOF during fade-out, stopping playback")
+							span.Status = sentry.SpanStatusCanceled
+							return nil
+						}
 						continue
 					}
 					p.logger.Warnf("Error reading during fade-out: %v", err)
