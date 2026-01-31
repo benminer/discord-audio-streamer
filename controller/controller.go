@@ -37,6 +37,66 @@ type QueueEvent struct {
 	Item *GuildQueueItem
 }
 
+// SongHistoryEntry stores metadata about a played song for radio mode
+type SongHistoryEntry struct {
+	VideoID     string
+	Title       string
+	ChannelName string
+	SpotifyID   string // optional, populated if queued via Spotify
+}
+
+// SongHistory is a ring buffer of recently played songs
+type SongHistory struct {
+	entries []SongHistoryEntry
+	size    int
+	mu      sync.Mutex
+}
+
+func NewSongHistory(size int) *SongHistory {
+	return &SongHistory{
+		entries: make([]SongHistoryEntry, 0, size),
+		size:    size,
+	}
+}
+
+func (h *SongHistory) Add(entry SongHistoryEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.entries) >= h.size {
+		h.entries = h.entries[1:]
+	}
+	h.entries = append(h.entries, entry)
+}
+
+func (h *SongHistory) GetRecent(n int) []SongHistoryEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n > len(h.entries) {
+		n = len(h.entries)
+	}
+	// Return last n entries (most recent)
+	start := len(h.entries) - n
+	result := make([]SongHistoryEntry, n)
+	copy(result, h.entries[start:])
+	return result
+}
+
+func (h *SongHistory) GetAllVideoIDs() map[string]bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ids := make(map[string]bool, len(h.entries))
+	for _, e := range h.entries {
+		ids[e.VideoID] = true
+	}
+	return ids
+}
+
+func (h *SongHistory) Len() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.entries)
+}
+
 type GuildPlayer struct {
 	Discord           *discordgo.Session
 	GuildID           string
@@ -51,6 +111,9 @@ type GuildPlayer struct {
 	LastActivityAt    time.Time
 	LastTextChannelID string
 	idleCheckStop     chan struct{}
+	RadioEnabled      bool
+	radioMutex        sync.Mutex
+	SongHistory       *SongHistory
 }
 
 type GuildQueueItemInteraction struct {
@@ -147,6 +210,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Player:         player,
 		LastActivityAt: time.Now(),
 		idleCheckStop:  make(chan struct{}),
+		SongHistory:    NewSongHistory(20),
 	}
 
 	session.listenForQueueEvents()
@@ -757,6 +821,11 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				p.CurrentSong = nil
 				p.VoiceConnection.Speaking(false)
 				p.playNext()
+
+				// If radio is enabled and queue is empty, auto-queue a similar song
+				if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
+					go p.queueRadioSong()
+				}
 			case audio.PlaybackStarted:
 				if queueItem != nil {
 					log.Tracef("playback started for %s", queueItem.Video.Title)
@@ -771,6 +840,12 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"video_id":   queueItem.Video.VideoID,
 							"title":      queueItem.Video.Title,
 						},
+					})
+
+					// Record in song history for radio mode
+					p.SongHistory.Add(SongHistoryEntry{
+						VideoID: queueItem.Video.VideoID,
+						Title:   queueItem.Video.Title,
 					})
 				}
 				p.VoiceConnection.Speaking(true)
@@ -871,6 +946,161 @@ func (p *GuildPlayer) startIdleChecker() {
 			}
 		}
 	}()
+}
+
+// ToggleRadio toggles radio mode for the guild and returns the new state
+func (p *GuildPlayer) ToggleRadio() bool {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	p.RadioEnabled = !p.RadioEnabled
+	return p.RadioEnabled
+}
+
+// IsRadioEnabled returns whether radio mode is on
+func (p *GuildPlayer) IsRadioEnabled() bool {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioEnabled
+}
+
+// ExtractArtist parses common YouTube music title formats to extract the artist name.
+// Returns the artist if found, or the full title as fallback.
+func ExtractArtist(title string) string {
+	// Remove common suffixes like (Official Video), [Official Music Video], (Lyrics), etc.
+	cleaned := title
+	for _, suffix := range []string{
+		"(Official Video)", "(Official Music Video)", "(Official Audio)",
+		"(Lyrics)", "(Lyric Video)", "(Audio)", "(Visualizer)",
+		"[Official Video]", "[Official Music Video]", "[Official Audio]",
+		"[Lyrics]", "[Lyric Video]", "[Audio]",
+	} {
+		cleaned = strings.Replace(cleaned, suffix, "", 1)
+	}
+	cleaned = strings.TrimSpace(cleaned)
+
+	// Try to split on " - " to get "Artist - Title"
+	parts := strings.SplitN(cleaned, " - ", 2)
+	if len(parts) == 2 {
+		artist := strings.TrimSpace(parts[0])
+		// Remove "ft.", "feat." etc from artist for cleaner search
+		for _, feat := range []string{" ft.", " feat.", " ft ", " feat ", " featuring "} {
+			if idx := strings.Index(strings.ToLower(artist), feat); idx != -1 {
+				artist = strings.TrimSpace(artist[:idx])
+			}
+		}
+		if artist != "" {
+			return artist
+		}
+	}
+
+	return cleaned
+}
+
+// queueRadioSong finds and queues a similar song based on play history
+func (p *GuildPlayer) queueRadioSong() {
+	logger := log.WithFields(log.Fields{
+		"module":  "controller",
+		"method":  "queueRadioSong",
+		"guildID": p.GuildID,
+	})
+
+	if p.SongHistory.Len() == 0 {
+		logger.Debug("no song history for radio, skipping")
+		return
+	}
+
+	ctx := context.Background()
+
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "radio",
+		Message:  "Radio auto-queuing triggered",
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"guild_id":   p.GuildID,
+			"guild_name": p.getGuildName(),
+		},
+	})
+
+	// Get recent songs to build a search query
+	recent := p.SongHistory.GetRecent(5)
+	historyIDs := p.SongHistory.GetAllVideoIDs()
+
+	// Also exclude anything currently in queue
+	p.Queue.Mutex.Lock()
+	for _, item := range p.Queue.Items {
+		historyIDs[item.Video.VideoID] = true
+	}
+	p.Queue.Mutex.Unlock()
+
+	// Pick a random recent song's artist for variety
+	idx := rand.Intn(len(recent))
+	artist := ExtractArtist(recent[idx].Title)
+	query := artist + " music"
+
+	logger.Infof("Radio searching for: %s", query)
+
+	videos := youtube.Query(ctx, query)
+	if len(videos) == 0 {
+		logger.Warn("radio: no YouTube results found")
+		return
+	}
+
+	// Find first result not already played
+	var picked *youtube.VideoResponse
+	for i := range videos {
+		if !historyIDs[videos[i].VideoID] {
+			picked = &videos[i]
+			break
+		}
+	}
+
+	if picked == nil {
+		logger.Info("radio: all search results already in history, trying broader query")
+		// Fallback: try with a different recent song
+		fallbackIdx := (idx + 1) % len(recent)
+		fallbackArtist := ExtractArtist(recent[fallbackIdx].Title)
+		fallbackQuery := fallbackArtist + " songs"
+
+		videos = youtube.Query(ctx, fallbackQuery)
+		for i := range videos {
+			if !historyIDs[videos[i].VideoID] {
+				picked = &videos[i]
+				break
+			}
+		}
+	}
+
+	if picked == nil {
+		logger.Warn("radio: could not find a non-duplicate song")
+		return
+	}
+
+	logger.Infof("Radio queuing: %s", picked.Title)
+
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "radio",
+		Message:  "Radio auto-queued: " + picked.Title,
+		Level:    sentry.LevelInfo,
+		Data: map[string]interface{}{
+			"guild_id":   p.GuildID,
+			"guild_name": p.getGuildName(),
+			"video_id":   picked.VideoID,
+			"title":      picked.Title,
+			"query":      query,
+		},
+	})
+
+	// Send announcement to the text channel
+	if p.LastTextChannelID != "" && p.Discord != nil {
+		msg := "📻 **Radio:** queued **" + picked.Title + "**"
+		if _, err := p.Discord.ChannelMessageSend(p.LastTextChannelID, msg); err != nil {
+			logger.Errorf("Failed to send radio announcement: %v", err)
+		}
+	}
+
+	// Use a synthetic interaction for radio-queued items
+	// We use empty interaction token/appID since there's no user interaction
+	p.Add(ctx, *picked, "", "", "")
 }
 
 func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, userID string, interactionToken string, appID string) {

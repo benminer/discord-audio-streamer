@@ -1154,6 +1154,27 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 	}
 }
 
+func (manager *Manager) handleRadio(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+	player.LastTextChannelID = interaction.ChannelID
+
+	enabled := player.ToggleRadio()
+
+	var msg string
+	if enabled {
+		msg = "📻 Radio mode **enabled** — I'll automatically queue similar songs when the queue runs out"
+	} else {
+		msg = "📻 Radio mode **disabled**"
+	}
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: msg,
+		},
+	}
+}
+
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
 	// Create transaction with cloned hub for scope isolation (breadcrumbs per-command)
 	ctx, transaction := sentryhelper.StartCommandTransaction(
@@ -1232,6 +1253,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleReset(ctx, transaction, interaction)
 	case "shuffle":
 		return manager.handleShuffle(interaction)
+	case "radio":
+		return manager.handleRadio(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:
