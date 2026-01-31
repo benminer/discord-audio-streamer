@@ -113,5 +113,10 @@
     "name": "shuffle",
     "type": 1,
     "description": "Shuffles the current queue"
+  },
+  {
+    "name": "radio",
+    "type": 1,
+    "description": "Toggle radio mode - automatically queues similar songs when the queue is empty"
   }
 ]
