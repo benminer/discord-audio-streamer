@@ -3,6 +3,7 @@ package controller
 import (
 	"beatbot/audio"
 	"beatbot/config"
+	"beatbot/database"
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/sentryhelper"
@@ -99,6 +100,7 @@ func (h *SongHistory) Len() int {
 
 type GuildPlayer struct {
 	Discord           *discordgo.Session
+	DB                *database.Database
 	GuildID           string
 	CurrentSong       *string
 	Queue             *GuildQueue
@@ -145,10 +147,11 @@ type Controller struct {
 	sessions map[string]*GuildPlayer
 	discord  *discordgo.Session
 	spotify  *spotifyclient.Client
+	db       *database.Database
 	mutex    sync.Mutex
 }
 
-func NewController() (*Controller, error) {
+func NewController(db *database.Database) (*Controller, error) {
 	discord, err := discord.NewSession()
 	if err != nil {
 		log.Fatalf("Error creating Discord session: %v", err)
@@ -175,6 +178,7 @@ func NewController() (*Controller, error) {
 		sessions: make(map[string]*GuildPlayer),
 		discord:  discord,
 		spotify:  spotify.Spotify,
+		db:       db,
 	}, nil
 }
 
@@ -202,6 +206,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		// inject the global discord session to the player
 		// todo: I think I could just make this a global variable
 		Discord: c.discord,
+		DB:      c.db,
 		GuildID: guildID,
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
@@ -858,6 +863,19 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						VideoID: queueItem.Video.VideoID,
 						Title:   queueItem.Video.Title,
 					})
+
+					// Record play in database
+					if p.DB != nil {
+						userID := ""
+						username := ""
+						if queueItem.Interaction != nil {
+							userID = queueItem.Interaction.UserID
+						}
+						url := "https://www.youtube.com/watch?v=" + queueItem.Video.VideoID
+						if err := p.DB.RecordPlay(p.GuildID, queueItem.Video.VideoID, queueItem.Video.Title, url, userID, username, 0); err != nil {
+							log.Errorf("Failed to record play in database: %v", err)
+						}
+					}
 				}
 				p.VoiceConnection.Speaking(true)
 				// once a song starts playback, we can pop it from the queue

@@ -42,6 +42,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/discord-bot .
 
+# Create data directory for SQLite persistence
+RUN mkdir -p /app/data
+
 # Set ownership
 RUN chown -R appuser:appuser /app
 
@@ -58,6 +61,8 @@ ENV RELEASE=true \
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
+
+VOLUME /app/data
 
 EXPOSE 8080
 

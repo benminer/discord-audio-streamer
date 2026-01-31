@@ -32,6 +32,7 @@ docker run -d --name discord-music-bot \
   --memory-swap="2.5g" \
   --cpus="2" \
   --cpu-shares="2048" \
+  -v discord-music-bot-data:/app/data \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
   -e DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN \
