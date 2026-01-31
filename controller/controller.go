@@ -183,8 +183,21 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 		p.Player.Stop()
 	}
 
-	// note: we don't necessarily need to quit the vc here, just reset the playback states
+	// Disconnect from voice to ensure a clean rejoin on next play.
+	// Without this, the voice connection can go stale after reset,
+	// causing the next play command to hang.
+	if p.VoiceConnection != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := p.VoiceConnection.Disconnect(ctx); err != nil {
+			log.Errorf("Error disconnecting from voice during reset: %v", err)
+		}
+		p.VoiceConnection = nil
+	}
+	p.VoiceChannelID = nil
+
 	p.Queue.Listening = false
+	p.Queue.Items = nil
 	p.CurrentSong = nil
 	p.LastActivityAt = time.Now()
 
@@ -196,10 +209,8 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 		Token:   interaction.InteractionToken,
 		AppID:   interaction.AppID,
 		UserID:  interaction.UserID,
-		Content: "the player has been reset, attempting to play next song",
+		Content: "the player has been reset",
 	})
-
-	p.playNext()
 }
 
 func (p *GuildPlayer) GetNext() *GuildQueueItem {
