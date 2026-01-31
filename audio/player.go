@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -68,6 +69,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	p.mutex.Lock()
 
 	defer func() {
+		// Recover from send on closed channel (voice connection closed during playback)
+		if r := recover(); r != nil {
+			p.logger.Warnf("Recovered from panic during playback: %v", r)
+			sentry.CaptureMessage(fmt.Sprintf("Recovered from playback panic: %v", r))
+		}
 		*p.playing = false
 		p.mutex.Unlock()
 		span.Finish()
@@ -132,9 +138,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					p.logger.Warnf("Error encoding during fade-out: %v", err)
 					sentry.CaptureException(err)
 				} else {
-					select {
-					case voiceChannel.OpusSend <- opusBuffer[:encoded]:
-					case <-p.completed:
+					if !safeSendOpus(voiceChannel, opusBuffer[:encoded], p.completed) {
 						return nil
 					}
 				}
@@ -175,13 +179,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					p.logger.Warnf("Error encoding silence during pause: %v", err)
 					sentry.CaptureException(err)
 				} else {
-					select {
-					case voiceChannel.OpusSend <- silenceOpus[:encoded]:
-					case <-p.completed:
-						return nil
-					default:
-						// Skip if channel is full
-					}
+					safeSendOpus(voiceChannel, silenceOpus[:encoded], p.completed)
 				}
 
 				time.Sleep(20 * time.Millisecond) // ~50 frames per second
@@ -251,10 +249,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				continue
 			}
 
-			select {
-			case voiceChannel.OpusSend <- opusBuffer[:encoded]:
-			case <-p.completed:
-				p.logger.Debug("Playback stopped by channel close")
+			if !safeSendOpus(voiceChannel, opusBuffer[:encoded], p.completed) {
+				p.logger.Debug("Playback stopped - voice channel closed or completed")
 				span.Status = sentry.SpanStatusCanceled
 				p.Notifications <- PlaybackNotification{
 					Event:   PlaybackStopped,
@@ -263,6 +259,21 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				return nil
 			}
 		}
+	}
+}
+
+// safeSendOpus sends opus data to the voice connection, returning false if the channel is closed.
+func safeSendOpus(vc *discordgo.VoiceConnection, data []byte, completed <-chan bool) (sent bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			sent = false
+		}
+	}()
+	select {
+	case vc.OpusSend <- data:
+		return true
+	case <-completed:
+		return false
 	}
 }
 
