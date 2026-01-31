@@ -20,6 +20,7 @@ import (
 
 	appConfig "beatbot/config"
 	"beatbot/controller"
+	"beatbot/database"
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/handlers"
@@ -59,7 +60,14 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	controller, err := controller.NewController()
+	db, err := database.New()
+	if err != nil {
+		log.Warnf("Failed to initialize database (continuing without persistence): %v", err)
+	} else {
+		defer db.Close()
+	}
+
+	controller, err := controller.NewController(db)
 	if err != nil {
 		sentry.CaptureException(err)
 		log.Fatalf("Error creating controller: %v", err)
