@@ -39,8 +39,10 @@ RUN useradd -m -u 1000 -s /bin/bash appuser
 
 WORKDIR /app
 
-# Copy binary from builder
+# Copy binary and startup files from builder
 COPY --from=builder /app/discord-bot .
+COPY --from=builder /app/commands.json .
+COPY --from=builder /app/entrypoint.sh .
 
 # Create data directory for SQLite persistence
 RUN mkdir -p /app/data
@@ -66,4 +68,4 @@ VOLUME /app/data
 
 EXPOSE 8080
 
-CMD ["./discord-bot"]
+CMD ["./entrypoint.sh"]
