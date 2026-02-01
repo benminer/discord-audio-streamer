@@ -6,12 +6,13 @@ import (
 )
 
 type ConfigStruct struct {
-	Discord DiscordConfig
-	NGrok   NGrokConfig
-	Options Options
-	Youtube YoutubeConfig
-	Gemini  GeminiConfig
-	Spotify SpotifyConfig
+	Discord    DiscordConfig
+	NGrok      NGrokConfig
+	Tunnel     TunnelConfig
+	Options    Options
+	Youtube    YoutubeConfig
+	Gemini     GeminiConfig
+	Spotify    SpotifyConfig
 }
 
 type DiscordConfig struct {
@@ -23,6 +24,11 @@ type DiscordConfig struct {
 type NGrokConfig struct {
 	Domain    string
 	AuthToken string
+}
+
+type TunnelConfig struct {
+	Provider           string // "ngrok" or "cloudflare"
+	CloudflareTunnelURL string
 }
 
 type YoutubeConfig struct {
@@ -52,6 +58,17 @@ func (ngrok *NGrokConfig) IsEnabled() bool {
 	return ngrok.Domain != "" && ngrok.AuthToken != ""
 }
 
+func (t *TunnelConfig) IsCloudflare() bool {
+	return t.Provider == "cloudflare" && t.CloudflareTunnelURL != ""
+}
+
+func getEnvDefault(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
+
 func (options *Options) EnforceVoiceChannelEnabled() bool {
 	return options.EnforceVoiceChannel
 }
@@ -68,6 +85,10 @@ func NewConfig() {
 		NGrok: NGrokConfig{
 			Domain:    os.Getenv("NGROK_DOMAIN"),
 			AuthToken: os.Getenv("NGROK_AUTHTOKEN"),
+		},
+		Tunnel: TunnelConfig{
+			Provider:           getEnvDefault("TUNNEL_PROVIDER", "ngrok"),
+			CloudflareTunnelURL: os.Getenv("CLOUDFLARE_TUNNEL_URL"),
 		},
 		Options: Options{
 			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",

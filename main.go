@@ -214,6 +214,18 @@ func run(ctx context.Context) error {
 		c.JSON(http.StatusOK, response)
 	})
 
+	port := appConfig.Config.Options.Port
+	if port == "" {
+		port = "8080"
+	}
+
+	if appConfig.Config.Tunnel.IsCloudflare() {
+		log.Infof("Using Cloudflare Tunnel at %s", appConfig.Config.Tunnel.CloudflareTunnelURL)
+		router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
+		log.Infof("Starting server on :%s (Cloudflare tunnel handles external traffic)", port)
+		return router.Run(":" + port)
+	}
+
 	if appConfig.Config.NGrok.IsEnabled() {
 		log.Info("using ngrok")
 		listener, err := ngrok.Listen(ctx,
@@ -225,11 +237,6 @@ func run(ctx context.Context) error {
 
 		log.Println("Ngrok URL:", listener.URL())
 		return http.Serve(listener, router)
-	}
-
-	port := appConfig.Config.Options.Port
-	if port == "" {
-		port = "8080"
 	}
 
 	router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})

@@ -25,8 +25,14 @@ else
     echo "No existing container found"
 fi
 
+PORT_MAPPING=""
+if [ "${TUNNEL_PROVIDER:-ngrok}" = "cloudflare" ]; then
+    PORT_MAPPING="-p 8080:8080"
+fi
+
 docker run -d --name discord-music-bot \
   --restart always \
+  $PORT_MAPPING \
   --memory="1.5g" \
   --memory-reservation="768m" \
   --memory-swap="2.5g" \
@@ -45,5 +51,7 @@ docker run -d --name discord-music-bot \
   -e GEMINI_ENABLED=$GEMINI_ENABLED \
   -e NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN \
   -e NGROK_DOMAIN=$NGROK_DOMAIN \
+  -e TUNNEL_PROVIDER=${TUNNEL_PROVIDER:-ngrok} \
+  -e CLOUDFLARE_TUNNEL_URL=$CLOUDFLARE_TUNNEL_URL \
   -e SENTRY_DSN=$SENTRY_DSN \
   benminer/discord-music-bot:latest
