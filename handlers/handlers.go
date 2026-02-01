@@ -1172,6 +1172,127 @@ func (manager *Manager) handleRadio(interaction *Interaction) Response {
 	}
 }
 
+func formatRelativeTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	}
+}
+
+func parseLimitOption(interaction *Interaction) int {
+	limit := 10
+	for _, opt := range interaction.Data.Options {
+		if opt.Name == "limit" {
+			if v, err := strconv.Atoi(opt.Value); err == nil && v >= 1 && v <= 25 {
+				limit = v
+			}
+		}
+	}
+	return limit
+}
+
+func (manager *Manager) handleHistory(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	limit := parseLimitOption(interaction)
+	records, err := db.GetHistory(interaction.GuildID, limit)
+	if err != nil {
+		log.Errorf("Error fetching history: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to fetch history.", Flags: 64}}
+	}
+
+	if len(records) == 0 {
+		return Response{Type: 4, Data: ResponseData{Content: "🎵 No songs played yet!"}}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🎵 **Recently Played**\n\n")
+	for i, r := range records {
+		requester := r.RequestedByUsername
+		if requester == "" {
+			requester = "Unknown"
+		}
+		sb.WriteString(fmt.Sprintf("**%d.** %s\n　　↳ requested by **%s** · %s\n", i+1, r.Title, requester, formatRelativeTime(r.PlayedAt)))
+	}
+
+	content := sb.String()
+	if len(content) > 1900 {
+		content = content[:1900]
+		if idx := strings.LastIndex(content, "\n"); idx > 0 {
+			content = content[:idx]
+		}
+		content += "\n..."
+	}
+
+	return Response{Type: 4, Data: ResponseData{Content: content}}
+}
+
+func (manager *Manager) handleLeaderboard(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	limit := parseLimitOption(interaction)
+	records, err := db.GetMostPlayed(interaction.GuildID, limit)
+	if err != nil {
+		log.Errorf("Error fetching leaderboard: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to fetch leaderboard.", Flags: 64}}
+	}
+
+	if len(records) == 0 {
+		return Response{Type: 4, Data: ResponseData{Content: "🏆 No songs played yet!"}}
+	}
+
+	medals := []string{"🥇", "🥈", "🥉"}
+	var sb strings.Builder
+	sb.WriteString("🏆 **Most Played Songs**\n\n")
+	for i, r := range records {
+		prefix := fmt.Sprintf("**%d.**", i+1)
+		if i < 3 {
+			prefix = medals[i]
+		}
+		plays := "play"
+		if r.PlayCount != 1 {
+			plays = "plays"
+		}
+		sb.WriteString(fmt.Sprintf("%s %s\n　　↳ **%d** %s · last played %s\n", prefix, r.Title, r.PlayCount, plays, formatRelativeTime(r.LastPlayed)))
+	}
+
+	content := sb.String()
+	if len(content) > 1900 {
+		content = content[:1900]
+		if idx := strings.LastIndex(content, "\n"); idx > 0 {
+			content = content[:idx]
+		}
+		content += "\n..."
+	}
+
+	return Response{Type: 4, Data: ResponseData{Content: content}}
+}
+
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
 	// Create transaction with cloned hub for scope isolation (breadcrumbs per-command)
 	ctx, transaction := sentryhelper.StartCommandTransaction(
@@ -1258,6 +1379,10 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleShuffle(interaction)
 	case "radio":
 		return manager.handleRadio(interaction)
+	case "history":
+		return manager.handleHistory(interaction)
+	case "leaderboard":
+		return manager.handleLeaderboard(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:
