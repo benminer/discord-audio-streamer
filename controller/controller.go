@@ -182,6 +182,10 @@ func NewController(db *database.Database) (*Controller, error) {
 	}, nil
 }
 
+func (c *Controller) GetDB() *database.Database {
+	return c.db
+}
+
 func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	if session, ok := c.sessions[guildID]; ok {
 		return session

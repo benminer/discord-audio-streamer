@@ -118,5 +118,35 @@
     "name": "radio",
     "type": 1,
     "description": "Toggle radio mode - automatically queues similar songs when the queue is empty"
+  },
+  {
+    "name": "history",
+    "type": 1,
+    "description": "Shows recently played songs in this server",
+    "options": [
+      {
+        "name": "limit",
+        "type": 4,
+        "description": "Number of songs to show (default 10, max 25)",
+        "required": false,
+        "min_value": 1,
+        "max_value": 25
+      }
+    ]
+  },
+  {
+    "name": "leaderboard",
+    "type": 1,
+    "description": "Shows the most played songs in this server",
+    "options": [
+      {
+        "name": "limit",
+        "type": 4,
+        "description": "Number of songs to show (default 10, max 25)",
+        "required": false,
+        "min_value": 1,
+        "max_value": 25
+      }
+    ]
   }
 ]
