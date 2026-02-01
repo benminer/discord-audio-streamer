@@ -61,7 +61,6 @@ Jenkinsfile
 
 # Development scripts
 set-commands.sh
-commands.json
 
 # OS files
 Thumbs.db
