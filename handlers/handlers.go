@@ -1293,6 +1293,103 @@ func (manager *Manager) handleLeaderboard(interaction *Interaction) Response {
 	return Response{Type: 4, Data: ResponseData{Content: content}}
 }
 
+func (manager *Manager) handleTopSongs(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in handleTopSongs: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
+	artistQuery := interaction.Data.Options[0].Value
+
+	if !config.Config.Spotify.Enabled {
+		manager.SendFollowup(ctx, interaction, "", "Spotify integration is not enabled. Ask the bot admin to set SPOTIFY_ENABLED=true.", true)
+		return
+	}
+
+	// Check voice state
+	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
+	if err != nil {
+		sentryhelper.CaptureException(ctx, err)
+		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
+		return
+	}
+	if voiceState == nil {
+		manager.SendFollowup(ctx, interaction, "The user is not in a voice channel", "Join a voice channel first!", true)
+		return
+	}
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	shouldJoin := player.VoiceChannelID == nil ||
+		player.VoiceConnection == nil ||
+		(player.VoiceChannelID != nil &&
+			player.IsEmpty() && !player.Player.IsPlaying() &&
+			*player.VoiceChannelID != voiceState.ChannelID)
+
+	if shouldJoin {
+		if err := player.JoinVoiceChannel(interaction.Member.User.ID); err != nil {
+			sentryhelper.CaptureException(ctx, err)
+			manager.SendError(interaction, "Error joining voice channel: "+err.Error(), true)
+			return
+		}
+	}
+
+	// Search for artist
+	sentryhelper.AddBreadcrumb(ctx, &sentry.Breadcrumb{
+		Category: "spotify_topsongs",
+		Message:  "Searching for artist: " + artistQuery,
+		Level:    sentry.LevelInfo,
+	})
+
+	artistID, artistName, err := spotify.SearchArtist(ctx, artistQuery)
+	if err != nil {
+		sentryhelper.CaptureException(ctx, err)
+		manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("Couldn't find artist **%s** on Spotify.", artistQuery), true)
+		return
+	}
+
+	manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("Found **%s** on Spotify, fetching top songs...", artistName), false)
+
+	// Get top songs
+	tracks, err := spotify.GetArtistTopSongs(ctx, artistID)
+	if err != nil {
+		sentryhelper.CaptureException(ctx, err)
+		manager.SendFollowup(ctx, interaction, "", "Error fetching top songs from Spotify.", true)
+		return
+	}
+
+	if len(tracks) == 0 {
+		manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("No top songs found for **%s**.", artistName), true)
+		return
+	}
+
+	// Limit to 5
+	if len(tracks) > 5 {
+		tracks = tracks[:5]
+	}
+
+	// Convert to PlaylistTrackInfo for the collection handler
+	playlistTracks := make([]spotify.PlaylistTrackInfo, len(tracks))
+	for i, t := range tracks {
+		playlistTracks[i] = spotify.PlaylistTrackInfo{
+			TrackInfo: t,
+			Position:  i,
+		}
+	}
+
+	manager.handleSpotifyCollection(ctx, interaction, player, SpotifyCollection{
+		Type:        "artist top songs",
+		ID:          artistID,
+		Name:        artistName,
+		Artist:      artistName,
+		Tracks:      playlistTracks,
+		TotalTracks: len(playlistTracks),
+	})
+}
+
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
 	// Create transaction with cloned hub for scope isolation (breadcrumbs per-command)
 	ctx, transaction := sentryhelper.StartCommandTransaction(
@@ -1383,6 +1480,10 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleHistory(interaction)
 	case "leaderboard":
 		return manager.handleLeaderboard(interaction)
+	case "topsongs":
+		finishTransaction = false
+		go manager.handleTopSongs(ctx, transaction, interaction)
+		return Response{Type: 5}
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:

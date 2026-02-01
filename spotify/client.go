@@ -109,7 +109,30 @@ func GetTrack(ctx context.Context, trackID string) (*TrackInfo, error) {
 	}, nil
 }
 
-func GetArtistTopSongs(ctx context.Context, artistID string) ([]string, error) {
+func SearchArtist(ctx context.Context, query string) (string, string, error) {
+	span := sentry.StartSpan(ctx, "spotify.search_artist")
+	span.Description = "Search Spotify for artist"
+	span.SetTag("query", query)
+	defer span.Finish()
+
+	results, err := Spotify.Search(ctx, query, spotifyclient.SearchTypeArtist)
+	if err != nil {
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return "", "", err
+	}
+
+	if results.Artists == nil || len(results.Artists.Artists) == 0 {
+		span.Status = sentry.SpanStatusNotFound
+		return "", "", errors.New("no artists found")
+	}
+
+	artist := results.Artists.Artists[0]
+	span.Status = sentry.SpanStatusOK
+	return string(artist.ID), artist.Name, nil
+}
+
+func GetArtistTopSongs(ctx context.Context, artistID string) ([]TrackInfo, error) {
 	// Start span for Spotify artist top tracks
 	span := sentry.StartSpan(ctx, "spotify.get_artist_top_songs")
 	span.Description = "Get artist top songs from Spotify API"
@@ -123,13 +146,20 @@ func GetArtistTopSongs(ctx context.Context, artistID string) ([]string, error) {
 		return nil, err
 	}
 
-	names := []string{}
+	tracks := []TrackInfo{}
 	for _, track := range results {
-		names = append(names, track.Name)
+		artists := []string{}
+		for _, a := range track.Artists {
+			artists = append(artists, a.Name)
+		}
+		tracks = append(tracks, TrackInfo{
+			Title:   track.Name,
+			Artists: artists,
+		})
 	}
 
 	span.Status = sentry.SpanStatusOK
-	return names, nil
+	return tracks, nil
 }
 
 func GetPlaylistTracks(ctx context.Context, playlistID string, limit int) (*PlaylistResult, error) {
