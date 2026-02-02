@@ -236,6 +236,17 @@ func run(ctx context.Context) error {
 		}
 
 		log.Println("Ngrok URL:", listener.URL())
+		
+		// Start local server for health checks in background
+		go func() {
+			router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
+			log.Infof("Starting local health check server on :%s", port)
+			if err := router.Run(":" + port); err != nil {
+				log.Errorf("Health check server failed: %v", err)
+			}
+		}()
+		
+		// Start ngrok server (blocks)
 		return http.Serve(listener, router)
 	}
 
