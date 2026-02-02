@@ -99,23 +99,26 @@ func (h *SongHistory) Len() int {
 }
 
 type GuildPlayer struct {
-	Discord           *discordgo.Session
-	DB                *database.Database
-	GuildID           string
-	CurrentSong       *string
-	Queue             *GuildQueue
-	VoiceChannelMutex sync.Mutex
-	VoiceChannelID    *string
-	VoiceJoinedAt     *time.Time
-	VoiceConnection   *discordgo.VoiceConnection
-	Loader            *audio.Loader
-	Player            *audio.Player
-	LastActivityAt    time.Time
-	LastTextChannelID string
-	idleCheckStop     chan struct{}
-	RadioEnabled      bool
-	radioMutex        sync.Mutex
-	SongHistory       *SongHistory
+	Discord              *discordgo.Session
+	DB                   *database.Database
+	GuildID              string
+	CurrentSong          *string
+	Queue                *GuildQueue
+	VoiceChannelMutex    sync.Mutex
+	VoiceChannelID       *string
+	VoiceJoinedAt        *time.Time
+	VoiceConnection      *discordgo.VoiceConnection
+	reconnectAttempts    int
+	maxReconnectAttempts int
+	voiceMonitorStop     chan struct{}
+	Loader               *audio.Loader
+	Player               *audio.Player
+	LastActivityAt       time.Time
+	LastTextChannelID    string
+	idleCheckStop        chan struct{}
+	RadioEnabled         bool
+	radioMutex           sync.Mutex
+	SongHistory          *SongHistory
 }
 
 type GuildQueueItemInteraction struct {
@@ -256,6 +259,9 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 		p.Player.Stop()
 	}
 
+	// Stop voice connection monitoring
+	p.stopVoiceConnectionMonitor()
+
 	// Disconnect from voice to ensure a clean rejoin on next play.
 	// Without this, the voice connection can go stale after reset,
 	// causing the next play command to hang.
@@ -268,6 +274,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 		p.VoiceConnection = nil
 	}
 	p.VoiceChannelID = nil
+	p.reconnectAttempts = 0
 
 	p.Queue.Listening = false
 	p.Queue.Items = nil
@@ -499,6 +506,11 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	p.VoiceConnection = vc
 	p.VoiceChannelID = &voiceState.ChannelID
 	p.VoiceJoinedAt = &now
+	p.reconnectAttempts = 0
+	p.maxReconnectAttempts = 3
+
+	// Start monitoring voice connection health
+	p.startVoiceConnectionMonitor()
 
 	// Add breadcrumb for voice channel join (uses global scope since this is a guild-level operation)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
@@ -960,6 +972,9 @@ func (p *GuildPlayer) startIdleChecker() {
 						p.Player.Stop()
 					}
 
+					// Stop voice monitoring before cleanup
+					p.stopVoiceConnectionMonitor()
+
 					if p.VoiceConnection != nil {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						if err := p.VoiceConnection.Disconnect(ctx); err != nil {
@@ -1243,4 +1258,144 @@ func (p *GuildPlayer) Shuffle() int {
 	})
 
 	return len(p.Queue.Items)
+}
+
+// startVoiceConnectionMonitor starts a goroutine to monitor voice connection health
+func (p *GuildPlayer) startVoiceConnectionMonitor() {
+	// Stop any existing monitor
+	p.stopVoiceConnectionMonitor()
+
+	p.voiceMonitorStop = make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-p.voiceMonitorStop:
+				return
+			case <-ticker.C:
+				if p.VoiceConnection != nil {
+					// Check if connection is in a failed state
+					if p.VoiceConnection.Status != discordgo.VoiceConnectionStatusReady {
+						log.Warnf("Voice connection not ready for guild %s, status: %v", p.GuildID, p.VoiceConnection.Status)
+
+						// If we're currently playing, attempt recovery
+						if p.Player.IsPlaying() {
+							log.Infof("Attempting voice connection recovery for guild %s", p.GuildID)
+							p.attemptVoiceRecovery()
+						}
+					}
+				}
+			}
+		}
+	}()
+}
+
+// stopVoiceConnectionMonitor stops the voice connection monitoring goroutine
+func (p *GuildPlayer) stopVoiceConnectionMonitor() {
+	if p.voiceMonitorStop != nil {
+		close(p.voiceMonitorStop)
+		p.voiceMonitorStop = nil
+	}
+}
+
+// attemptVoiceRecovery attempts to recover from a failed voice connection
+func (p *GuildPlayer) attemptVoiceRecovery() {
+	if p.reconnectAttempts >= p.maxReconnectAttempts {
+		log.Errorf("Max voice reconnection attempts reached for guild %s", p.GuildID)
+		p.handleVoiceRecoveryFailure()
+		return
+	}
+
+	p.reconnectAttempts++
+	log.Infof("Voice reconnection attempt %d/%d for guild %s", p.reconnectAttempts, p.maxReconnectAttempts, p.GuildID)
+
+	// Save current state before attempting recovery
+	wasPlaying := p.Player.IsPlaying()
+	currentChannelID := p.VoiceChannelID
+
+	if wasPlaying {
+		// Pause playback during recovery
+		ctx := context.Background()
+		p.Player.Pause(ctx)
+		log.Infof("Paused playback during voice recovery for guild %s", p.GuildID)
+	}
+
+	// Disconnect current connection if it exists
+	if p.VoiceConnection != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := p.VoiceConnection.Disconnect(ctx); err != nil {
+			log.Errorf("Error disconnecting during recovery for guild %s: %v", p.GuildID, err)
+		}
+		cancel()
+	}
+
+	// Attempt to rejoin the voice channel
+	if currentChannelID != nil {
+		log.Infof("Attempting to rejoin voice channel %s in guild %s", *currentChannelID, p.GuildID)
+
+		vc, err := discord.JoinVoiceChannel(p.Discord, p.GuildID, *currentChannelID)
+		if err != nil {
+			log.Errorf("Failed to rejoin voice channel for guild %s: %v", p.GuildID, err)
+
+			// Schedule retry after delay
+			go func() {
+				time.Sleep(time.Duration(p.reconnectAttempts*2) * time.Second)
+				p.attemptVoiceRecovery()
+			}()
+			return
+		}
+
+		// Success! Update connection and resume
+		p.VoiceConnection = vc
+		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
+
+		// Reset reconnection attempts on success
+		p.reconnectAttempts = 0
+
+		// Resume playback if we were playing before
+		if wasPlaying {
+			ctx := context.Background()
+			p.Player.Resume(ctx)
+			log.Infof("Resumed playback after voice recovery for guild %s", p.GuildID)
+		}
+
+		// Send notification to channel about recovery
+		if p.LastTextChannelID != "" {
+			go p.sendRecoveryMessage("🔄 Voice connection restored! Playback resumed.")
+		}
+	}
+}
+
+// handleVoiceRecoveryFailure handles the case when voice recovery completely fails
+func (p *GuildPlayer) handleVoiceRecoveryFailure() {
+	log.Errorf("Voice connection recovery failed for guild %s, stopping playback", p.GuildID)
+
+	// Stop playback and clear state
+	if p.Player != nil {
+		p.Player.Stop()
+	}
+
+	p.VoiceConnection = nil
+	p.VoiceChannelID = nil
+	p.reconnectAttempts = 0
+
+	// Send notification to channel about failure
+	if p.LastTextChannelID != "" {
+		go p.sendRecoveryMessage("❌ Voice connection lost and recovery failed. Use a play command to reconnect.")
+	}
+
+	p.stopVoiceConnectionMonitor()
+}
+
+// sendRecoveryMessage sends a message to the last active text channel
+func (p *GuildPlayer) sendRecoveryMessage(message string) {
+	if p.Discord != nil && p.LastTextChannelID != "" {
+		_, err := p.Discord.ChannelMessageSend(p.LastTextChannelID, message)
+		if err != nil {
+			log.Errorf("Failed to send recovery message to channel %s: %v", p.LastTextChannelID, err)
+		}
+	}
 }
