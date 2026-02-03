@@ -167,9 +167,24 @@ func (d *Database) GetMostPlayed(guildID string, limit int) ([]MostPlayedRecord,
 	var records []MostPlayedRecord
 	for rows.Next() {
 		var r MostPlayedRecord
-		if err := rows.Scan(&r.VideoID, &r.Title, &r.URL, &r.PlayCount, &r.LastPlayed); err != nil {
+		var lastPlayedStr string
+		if err := rows.Scan(&r.VideoID, &r.Title, &r.URL, &r.PlayCount, &lastPlayedStr); err != nil {
 			return nil, fmt.Errorf("failed to scan most played row: %w", err)
 		}
+		
+		// Parse SQLite datetime string to time.Time
+		// SQLite stores timestamps in format "2006-01-02 15:04:05" or RFC3339
+		lastPlayed, err := time.Parse("2006-01-02 15:04:05", lastPlayedStr)
+		if err != nil {
+			// Try RFC3339 format as fallback
+			lastPlayed, err = time.Parse(time.RFC3339, lastPlayedStr)
+			if err != nil {
+				log.Warnf("failed to parse last_played timestamp '%s': %v", lastPlayedStr, err)
+				lastPlayed = time.Time{} // Use zero time if parsing fails
+			}
+		}
+		r.LastPlayed = lastPlayed
+		
 		records = append(records, r)
 	}
 	return records, rows.Err()
