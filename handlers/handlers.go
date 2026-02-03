@@ -19,6 +19,7 @@ import (
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 
+	"beatbot/applemusic"
 	"beatbot/config"
 	"beatbot/controller"
 	"beatbot/discord"
@@ -238,6 +239,47 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 		manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
 
 		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		return
+	}
+
+	// Check for Apple Music URL
+	if strings.HasPrefix(query, "https://music.apple.com/") ||
+		strings.HasPrefix(query, "https://itunes.apple.com/") {
+		log.Debugf("Detected Apple Music URL: %s", query)
+
+		appleMusicReq, err := applemusic.ParseAppleMusicURL(query)
+		if err != nil {
+			log.Errorf("Error parsing Apple Music URL: %v", err)
+			sentryhelper.CaptureException(ctx, err)
+			manager.SendError(interaction, "Invalid Apple Music URL: "+err.Error(), true)
+			return
+		}
+
+		// Handle playlists (Phase 2 - not implemented yet)
+		if appleMusicReq.PlaylistID != "" {
+			manager.SendFollowup(ctx, interaction, "", "Apple Music playlists are coming soon!", true)
+			return
+		}
+
+		// Handle albums (Phase 2 - not implemented yet)
+		if appleMusicReq.AlbumID != "" && appleMusicReq.TrackID == "" {
+			manager.SendFollowup(ctx, interaction, "", "Apple Music albums are coming soon!", true)
+			return
+		}
+
+		// Handle artists (Phase 3 - not implemented yet)
+		if appleMusicReq.ArtistID != "" {
+			manager.SendFollowup(ctx, interaction, "", "Apple Music artists are coming soon!", true)
+			return
+		}
+
+		// Handle tracks
+		if appleMusicReq.TrackID != "" {
+			manager.handleAppleMusicTrack(ctx, interaction, player, appleMusicReq)
+			return
+		}
+
+		manager.SendFollowup(ctx, interaction, "", "Invalid Apple Music URL type.", true)
 		return
 	}
 
@@ -636,6 +678,70 @@ func (manager *Manager) handleSpotifyAlbum(ctx context.Context, interaction *Int
 		Tracks:      albumResult.Tracks,
 		TotalTracks: albumResult.TotalTracks,
 	})
+}
+
+func (manager *Manager) handleAppleMusicTrack(ctx context.Context, interaction *Interaction, player *controller.GuildPlayer, req applemusic.AppleMusicRequest) {
+	log.Debugf("Processing Apple Music track: country=%s, album=%s, track=%s", req.Country, req.AlbumID, req.TrackID)
+
+	// Use default country if not specified
+	country := req.Country
+	if country == "" {
+		country = "us"
+	}
+
+	// Fetch track metadata from Apple Music
+	trackInfo, err := applemusic.GetTrack(ctx, country, req.AlbumID, req.TrackID)
+	if err != nil {
+		log.Errorf("Error fetching Apple Music track: %v", err)
+		sentryhelper.CaptureException(ctx, err)
+
+		// Provide user-friendly error messages
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "404"):
+			manager.SendFollowup(ctx, interaction, "", "That track doesn't exist or has been deleted.", true)
+		case strings.Contains(errMsg, "403"):
+			manager.SendFollowup(ctx, interaction, "", "That content is not accessible.", true)
+		default:
+			manager.SendFollowup(ctx, interaction, "", "Error fetching from Apple Music: "+errMsg, true)
+		}
+		return
+	}
+
+	artistsStr := strings.Join(trackInfo.Artists, ", ")
+	youtubeQuery := artistsStr + " - " + trackInfo.Title
+	log.Debugf("Converted Apple Music track '%s' by '%s' to YouTube query: %s", trackInfo.Title, artistsStr, youtubeQuery)
+
+	manager.SendFollowup(ctx, interaction,
+		"",
+		fmt.Sprintf("Found **%s** by **%s** on Apple Music, searching YouTube...", trackInfo.Title, artistsStr),
+		false)
+
+	videos := youtube.Query(ctx, youtubeQuery)
+	if len(videos) == 0 {
+		log.Warnf("No YouTube results found for Apple Music track: %s", youtubeQuery)
+		manager.SendFollowup(ctx, interaction,
+			"",
+			fmt.Sprintf("Couldn't find **%s** by **%s** on YouTube", trackInfo.Title, artistsStr),
+			true)
+		return
+	}
+
+	video := videos[0]
+	log.Debugf("Found YouTube match: %s (ID: %s)", video.Title, video.VideoID)
+
+	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
+
+	var followUpMessage string
+	if firstSongQueued {
+		followUpMessage = fmt.Sprintf("Now playing the YouTube video titled: **%s** (also mention politely that playback could take a few seconds to start, since it's the first song)", video.Title)
+	} else {
+		followUpMessage = fmt.Sprintf("Now playing the YouTube video titled: **%s**", video.Title)
+	}
+
+	manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
+
+	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
 }
 
 func (manager *Manager) handleYouTubePlaylist(ctx context.Context, interaction *Interaction, player *controller.GuildPlayer, playlistID string) {
