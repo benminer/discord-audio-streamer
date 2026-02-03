@@ -200,3 +200,348 @@ func getString(data map[string]interface{}, key string) string {
 	}
 	return ""
 }
+
+// scrapeAlbumTracks fetches Apple Music album page and extracts track list
+func scrapeAlbumTracks(ctx context.Context, country, albumID string) (*AlbumResult, error) {
+	url := fmt.Sprintf("https://music.apple.com/%s/album/%s", country, albumID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	log.Tracef("Fetching Apple Music album page: %s", url)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse HTML: %w", err)
+	}
+
+	albumResult, err := extractAlbumFromJSONLD(doc)
+	if err == nil {
+		log.Debugf("Extracted album info from JSON-LD: %s by %s (%d tracks)",
+			albumResult.Name, albumResult.Artist, len(albumResult.Tracks))
+		return albumResult, nil
+	}
+
+	log.Debugf("JSON-LD extraction failed (%v), trying HTML fallback", err)
+	return extractAlbumFromHTML(doc)
+}
+
+// extractAlbumFromJSONLD parses JSON-LD MusicAlbum structured data
+func extractAlbumFromJSONLD(doc *goquery.Document) (*AlbumResult, error) {
+	var albumResult *AlbumResult
+
+	doc.Find("script[type='application/ld+json']").EachWithBreak(func(i int, s *goquery.Selection) bool {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(s.Text()), &data); err != nil {
+			return true
+		}
+
+		if typeVal, ok := data["@type"].(string); !ok || typeVal != "MusicAlbum" {
+			return true
+		}
+
+		albumName := getString(data, "name")
+		if albumName == "" {
+			return true
+		}
+
+		artistName := "Unknown Artist"
+		if artistData, ok := data["byArtist"].(map[string]interface{}); ok {
+			if name := getString(artistData, "name"); name != "" {
+				artistName = name
+			}
+		}
+
+		totalTracks := 0
+		if numTracks, ok := data["numTracks"].(float64); ok {
+			totalTracks = int(numTracks)
+		}
+
+		albumResult = &AlbumResult{
+			Name:        albumName,
+			Artist:      artistName,
+			TotalTracks: totalTracks,
+			Tracks:      []PlaylistTrackInfo{},
+		}
+
+		if trackArray, ok := data["track"].([]interface{}); ok {
+			limit := 15
+			if len(trackArray) < limit {
+				limit = len(trackArray)
+			}
+
+			for i := 0; i < limit; i++ {
+				trackData, ok := trackArray[i].(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				trackName := getString(trackData, "name")
+				if trackName == "" {
+					continue
+				}
+
+				trackArtists := []string{artistName}
+				if trackArtistData, ok := trackData["byArtist"].(map[string]interface{}); ok {
+					if name := getString(trackArtistData, "name"); name != "" {
+						trackArtists = []string{name}
+					}
+				}
+
+				position := i
+				if pos, ok := trackData["position"].(float64); ok {
+					position = int(pos) - 1
+				}
+
+				albumResult.Tracks = append(albumResult.Tracks, PlaylistTrackInfo{
+					TrackInfo: TrackInfo{
+						Title:   trackName,
+						Artists: trackArtists,
+						Album:   albumName,
+					},
+					Position: position,
+				})
+			}
+		}
+
+		return false
+	})
+
+	if albumResult == nil {
+		return nil, errors.New("no JSON-LD MusicAlbum data found")
+	}
+
+	if len(albumResult.Tracks) == 0 {
+		return nil, errors.New("no tracks found in album JSON-LD")
+	}
+
+	return albumResult, nil
+}
+
+// extractAlbumFromHTML extracts album data from HTML (fallback method)
+func extractAlbumFromHTML(doc *goquery.Document) (*AlbumResult, error) {
+	albumName, _ := doc.Find("meta[property='og:title']").Attr("content")
+	if albumName == "" {
+		return nil, errors.New("no album name found in HTML")
+	}
+
+	artistName, _ := doc.Find("meta[property='music:musician']").Attr("content")
+	if artistName == "" {
+		artistName = "Unknown Artist"
+	}
+
+	tracks := []PlaylistTrackInfo{}
+	doc.Find(".songs-list-row, .track-list-item").Each(func(i int, s *goquery.Selection) {
+		if i >= 15 {
+			return
+		}
+
+		trackName := strings.TrimSpace(s.Find(".song-name, .track-title").Text())
+		if trackName == "" {
+			return
+		}
+
+		trackArtist := strings.TrimSpace(s.Find(".by-line, .artist-name").Text())
+		if trackArtist == "" {
+			trackArtist = artistName
+		}
+
+		tracks = append(tracks, PlaylistTrackInfo{
+			TrackInfo: TrackInfo{
+				Title:   trackName,
+				Artists: []string{trackArtist},
+				Album:   albumName,
+			},
+			Position: i,
+		})
+	})
+
+	if len(tracks) == 0 {
+		return nil, errors.New("no tracks found in HTML")
+	}
+
+	return &AlbumResult{
+		Name:        albumName,
+		Artist:      artistName,
+		Tracks:      tracks,
+		TotalTracks: len(tracks),
+	}, nil
+}
+
+// scrapePlaylistTracks fetches Apple Music playlist page and extracts track list
+func scrapePlaylistTracks(ctx context.Context, country, playlistID string, limit int) (*PlaylistResult, error) {
+	url := fmt.Sprintf("https://music.apple.com/%s/playlist/%s", country, playlistID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	log.Tracef("Fetching Apple Music playlist page: %s", url)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse HTML: %w", err)
+	}
+
+	playlistResult, err := extractPlaylistFromJSONLD(doc, limit)
+	if err == nil {
+		log.Debugf("Extracted playlist info from JSON-LD: %s (%d tracks)",
+			playlistResult.Name, len(playlistResult.Tracks))
+		return playlistResult, nil
+	}
+
+	log.Debugf("JSON-LD extraction failed (%v), trying HTML fallback", err)
+	return extractPlaylistFromHTML(doc, limit)
+}
+
+// extractPlaylistFromJSONLD parses JSON-LD MusicPlaylist structured data
+func extractPlaylistFromJSONLD(doc *goquery.Document, limit int) (*PlaylistResult, error) {
+	var playlistResult *PlaylistResult
+
+	doc.Find("script[type='application/ld+json']").EachWithBreak(func(i int, s *goquery.Selection) bool {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(s.Text()), &data); err != nil {
+			return true
+		}
+
+		if typeVal, ok := data["@type"].(string); !ok || typeVal != "MusicPlaylist" {
+			return true
+		}
+
+		playlistName := getString(data, "name")
+		if playlistName == "" {
+			return true
+		}
+
+		totalTracks := 0
+		if numTracks, ok := data["numTracks"].(float64); ok {
+			totalTracks = int(numTracks)
+		}
+
+		playlistResult = &PlaylistResult{
+			Name:        playlistName,
+			TotalTracks: totalTracks,
+			Tracks:      []PlaylistTrackInfo{},
+		}
+
+		if trackArray, ok := data["track"].([]interface{}); ok {
+			maxTracks := limit
+			if len(trackArray) < maxTracks {
+				maxTracks = len(trackArray)
+			}
+
+			for i := 0; i < maxTracks; i++ {
+				trackData, ok := trackArray[i].(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				trackName := getString(trackData, "name")
+				if trackName == "" {
+					continue
+				}
+
+				artists := []string{"Unknown Artist"}
+				if artistData, ok := trackData["byArtist"].(map[string]interface{}); ok {
+					if name := getString(artistData, "name"); name != "" {
+						artists = []string{name}
+					}
+				}
+
+				playlistResult.Tracks = append(playlistResult.Tracks, PlaylistTrackInfo{
+					TrackInfo: TrackInfo{
+						Title:   trackName,
+						Artists: artists,
+					},
+					Position: i,
+				})
+			}
+		}
+
+		return false
+	})
+
+	if playlistResult == nil {
+		return nil, errors.New("no JSON-LD MusicPlaylist data found")
+	}
+
+	if len(playlistResult.Tracks) == 0 {
+		return nil, errors.New("no tracks found in playlist JSON-LD")
+	}
+
+	return playlistResult, nil
+}
+
+// extractPlaylistFromHTML extracts playlist data from HTML (fallback method)
+func extractPlaylistFromHTML(doc *goquery.Document, limit int) (*PlaylistResult, error) {
+	playlistName, _ := doc.Find("meta[property='og:title']").Attr("content")
+	if playlistName == "" {
+		return nil, errors.New("no playlist name found in HTML")
+	}
+
+	tracks := []PlaylistTrackInfo{}
+	doc.Find(".songs-list-row, .track-list-item").Each(func(i int, s *goquery.Selection) {
+		if i >= limit {
+			return
+		}
+
+		trackName := strings.TrimSpace(s.Find(".song-name, .track-title").Text())
+		if trackName == "" {
+			return
+		}
+
+		artistName := strings.TrimSpace(s.Find(".by-line, .artist-name").Text())
+		if artistName == "" {
+			artistName = "Unknown Artist"
+		}
+
+		tracks = append(tracks, PlaylistTrackInfo{
+			TrackInfo: TrackInfo{
+				Title:   trackName,
+				Artists: []string{artistName},
+			},
+			Position: i,
+		})
+	})
+
+	if len(tracks) == 0 {
+		return nil, errors.New("no tracks found in HTML")
+	}
+
+	return &PlaylistResult{
+		Name:        playlistName,
+		Tracks:      tracks,
+		TotalTracks: len(tracks),
+	}, nil
+}
