@@ -1232,7 +1232,12 @@ func (manager *Manager) handleHistory(interaction *Interaction) Response {
 	for i, r := range records {
 		requester := r.RequestedByUsername
 		if requester == "" {
-			requester = "Unknown"
+			// Try to fetch username from cache or Discord API
+			if r.RequestedByUserID != "" {
+				requester = db.GetOrFetchUsername(interaction.GuildID, r.RequestedByUserID)
+			} else {
+				requester = "Unknown"
+			}
 		}
 		sb.WriteString(fmt.Sprintf("**%d.** %s\n　　↳ requested by **%s** · %s\n", i+1, r.Title, requester, formatRelativeTime(r.PlayedAt)))
 	}
