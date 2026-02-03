@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	log "github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
 )
 
 type Database struct {
-	db *sql.DB
+	db      *sql.DB
+	session *discordgo.Session
 }
 
 type SongHistoryRecord struct {
@@ -89,6 +91,14 @@ func (d *Database) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_song_history_guild_id ON song_history(guild_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_song_history_played_at ON song_history(guild_id, played_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_song_history_video_id ON song_history(guild_id, video_id)`,
+		`CREATE TABLE IF NOT EXISTS user_cache (
+			user_id TEXT NOT NULL,
+			guild_id TEXT NOT NULL,
+			username TEXT NOT NULL,
+			cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (guild_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_cache_lookup ON user_cache(guild_id, user_id)`,
 	}
 
 	for _, m := range migrations {
@@ -171,7 +181,7 @@ func (d *Database) GetMostPlayed(guildID string, limit int) ([]MostPlayedRecord,
 		if err := rows.Scan(&r.VideoID, &r.Title, &r.URL, &r.PlayCount, &lastPlayedStr); err != nil {
 			return nil, fmt.Errorf("failed to scan most played row: %w", err)
 		}
-		
+
 		// Parse SQLite datetime string to time.Time
 		// SQLite stores timestamps in format "2006-01-02 15:04:05" or RFC3339
 		lastPlayed, err := time.Parse("2006-01-02 15:04:05", lastPlayedStr)
@@ -184,8 +194,85 @@ func (d *Database) GetMostPlayed(guildID string, limit int) ([]MostPlayedRecord,
 			}
 		}
 		r.LastPlayed = lastPlayed
-		
+
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+// SetSession sets the Discord session for username lookups.
+func (d *Database) SetSession(session *discordgo.Session) {
+	d.session = session
+}
+
+// GetOrFetchUsername retrieves a username from cache or fetches from Discord API if not found or stale.
+// Stale threshold is 7 days. Returns "Unknown" if all attempts fail.
+func (d *Database) GetOrFetchUsername(guildID, userID string) string {
+	if userID == "" {
+		return "Unknown"
+	}
+
+	// First, try to get from cache
+	var username string
+	var cachedAt time.Time
+	err := d.db.QueryRow(
+		`SELECT username, cached_at FROM user_cache WHERE guild_id = ? AND user_id = ?`,
+		guildID, userID,
+	).Scan(&username, &cachedAt)
+
+	// If found in cache and not stale (< 7 days old), return it
+	if err == nil {
+		if time.Since(cachedAt) < 7*24*time.Hour {
+			return username
+		}
+	}
+
+	// Not in cache or stale - try to fetch from Discord API
+	if d.session != nil {
+		member, err := d.session.GuildMember(guildID, userID)
+		if err == nil {
+			// Prefer nickname over username
+			username = member.User.Username
+			if member.Nick != "" {
+				username = member.Nick
+			}
+
+			// Update cache
+			_, err = d.db.Exec(
+				`INSERT OR REPLACE INTO user_cache (guild_id, user_id, username, cached_at) VALUES (?, ?, ?, ?)`,
+				guildID, userID, username, time.Now().UTC(),
+			)
+			if err != nil {
+				log.Warnf("Failed to update user cache for %s/%s: %v", guildID, userID, err)
+			}
+
+			return username
+		}
+
+		// If guild member lookup failed, try user lookup as fallback
+		user, err := d.session.User(userID)
+		if err == nil {
+			username = user.Username
+
+			// Update cache
+			_, err = d.db.Exec(
+				`INSERT OR REPLACE INTO user_cache (guild_id, user_id, username, cached_at) VALUES (?, ?, ?, ?)`,
+				guildID, userID, username, time.Now().UTC(),
+			)
+			if err != nil {
+				log.Warnf("Failed to update user cache for %s/%s: %v", guildID, userID, err)
+			}
+
+			return username
+		}
+
+		log.Warnf("Failed to fetch user from Discord API for %s/%s: %v", guildID, userID, err)
+	}
+
+	// If we have a stale cached value, return it rather than "Unknown"
+	if err == nil && username != "" {
+		return username
+	}
+
+	return "Unknown"
 }

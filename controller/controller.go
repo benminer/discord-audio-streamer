@@ -165,6 +165,11 @@ func NewController(db *database.Database) (*Controller, error) {
 		return nil, errors.New("failed to create discord session")
 	}
 
+	// Set Discord session in database for username lookups
+	if db != nil {
+		db.SetSession(discord)
+	}
+
 	if config.Config.Spotify.Enabled {
 		err = spotify.NewSpotifyClient()
 		if err != nil {
@@ -886,6 +891,10 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						username := ""
 						if queueItem.Interaction != nil {
 							userID = queueItem.Interaction.UserID
+							// Fetch username from cache or Discord API
+							if userID != "" {
+								username = p.DB.GetOrFetchUsername(p.GuildID, userID)
+							}
 						}
 						url := "https://www.youtube.com/watch?v=" + queueItem.Video.VideoID
 						if err := p.DB.RecordPlay(p.GuildID, queueItem.Video.VideoID, queueItem.Video.Title, url, userID, username, 0); err != nil {
