@@ -18,16 +18,18 @@ import (
 )
 
 type Player struct {
-	Notifications    chan PlaybackNotification
-	completed        chan bool
-	logger           *log.Entry
-	encoder          *opus.Encoder
-	paused           atomic.Bool
-	stopping         atomic.Bool
-	playing          *bool
-	volume           int
-	fadeOutRemaining int
-	mutex            sync.Mutex
+	Notifications     chan PlaybackNotification
+	completed         chan bool
+	logger            *log.Entry
+	encoder           *opus.Encoder
+	paused            atomic.Bool
+	stopping          atomic.Bool
+	playing           *bool
+	volume            int
+	fadeOutRemaining  int
+	mutex             sync.Mutex
+	playbackStartTime time.Time
+	playbackPosition  atomic.Int64 // microseconds
 }
 
 func NewPlayer() (*Player, error) {
@@ -81,6 +83,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 
 	*p.playing = true
 	p.stopping.Store(false) // Reset stopping flag for new song
+	// Initialize position tracking
+	p.playbackStartTime = time.Now()
+	p.playbackPosition.Store(0)
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 	opusBuffer := make([]byte, 960*4)
@@ -263,6 +268,12 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				}
 				return nil
 			}
+
+			// Update position tracking (each opus frame is 20ms)
+			if !p.paused.Load() && !p.stopping.Load() {
+				currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
+				p.playbackPosition.Store(currentPos)
+			}
 		}
 	}
 }
@@ -327,4 +338,13 @@ func (p *Player) SetVolume(volume int) {
 
 func (p *Player) GetVolume() int {
 	return p.volume
+}
+
+func (p *Player) GetPosition() time.Duration {
+	if p.playing == nil || !*p.playing {
+		return 0
+	}
+
+	microseconds := p.playbackPosition.Load()
+	return time.Duration(microseconds) * time.Microsecond
 }
