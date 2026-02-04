@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"beatbot/config"
+
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/genai"
-
-	"beatbot/config"
 )
 
 func printResponse(resp *genai.GenerateContentResponse) {
@@ -136,4 +136,70 @@ Here are the available commands:
 Prompt: ` + prompt
 
 	return generateResponse(ctx, instructions)
+}
+
+// GenerateSongRecommendation analyzes recent listening history and generates a search query
+// for finding a similar song. Returns an empty string if Gemini is disabled or on error.
+func GenerateSongRecommendation(ctx context.Context, recentSongs []string) string {
+	if !config.Config.Gemini.Enabled {
+		return ""
+	}
+
+	// Start span for Gemini recommendation generation
+	span := sentry.StartSpan(ctx, "gemini.song_recommendation")
+	span.Description = "Generate song recommendation query"
+	span.SetTag("num_songs", fmt.Sprintf("%d", len(recentSongs)))
+	defer span.Finish()
+
+	if len(recentSongs) == 0 {
+		span.Status = sentry.SpanStatusInvalidArgument
+		return ""
+	}
+
+	// Build the song list
+	songList := strings.Join(recentSongs, "\n")
+
+	instructions := fmt.Sprintf(`You are a music recommendation AI. Based on the following recently played songs, suggest ONE similar song that would fit well in this listening session.
+
+Recent songs played:
+%s
+
+Your task:
+1. Analyze the genre, mood, era, and style of these songs
+2. Identify common patterns or themes
+3. Suggest ONE song that is musically similar but NOT in the list above
+4. Return ONLY a search query string that can be used to find this song on YouTube
+
+Important:
+- Return ONLY the search query (e.g., "Artist Name - Song Title")
+- Do NOT include explanations, reasoning, or extra text
+- Do NOT suggest a song that's already in the list
+- The query should be specific enough to find the right song
+- Focus on musical similarity (genre, mood, tempo, style)
+
+Example output format:
+The Killers - Somebody Told Me
+
+Now generate your recommendation:`, songList)
+
+	response := generateResponse(ctx, instructions)
+	if response == "" {
+		span.Status = sentry.SpanStatusInternalError
+		return ""
+	}
+
+	// Clean up the response (remove any extra formatting or explanations)
+	query := strings.TrimSpace(response)
+	// Remove quotes if present
+	query = strings.Trim(query, "\"'`")
+
+	span.Status = sentry.SpanStatusOK
+	span.SetData("query", query)
+
+	log.WithFields(log.Fields{
+		"module": "gemini",
+		"query":  query,
+	}).Debug("Generated song recommendation query")
+
+	return query
 }
