@@ -259,6 +259,13 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				continue
 			}
 
+			// Update position tracking BEFORE sending (each opus frame is 20ms)
+			// This ensures position stays accurate even if send fails
+			if !p.paused.Load() && !p.stopping.Load() {
+				currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
+				p.playbackPosition.Store(currentPos)
+			}
+
 			if !safeSendOpus(voiceChannel, opusBuffer[:encoded], p.completed) {
 				p.logger.Debug("Playback stopped - voice channel closed or completed")
 				span.Status = sentry.SpanStatusCanceled
@@ -267,12 +274,6 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					VideoID: &data.VideoID,
 				}
 				return nil
-			}
-
-			// Update position tracking (each opus frame is 20ms)
-			if !p.paused.Load() && !p.stopping.Load() {
-				currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
-				p.playbackPosition.Store(currentPos)
 			}
 		}
 	}
@@ -299,6 +300,7 @@ func (p *Player) Pause(ctx context.Context) {
 	if p.fadeOutRemaining == 0 {
 		p.fadeOutRemaining = 5 // 5 frames = 100ms fade-out
 	}
+	// Position tracking automatically freezes when paused (checked in Play loop)
 	p.paused.Store(true)
 	p.Notifications <- PlaybackNotification{
 		Event: PlaybackPaused,
@@ -309,6 +311,7 @@ func (p *Player) Resume(ctx context.Context) {
 	_ = ctx // ctx available for future Sentry tracing if needed
 	p.logger.Info("Resuming playback")
 	p.fadeOutRemaining = 0 // Cancel any ongoing fade-out
+	// Position tracking automatically resumes when unpaused (checked in Play loop)
 	p.paused.Store(false)
 	p.Notifications <- PlaybackNotification{
 		Event: PlaybackResumed,

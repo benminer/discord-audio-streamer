@@ -8,6 +8,9 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+// ProgressBarWidth is the number of characters in the progress bar
+const ProgressBarWidth = 15
+
 // NowPlayingMetadata contains all info for a now-playing card
 type NowPlayingMetadata struct {
 	VideoID         string
@@ -37,7 +40,7 @@ func BuildNowPlayingEmbed(metadata *NowPlayingMetadata) *discordgo.MessageEmbed 
 	}
 
 	// Create progress bar
-	progressBar := RenderProgressBar(metadata.CurrentPosition, metadata.Duration, 15)
+	progressBar := RenderProgressBar(metadata.CurrentPosition, metadata.Duration, ProgressBarWidth)
 
 	// Determine embed color based on playback state
 	color := 0x1DB954 // Spotify green for playing
@@ -105,7 +108,7 @@ func UpdateNowPlayingProgress(embed *discordgo.MessageEmbed, currentPosition, du
 	}
 
 	// Update progress bar in footer
-	embed.Footer.Text = RenderProgressBar(currentPosition, duration, 15)
+	embed.Footer.Text = RenderProgressBar(currentPosition, duration, ProgressBarWidth)
 
 	return embed
 }
