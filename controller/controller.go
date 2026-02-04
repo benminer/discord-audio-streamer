@@ -119,6 +119,13 @@ type GuildPlayer struct {
 	RadioEnabled         bool
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
+
+	// Now-playing card tracking
+	NowPlayingMessageID   *string
+	NowPlayingChannelID   *string
+	nowPlayingMutex       sync.Mutex
+	nowPlayingUpdateStop  chan struct{}
+	nowPlayingCurrentItem *GuildQueueItem
 }
 
 type GuildQueueItemInteraction struct {
@@ -821,6 +828,15 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					},
 				})
 				p.VoiceConnection.Speaking(false)
+
+				// Update now-playing card state
+				if p.nowPlayingCurrentItem != nil {
+					go func() {
+						if err := p.updateNowPlayingCard(p.nowPlayingCurrentItem); err != nil {
+							log.Warnf("Failed to update paused state: %v", err)
+						}
+					}()
+				}
 			case audio.PlaybackResumed:
 				sentry.AddBreadcrumb(&sentry.Breadcrumb{
 					Category: "playback",
@@ -832,6 +848,15 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					},
 				})
 				p.VoiceConnection.Speaking(true)
+
+				// Update now-playing card state
+				if p.nowPlayingCurrentItem != nil {
+					go func() {
+						if err := p.updateNowPlayingCard(p.nowPlayingCurrentItem); err != nil {
+							log.Warnf("Failed to update resumed state: %v", err)
+						}
+					}()
+				}
 			case audio.PlaybackStopped:
 				sentry.AddBreadcrumb(&sentry.Breadcrumb{
 					Category: "playback",
@@ -844,6 +869,10 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				})
 				p.CurrentSong = nil
 				p.VoiceConnection.Speaking(false)
+
+				// Stop now-playing updates
+				p.stopNowPlayingUpdates()
+				p.clearNowPlayingCard()
 			case audio.PlaybackCompleted:
 				sentry.AddBreadcrumb(&sentry.Breadcrumb{
 					Category: "playback",
@@ -857,6 +886,11 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				})
 				p.CurrentSong = nil
 				p.VoiceConnection.Speaking(false)
+
+				// Stop now-playing updates
+				p.stopNowPlayingUpdates()
+				p.clearNowPlayingCard()
+
 				p.playNext()
 
 				// If radio is enabled and queue is empty, auto-queue a similar song
@@ -878,6 +912,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"title":      queueItem.Video.Title,
 						},
 					})
+
+					// Send now-playing card
+					go p.sendNowPlayingCard(queueItem)
 
 					// Record in song history for radio mode
 					p.SongHistory.Add(SongHistoryEntry{
@@ -1454,4 +1491,133 @@ func (p *GuildPlayer) sendRecoveryMessage(message string) {
 			log.Errorf("Failed to send recovery message to channel %s: %v", p.LastTextChannelID, err)
 		}
 	}
+}
+
+// sendNowPlayingCard creates and sends a now-playing embed
+func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
+	if p.LastTextChannelID == "" {
+		log.Debug("No text channel to send now-playing card")
+		return
+	}
+
+	p.nowPlayingMutex.Lock()
+	defer p.nowPlayingMutex.Unlock()
+
+	// Get duration from video or load result
+	var duration time.Duration
+	if queueItem.LoadResult != nil {
+		duration = queueItem.LoadResult.Duration
+	}
+
+	// Build metadata
+	metadata := &discord.NowPlayingMetadata{
+		VideoID:         queueItem.Video.VideoID,
+		Title:           queueItem.Video.Title,
+		Duration:        duration,
+		CurrentPosition: 0,
+		IsPlaying:       true,
+		Volume:          p.Player.GetVolume(),
+		GuildID:         p.GuildID,
+	}
+
+	// Build embed and buttons
+	embed := discord.BuildNowPlayingEmbed(metadata)
+	buttons := discord.BuildPlaybackButtons(p.GuildID, true)
+
+	// Send message
+	message, err := discord.SendChannelMessage(p.LastTextChannelID, "", embed, buttons)
+	if err != nil {
+		log.Errorf("Failed to send now-playing card: %v", err)
+		sentry.CaptureException(err)
+		return
+	}
+
+	// Store message ID and current item for updates
+	p.NowPlayingMessageID = &message.ID
+	p.NowPlayingChannelID = &p.LastTextChannelID
+	p.nowPlayingCurrentItem = queueItem
+
+	log.Debugf("Sent now-playing card: %s", message.ID)
+
+	// Start periodic updates
+	p.startNowPlayingUpdates(queueItem)
+}
+
+// updateNowPlayingCard updates progress bar and metadata
+func (p *GuildPlayer) updateNowPlayingCard(queueItem *GuildQueueItem) error {
+	p.nowPlayingMutex.Lock()
+	defer p.nowPlayingMutex.Unlock()
+
+	if p.NowPlayingMessageID == nil || p.NowPlayingChannelID == nil {
+		return nil
+	}
+
+	// Get current position from player
+	currentPosition := p.Player.GetPosition()
+
+	var duration time.Duration
+	if queueItem.LoadResult != nil {
+		duration = queueItem.LoadResult.Duration
+	}
+
+	// Build updated metadata
+	metadata := &discord.NowPlayingMetadata{
+		VideoID:         queueItem.Video.VideoID,
+		Title:           queueItem.Video.Title,
+		Duration:        duration,
+		CurrentPosition: currentPosition,
+		IsPlaying:       p.Player.IsPlaying(),
+		Volume:          p.Player.GetVolume(),
+		GuildID:         p.GuildID,
+	}
+
+	// Build embed and buttons
+	embed := discord.BuildNowPlayingEmbed(metadata)
+	buttons := discord.BuildPlaybackButtons(p.GuildID, metadata.IsPlaying)
+
+	// Update message
+	return discord.EditChannelMessage(*p.NowPlayingChannelID, *p.NowPlayingMessageID, "", embed, buttons)
+}
+
+// startNowPlayingUpdates starts periodic progress updates
+func (p *GuildPlayer) startNowPlayingUpdates(queueItem *GuildQueueItem) {
+	// Stop any existing updater
+	p.stopNowPlayingUpdates()
+
+	p.nowPlayingUpdateStop = make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second) // Update every 5 seconds
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := p.updateNowPlayingCard(queueItem); err != nil {
+					log.Warnf("Failed to update now-playing card: %v", err)
+				}
+			case <-p.nowPlayingUpdateStop:
+				log.Debug("Stopping now-playing updates")
+				return
+			}
+		}
+	}()
+}
+
+// stopNowPlayingUpdates stops periodic updates
+func (p *GuildPlayer) stopNowPlayingUpdates() {
+	if p.nowPlayingUpdateStop != nil {
+		close(p.nowPlayingUpdateStop)
+		p.nowPlayingUpdateStop = nil
+	}
+}
+
+// clearNowPlayingCard clears the now-playing card state
+func (p *GuildPlayer) clearNowPlayingCard() {
+	p.nowPlayingMutex.Lock()
+	defer p.nowPlayingMutex.Unlock()
+
+	p.NowPlayingMessageID = nil
+	p.NowPlayingChannelID = nil
+	p.nowPlayingCurrentItem = nil
 }
