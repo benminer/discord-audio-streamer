@@ -1029,7 +1029,7 @@ func ExtractArtist(title string) string {
 	return cleaned
 }
 
-// queueRadioSong finds and queues a similar song based on play history
+// queueRadioSong finds and queues a similar song based on play history using Gemini AI
 func (p *GuildPlayer) queueRadioSong() {
 	logger := log.WithFields(log.Fields{
 		"module":  "controller",
@@ -1055,7 +1055,7 @@ func (p *GuildPlayer) queueRadioSong() {
 	})
 
 	// Get recent songs to build a search query
-	recent := p.SongHistory.GetRecent(5)
+	recent := p.SongHistory.GetRecent(3)
 	historyIDs := p.SongHistory.GetAllVideoIDs()
 
 	// Also exclude anything currently in queue
@@ -1065,40 +1065,87 @@ func (p *GuildPlayer) queueRadioSong() {
 	}
 	p.Queue.Mutex.Unlock()
 
-	// Pick a random recent song's artist for variety
-	idx := rand.Intn(len(recent))
-	artist := ExtractArtist(recent[idx].Title)
-	query := artist + " music"
-
-	logger.Infof("Radio searching for: %s", query)
-
-	videos := youtube.Query(ctx, query)
-	if len(videos) == 0 {
-		logger.Warn("radio: no YouTube results found")
-		return
-	}
-
-	// Find first result not already played
+	var query string
 	var picked *youtube.VideoResponse
-	for i := range videos {
-		if !historyIDs[videos[i].VideoID] {
-			picked = &videos[i]
-			break
+	var videos []youtube.VideoResponse
+
+	// Try Gemini-powered recommendation first
+	if config.Config.Gemini.Enabled && len(recent) >= 3 {
+		// Extract song titles for Gemini
+		songTitles := make([]string, len(recent))
+		for i, song := range recent {
+			songTitles[i] = song.Title
+		}
+
+		logger.Debug("Requesting Gemini song recommendation based on recent history")
+		query = gemini.GenerateSongRecommendation(ctx, songTitles)
+
+		if query != "" {
+			logger.Infof("Gemini recommended search query: %s", query)
+
+			sentry.AddBreadcrumb(&sentry.Breadcrumb{
+				Category: "radio",
+				Message:  "Gemini generated recommendation query",
+				Level:    sentry.LevelInfo,
+				Data: map[string]interface{}{
+					"guild_id": p.GuildID,
+					"query":    query,
+				},
+			})
+
+			videos = youtube.Query(ctx, query)
+			if len(videos) > 0 {
+				// Find first result not already played
+				for i := range videos {
+					if !historyIDs[videos[i].VideoID] {
+						picked = &videos[i]
+						break
+					}
+				}
+			}
+		} else {
+			logger.Warn("Gemini recommendation returned empty query, falling back to legacy method")
 		}
 	}
 
+	// Fallback to legacy random artist search if Gemini failed or is disabled
 	if picked == nil {
-		logger.Info("radio: all search results already in history, trying broader query")
-		// Fallback: try with a different recent song
-		fallbackIdx := (idx + 1) % len(recent)
-		fallbackArtist := ExtractArtist(recent[fallbackIdx].Title)
-		fallbackQuery := fallbackArtist + " songs"
+		logger.Debug("Using fallback legacy search method")
 
-		videos = youtube.Query(ctx, fallbackQuery)
+		// Pick a random recent song's artist for variety
+		idx := rand.Intn(len(recent))
+		artist := ExtractArtist(recent[idx].Title)
+		query = artist + " music"
+
+		logger.Infof("Radio searching for: %s", query)
+
+		videos = youtube.Query(ctx, query)
+		if len(videos) == 0 {
+			logger.Warn("radio: no YouTube results found")
+			return
+		}
+
+		// Find first result not already played
 		for i := range videos {
 			if !historyIDs[videos[i].VideoID] {
 				picked = &videos[i]
 				break
+			}
+		}
+
+		if picked == nil {
+			logger.Info("radio: all search results already in history, trying broader query")
+			// Fallback: try with a different recent song
+			fallbackIdx := (idx + 1) % len(recent)
+			fallbackArtist := ExtractArtist(recent[fallbackIdx].Title)
+			fallbackQuery := fallbackArtist + " songs"
+
+			videos = youtube.Query(ctx, fallbackQuery)
+			for i := range videos {
+				if !historyIDs[videos[i].VideoID] {
+					picked = &videos[i]
+					break
+				}
 			}
 		}
 	}
