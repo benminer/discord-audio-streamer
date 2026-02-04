@@ -18,16 +18,18 @@ import (
 )
 
 type Player struct {
-	Notifications    chan PlaybackNotification
-	completed        chan bool
-	logger           *log.Entry
-	encoder          *opus.Encoder
-	paused           atomic.Bool
-	stopping         atomic.Bool
-	playing          *bool
-	volume           int
-	fadeOutRemaining int
-	mutex            sync.Mutex
+	Notifications     chan PlaybackNotification
+	completed         chan bool
+	logger            *log.Entry
+	encoder           *opus.Encoder
+	paused            atomic.Bool
+	stopping          atomic.Bool
+	playing           *bool
+	volume            int
+	fadeOutRemaining  int
+	mutex             sync.Mutex
+	playbackStartTime time.Time
+	playbackPosition  atomic.Int64 // microseconds
 }
 
 func NewPlayer() (*Player, error) {
@@ -81,6 +83,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 
 	*p.playing = true
 	p.stopping.Store(false) // Reset stopping flag for new song
+	// Initialize position tracking
+	p.playbackStartTime = time.Now()
+	p.playbackPosition.Store(0)
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 	opusBuffer := make([]byte, 960*4)
@@ -254,6 +259,13 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				continue
 			}
 
+			// Update position tracking BEFORE sending (each opus frame is 20ms)
+			// This ensures position stays accurate even if send fails
+			if !p.paused.Load() && !p.stopping.Load() {
+				currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
+				p.playbackPosition.Store(currentPos)
+			}
+
 			if !safeSendOpus(voiceChannel, opusBuffer[:encoded], p.completed) {
 				p.logger.Debug("Playback stopped - voice channel closed or completed")
 				span.Status = sentry.SpanStatusCanceled
@@ -288,6 +300,7 @@ func (p *Player) Pause(ctx context.Context) {
 	if p.fadeOutRemaining == 0 {
 		p.fadeOutRemaining = 5 // 5 frames = 100ms fade-out
 	}
+	// Position tracking automatically freezes when paused (checked in Play loop)
 	p.paused.Store(true)
 	p.Notifications <- PlaybackNotification{
 		Event: PlaybackPaused,
@@ -298,6 +311,7 @@ func (p *Player) Resume(ctx context.Context) {
 	_ = ctx // ctx available for future Sentry tracing if needed
 	p.logger.Info("Resuming playback")
 	p.fadeOutRemaining = 0 // Cancel any ongoing fade-out
+	// Position tracking automatically resumes when unpaused (checked in Play loop)
 	p.paused.Store(false)
 	p.Notifications <- PlaybackNotification{
 		Event: PlaybackResumed,
@@ -327,4 +341,13 @@ func (p *Player) SetVolume(volume int) {
 
 func (p *Player) GetVolume() int {
 	return p.volume
+}
+
+func (p *Player) GetPosition() time.Duration {
+	if p.playing == nil || !*p.playing {
+		return 0
+	}
+
+	microseconds := p.playbackPosition.Load()
+	return time.Duration(microseconds) * time.Microsecond
 }
