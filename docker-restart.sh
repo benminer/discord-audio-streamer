@@ -1,28 +1,20 @@
 #!/bin/bash
 
-# This script is used to restart the docker container
-# It will build the docker image and run it
-# It will also remove the existing container if it exists
-# It will also set the environment variables from the .env file
+# Optimized for Mac Mini ARM64: higher resources, ARM64 image, consistent naming
 
 source .env
 
 should_rebuild=false
-
 if [ "$1" == "rebuild" ]; then
     should_rebuild=true
-    echo "Rebuilding docker image"
+    echo "Rebuilding Docker image for ARM64..."
+    docker build --platform linux/arm64 -t benminer/discord-audio-streamer:latest ./
 fi
 
-if [ "$should_rebuild" == "true" ]; then
-    docker build -t benminer/discord-music-bot ./
-fi
-
-if docker ps -a --format '{{.Names}}' | grep -q "^discord-music-bot$"; then
-    echo "Found existing container, removing..."
-    docker rm -f discord-music-bot
-else
-    echo "No existing container found"
+# Remove existing container
+if docker ps -a --format '{{.Names}}' | grep -q "^discord-audio-streamer$"; then
+    echo "Removing existing container..."
+    docker rm -f discord-audio-streamer
 fi
 
 PORT_MAPPING=""
@@ -30,15 +22,14 @@ if [ "${TUNNEL_PROVIDER:-ngrok}" = "cloudflare" ]; then
     PORT_MAPPING="-p 8080:8080"
 fi
 
-docker run -d --name discord-music-bot \
+# Run with high resources for Mac Mini (adjust as needed: M2 Pro 12c/32GB example)
+docker run -d --name discord-audio-streamer \
   --restart always \
   $PORT_MAPPING \
-  --memory="1.5g" \
-  --memory-reservation="768m" \
-  --memory-swap="2.5g" \
-  --cpus="2" \
-  --cpu-shares="2048" \
-  -v discord-music-bot-data:/app/data \
+  --cpus=8 \
+  --memory=16g \
+  --memory-swap=24g \
+  -v discord-audio-streamer-data:/app/data \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
   -e DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN \
@@ -54,4 +45,4 @@ docker run -d --name discord-music-bot \
   -e TUNNEL_PROVIDER=${TUNNEL_PROVIDER:-ngrok} \
   -e CLOUDFLARE_TUNNEL_URL=$CLOUDFLARE_TUNNEL_URL \
   -e SENTRY_DSN=$SENTRY_DSN \
-  benminer/discord-music-bot:latest
+  benminer/discord-audio-streamer:latest
