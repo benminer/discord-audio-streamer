@@ -26,9 +26,9 @@ fi
 docker run -d --name discord-audio-streamer \
   --restart always \
   $PORT_MAPPING \
-  --cpus=8 \
-  --memory=16g \
-  --memory-swap=24g \
+  --cpus=4 \
+  --memory=8g \
+  --memory-swap=12g \
   -v discord-audio-streamer-data:/app/data \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
