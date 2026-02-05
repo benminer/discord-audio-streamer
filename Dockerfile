@@ -1,9 +1,9 @@
 # Build stage
-FROM golang:1.24.0-bullseye AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS builder
 
 WORKDIR /app
 
-# Install build dependencies (cached until packages change)
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     libopusfile-dev \
     libopus-dev \
@@ -17,13 +17,14 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Build with optimizations (strip debug info, reduce binary size)
-RUN CGO_ENABLED=1 go build -ldflags="-w -s" -o discord-bot
+# Build with optimizations for ARM64: parallel, strip, native
+ARG TARGETPLATFORM
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -a -p $(nproc) -o discord-bot
 
-# Runtime stage - using debian-slim instead of ubuntu for smaller size
-FROM debian:bullseye-slim
+# Runtime stage
+FROM debian:bookworm-slim
 
-# Install runtime dependencies in single layer
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libopusfile0 \
     libopus0 \
@@ -31,29 +32,24 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64 -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp
 
-# Create non-root user for security
+# Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash appuser
 
 WORKDIR /app
 
-# Copy binary and startup files from builder
+# Copy artifacts
 COPY --from=builder /app/discord-bot .
 COPY --from=builder /app/commands.json .
 COPY --from=builder /app/entrypoint.sh .
 
-# Create data directory for SQLite persistence
-RUN mkdir -p /app/data
+# Data dir
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
 
-# Set ownership
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
 USER appuser
 
-# Environment variables
 ENV RELEASE=true \
     PORT=8080 \
     GIN_MODE=release \
@@ -65,7 +61,5 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 VOLUME /app/data
-
 EXPOSE 8080
-
 CMD ["./entrypoint.sh"]
