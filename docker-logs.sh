@@ -1,3 +1,3 @@
 #!/bin/bash
 
-docker logs -f discord-music-bot
+docker logs -f discord-audio-streamer

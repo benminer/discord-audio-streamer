@@ -4,3 +4,5 @@
 run-docker.sh
 gcloud-deploy.sh
 beatbot
+data/*
+data/
