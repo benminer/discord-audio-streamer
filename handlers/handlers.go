@@ -45,7 +45,7 @@ type InteractionOption struct {
 }
 
 type InteractionData struct {
-	ID      string              `json:"id"`
+	ID      string              `json:"id,string"`
 	Name    string              `json:"name"`
 	Type    int                 `json:"type"`
 	Options []InteractionOption `json:"options"`

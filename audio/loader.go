@@ -195,6 +195,11 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 		span.SetData("load_duration_ms", time.Since(start).Milliseconds())
 
 		log.Tracef("loaded %s (%d bytes)", job.VideoID, res.buf.Len())
+		bytesLoaded := uint64(res.buf.Len())
+		bytesPerSecond := uint64(48000 * 2 * 2) // sampleRate * bytesPerSample * channels
+		durationNs := (bytesLoaded * 1000000000) / bytesPerSecond
+		duration := time.Duration(durationNs).Round(time.Second)
+
 		output := io.NopCloser(bytes.NewReader(res.buf.Bytes()))
 		l.Notifications <- PlaybackNotification{
 			Event:   PlaybackLoaded,
@@ -203,7 +208,7 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 				ffmpegOut: output,
 				VideoID:   job.VideoID,
 				Title:     job.Title,
-				Duration:  time.Since(start),
+				Duration:  duration,
 			},
 		}
 		log.Tracef("sent loaded event for %s", job.VideoID)

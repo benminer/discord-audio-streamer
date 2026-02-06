@@ -19,8 +19,9 @@ import (
 )
 
 type VideoResponse struct {
-	Title   string `json:"title"`
-	VideoID string `json:"video_id"`
+	Title    string        `json:"title"`
+	VideoID  string        `json:"video_id"`
+	Duration time.Duration `json:"duration"`
 }
 
 type YoutubeStream struct {
@@ -269,12 +270,13 @@ func Query(ctx context.Context, query string) []VideoResponse {
 
 	videos := make([]VideoResponse, 0)
 	for _, item := range videoResponse.Items {
-		duration := item.ContentDetails.Duration
-		minutes := parseDuration(duration)
-		if minutes <= 12 {
+		durationISO := item.ContentDetails.Duration
+		ytDuration := parseYoutubeDuration(durationISO)
+		if ytDuration <= 12*time.Minute {
 			videos = append(videos, VideoResponse{
-				Title:   videoMap[item.Id],
-				VideoID: item.Id,
+				Title:    videoMap[item.Id],
+				VideoID:  item.Id,
+				Duration: ytDuration,
 			})
 		}
 	}
@@ -339,26 +341,26 @@ func GetVideoStream(ctx context.Context, videoResponse VideoResponse) (*YoutubeS
 	}, nil
 }
 
-func parseDuration(duration string) float64 {
-	duration = strings.TrimPrefix(duration, "PT")
+func parseYoutubeDuration(iso string) time.Duration {
+	iso = strings.TrimPrefix(strings.ToUpper(iso), "PT")
+	var hours, minutes, seconds float64
 
-	var minutes float64
-	if strings.Contains(duration, "H") {
-		return 999
+	if i := strings.Index(iso, "H"); i > 0 {
+		h, _ := strconv.ParseFloat(iso[:i], 64)
+		hours = h
+		iso = iso[i+1:]
 	}
-
-	if idx := strings.Index(duration, "M"); idx != -1 {
-		m, _ := strconv.ParseFloat(duration[:idx], 64)
+	if i := strings.Index(iso, "M"); i > 0 {
+		m, _ := strconv.ParseFloat(iso[:i], 64)
 		minutes = m
-		duration = duration[idx+1:]
+		iso = iso[i+1:]
+	}
+	if i := strings.Index(iso, "S"); i > 0 {
+		s, _ := strconv.ParseFloat(iso[:i], 64)
+		seconds = s
 	}
 
-	if idx := strings.Index(duration, "S"); idx != -1 {
-		s, _ := strconv.ParseFloat(duration[:idx], 64)
-		minutes += s / 60
-	}
-
-	return minutes
+	return time.Duration((hours*3600 + minutes*60 + seconds) * float64(time.Second)).Round(time.Second)
 }
 
 func TestYoutubeDlpWithOutput() (string, error) {
