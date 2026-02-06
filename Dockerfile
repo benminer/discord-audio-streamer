@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     libopusfile-dev \
     libopus-dev \
     pkg-config \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy go mod files first for better caching
