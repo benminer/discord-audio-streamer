@@ -135,14 +135,15 @@ type GuildQueueItemInteraction struct {
 }
 
 type GuildQueueItem struct {
-	Video        youtube.VideoResponse
-	Stream       *youtube.YoutubeStream
-	LoadResult   *audio.LoadResult
-	AddedAt      time.Time
-	Interaction  *GuildQueueItemInteraction
-	LoadAttempts int
-	MaxAttempts  int
-	Context      context.Context // Sentry context for tracing
+	Video         youtube.VideoResponse
+	Stream        *youtube.YoutubeStream
+	LoadResult    *audio.LoadResult
+	ProbedDuration time.Duration
+	AddedAt       time.Time
+	Interaction   *GuildQueueItemInteraction
+	LoadAttempts  int
+	MaxAttempts   int
+	Context       context.Context // Sentry context for tracing
 }
 
 type GuildQueue struct {
@@ -669,8 +670,9 @@ func (p *GuildPlayer) listenForLoadEvents() {
 						}
 						go p.play(ctx, event.LoadResult)
 					} else {
-						log.Tracef("loaded song read for index %d, setting load result", queueIndex)
+						log.Tracef("loaded song ready for index %d, setting load result", queueIndex)
 						queueItem.LoadResult = event.LoadResult
+						queueItem.ProbedDuration = event.LoadResult.Duration
 					}
 				}
 			case audio.PlaybackLoadCanceled:
@@ -1503,10 +1505,14 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	p.nowPlayingMutex.Lock()
 	defer p.nowPlayingMutex.Unlock()
 
-	// Get duration from video or load result
+	// Get duration preferring probed > load result > YouTube metadata
 	var duration time.Duration
-	if queueItem.LoadResult != nil {
+	if queueItem.ProbedDuration > 0 {
+		duration = queueItem.ProbedDuration
+	} else if queueItem.LoadResult != nil && queueItem.LoadResult.Duration > 0 {
 		duration = queueItem.LoadResult.Duration
+	} else if queueItem.Video.Duration > 0 {
+		duration = queueItem.Video.Duration
 	}
 
 	// Build metadata
@@ -1555,9 +1561,14 @@ func (p *GuildPlayer) updateNowPlayingCard(queueItem *GuildQueueItem) error {
 	// Get current position from player
 	currentPosition := p.Player.GetPosition()
 
+	// Get duration preferring probed > load result > YouTube metadata
 	var duration time.Duration
-	if queueItem.LoadResult != nil {
+	if queueItem.ProbedDuration > 0 {
+		duration = queueItem.ProbedDuration
+	} else if queueItem.LoadResult != nil && queueItem.LoadResult.Duration > 0 {
 		duration = queueItem.LoadResult.Duration
+	} else if queueItem.Video.Duration > 0 {
+		duration = queueItem.Video.Duration
 	}
 
 	// Build updated metadata
