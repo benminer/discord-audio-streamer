@@ -23,6 +23,7 @@ type NowPlayingMetadata struct {
 	IsPlaying       bool
 	Volume          int
 	GuildID         string
+	Commentary      string // AI-generated commentary to display in the embed
 }
 
 // BuildNowPlayingEmbed creates a rich embed for now-playing
@@ -55,6 +56,10 @@ func BuildNowPlayingEmbed(metadata *NowPlayingMetadata) *discordgo.MessageEmbed 
 	}
 	if metadata.Album != "" {
 		desc.WriteString(fmt.Sprintf("**Album:** %s\n", metadata.Album))
+	}
+	// Add AI-generated commentary if available
+	if metadata.Commentary != "" {
+		desc.WriteString(fmt.Sprintf("\n💬 %s", metadata.Commentary))
 	}
 
 	embed := &discordgo.MessageEmbed{
