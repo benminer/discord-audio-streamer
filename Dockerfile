@@ -17,9 +17,9 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Build with optimizations for ARM64: parallel, strip, native
+# Build with optimizations for ARM64: strip debug info and symbols
 ARG TARGETPLATFORM
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -a -p $(nproc) -o discord-bot
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o discord-bot
 
 # Runtime stage
 FROM debian:bookworm-slim
