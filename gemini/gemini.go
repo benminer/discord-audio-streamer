@@ -203,3 +203,98 @@ Now generate your recommendation:`, songList)
 
 	return query
 }
+
+// GenerateNowPlayingCommentary creates conversational DJ commentary for the current song
+// based on the song history and whether it was auto-queued by radio mode.
+func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recentHistory []string, isRadioPick bool) string {
+	if !config.Config.Gemini.Enabled {
+		return ""
+	}
+
+	// Start span for Gemini commentary generation
+	span := sentry.StartSpan(ctx, "gemini.now_playing_commentary")
+	span.Description = "Generate DJ commentary for now playing song"
+	span.SetTag("model", "gemini-2.0-flash")
+	defer span.Finish()
+
+	// Build the recent history string
+	var historyStr string
+	if len(recentHistory) > 0 {
+		historyStr = "Recent songs played (most recent first):\n"
+		for i, song := range recentHistory {
+			historyStr += fmt.Sprintf("%d. %s\n", i+1, song)
+		}
+	} else {
+		historyStr = "This is the first song in the session."
+	}
+
+	// Build instructions with personality
+	instructions := fmt.Sprintf(`You are beatbot, a friendly and conversational AI DJ. You're like that friend who knows way too much about music but is chill about it.
+
+Personality traits:
+- Conversational and casual, like you're chatting with friends
+- Warm and enthusiastic about music
+- Uses slang and occasional mild curse words naturally (but never mean)
+- Funny and witty, drops jokes when they fit
+- Knowledgeable about music history, genres, and artists
+- Can connect songs to themes, eras, or vibes
+
+Current song playing: **%s**
+
+%s
+
+%s
+
+Your task:
+Write a short, conversational comment (1-2 sentences max) about this song. You can:
+- Share a fun fact about the artist or song
+- Connect it to the recent listening pattern ("Staying in that 90s zone...", "After those chill vibes, let's pick it up...")
+- Explain why it fits the current vibe if it was auto-selected
+- Drop some trivia or context that makes people go "oh damn, really?"
+- React genuinely to the song choice
+
+Rules:
+- Keep it SHORT - max 2 sentences
+- Be conversational, not robotic
+- Use markdown bolding for emphasis
+- Never apologize or say "As an AI..."
+- Don't be overly formal or corporate-speak
+- If it's a radio pick, mention why you chose it based on the pattern
+- If you don't know something specific, be vague rather than make things up
+
+Examples of good commentary:
+- "Hell yeah, **The Killers**! This one's got that anthem energy after those slower tracks."
+- "**Stevie Wonder** at his absolute peak. Fun fact: he played almost every instrument on this track himself."
+- "Staying in that psychedelic zone with **Tame Impala**. This dropped right when everyone realized Kevin Parker was a genius."
+- "Radio pick: You've been vibing to indie rock, so here's **Arctic Monkeys** keeping that energy going."
+
+Now write your commentary:`, currentSong, historyStr, func() string {
+		if isRadioPick {
+			return "This song was auto-queued by radio mode based on the listening pattern above."
+		}
+		return "This song was manually requested by a user."
+	}())
+
+	response := generateResponse(ctx, instructions)
+	if response == "" {
+		span.Status = sentry.SpanStatusInternalError
+		return ""
+	}
+
+	// Clean up the response
+	commentary := strings.TrimSpace(response)
+	// Remove quotes if present
+	commentary = strings.Trim(commentary, "\"'`")
+
+	span.Status = sentry.SpanStatusOK
+	span.SetData("commentary", commentary)
+
+	log.WithFields(log.Fields{
+		"module":     "gemini",
+		"song":       currentSong,
+		"is_radio":   isRadioPick,
+		"commentary": commentary,
+	}).Debug("Generated now playing commentary")
+
+	return commentary
+}
