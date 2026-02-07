@@ -44,11 +44,34 @@ type InteractionOption struct {
 	Value string `json:"value"`
 }
 
+// StringOrInt is a custom type that can unmarshal from either a string or number in JSON
+type StringOrInt string
+
+func (s *StringOrInt) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as a string first
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*s = StringOrInt(str)
+		return nil
+	}
+
+	// If that fails, try to unmarshal as a number
+	var num int64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*s = StringOrInt(fmt.Sprintf("%d", num))
+		return nil
+	}
+
+	return fmt.Errorf("cannot unmarshal %s into StringOrInt", string(data))
+}
+
 type InteractionData struct {
-	ID      string              `json:"id"`
-	Name    string              `json:"name"`
-	Type    int                 `json:"type"`
-	Options []InteractionOption `json:"options"`
+	ID            StringOrInt         `json:"id"`
+	Name          string              `json:"name"`
+	Type          int                 `json:"type"`
+	Options       []InteractionOption `json:"options"`
+	CustomID      string              `json:"custom_id"`
+	ComponentType int                 `json:"component_type"`
 }
 
 type UserData struct {
@@ -1752,6 +1775,11 @@ func (manager *Manager) handleTopSongs(ctx context.Context, transaction *sentry.
 }
 
 func (manager *Manager) HandleInteraction(interaction *Interaction) (response Response) {
+	// Handle Message Component interactions (button clicks) - Type 3
+	if interaction.Type == 3 {
+		return manager.handleMessageComponent(interaction)
+	}
+
 	// Create transaction with cloned hub for scope isolation (breadcrumbs per-command)
 	ctx, transaction := sentryhelper.StartCommandTransaction(
 		context.Background(),
@@ -1852,6 +1880,70 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 			Type: 4,
 			Data: ResponseData{
 				Content: "Sorry, I don't know how to handle this type of interaction",
+				Flags:   64,
+			},
+		}
+	}
+}
+
+// handleMessageComponent handles button click interactions (Type 3)
+func (manager *Manager) handleMessageComponent(interaction *Interaction) Response {
+	ctx := context.Background()
+
+	// Parse the custom ID to get the action
+	action, guildID, ok := discord.ParseButtonCustomID(interaction.Data.CustomID)
+	if !ok {
+		log.Errorf("Invalid button custom_id: %s", interaction.Data.CustomID)
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "Invalid button interaction",
+				Flags:   64,
+			},
+		}
+	}
+
+	// Verify guild ID matches
+	if guildID != interaction.GuildID {
+		log.Errorf("Guild ID mismatch: button for %s, interaction from %s", guildID, interaction.GuildID)
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "Guild mismatch",
+				Flags:   64,
+			},
+		}
+	}
+
+	log.Debugf("Button clicked: %s in guild %s", action, guildID)
+
+	// Route to appropriate handler based on action
+	switch action {
+	case "playpause":
+		// Toggle between pause and resume based on current state
+		player := manager.Controller.GetPlayer(guildID)
+		if player.Player.IsPaused() {
+			return manager.handleResume(ctx, interaction)
+		}
+		return manager.handlePause(ctx, interaction)
+	case "skip":
+		// Create a minimal transaction for skip
+		ctx, transaction := sentryhelper.StartCommandTransaction(
+			ctx,
+			"button_skip",
+			interaction.GuildID,
+			interaction.Member.User.ID,
+		)
+		defer transaction.Finish()
+		return manager.handleSkip(ctx, transaction, interaction)
+	case "stop":
+		return manager.handlePause(ctx, interaction)
+	default:
+		log.Errorf("Unknown button action: %s", action)
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "Unknown button action",
 				Flags:   64,
 			},
 		}
