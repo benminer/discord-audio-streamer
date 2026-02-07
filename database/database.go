@@ -183,14 +183,18 @@ func (d *Database) GetMostPlayed(guildID string, limit int) ([]MostPlayedRecord,
 		}
 
 		// Parse SQLite datetime string to time.Time
-		// SQLite stores timestamps in format "2006-01-02 15:04:05" or RFC3339
+		// SQLite stores timestamps in various formats depending on how they were inserted
 		lastPlayed, err := time.Parse("2006-01-02 15:04:05", lastPlayedStr)
 		if err != nil {
 			// Try RFC3339 format as fallback
 			lastPlayed, err = time.Parse(time.RFC3339, lastPlayedStr)
 			if err != nil {
-				log.Warnf("failed to parse last_played timestamp '%s': %v", lastPlayedStr, err)
-				lastPlayed = time.Time{} // Use zero time if parsing fails
+				// Try RFC3339Nano format (used by time.Now().UTC())
+				lastPlayed, err = time.Parse(time.RFC3339Nano, lastPlayedStr)
+				if err != nil {
+					log.Warnf("failed to parse last_played timestamp '%s': %v", lastPlayedStr, err)
+					lastPlayed = time.Time{} // Use zero time if parsing fails
+				}
 			}
 		}
 		r.LastPlayed = lastPlayed
