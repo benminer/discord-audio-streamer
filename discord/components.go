@@ -9,18 +9,9 @@ import (
 
 // BuildPlaybackButtons creates button action rows for now-playing card
 func BuildPlaybackButtons(guildID string, isPlaying bool) []discordgo.MessageComponent {
-	// Create primary controls row
+	// Single row with only working playback controls
 	primaryRow := discordgo.ActionsRow{
 		Components: []discordgo.MessageComponent{
-			discordgo.Button{
-				Label:    "",
-				Style:    discordgo.SecondaryButton,
-				CustomID: fmt.Sprintf("np:prev:%s", guildID),
-				Emoji: &discordgo.ComponentEmoji{
-					Name: "⏮️",
-				},
-				Disabled: true, // TODO: implement previous track
-			},
 			discordgo.Button{
 				Label:    "",
 				Style:    discordgo.PrimaryButton,
@@ -39,7 +30,7 @@ func BuildPlaybackButtons(guildID string, isPlaying bool) []discordgo.MessageCom
 			},
 			discordgo.Button{
 				Label:    "",
-				Style:    discordgo.DangerButton,
+				Style:    discordgo.SecondaryButton,
 				CustomID: fmt.Sprintf("np:stop:%s", guildID),
 				Emoji: &discordgo.ComponentEmoji{
 					Name: "⏹️",
@@ -48,45 +39,7 @@ func BuildPlaybackButtons(guildID string, isPlaying bool) []discordgo.MessageCom
 		},
 	}
 
-	// Create secondary controls row
-	secondaryRow := discordgo.ActionsRow{
-		Components: []discordgo.MessageComponent{
-			discordgo.Button{
-				Label:    "Vol -",
-				Style:    discordgo.SecondaryButton,
-				CustomID: fmt.Sprintf("np:voldown:%s", guildID),
-				Emoji: &discordgo.ComponentEmoji{
-					Name: "🔉",
-				},
-			},
-			discordgo.Button{
-				Label:    "Vol +",
-				Style:    discordgo.SecondaryButton,
-				CustomID: fmt.Sprintf("np:volup:%s", guildID),
-				Emoji: &discordgo.ComponentEmoji{
-					Name: "🔊",
-				},
-			},
-			discordgo.Button{
-				Label:    "Queue",
-				Style:    discordgo.SecondaryButton,
-				CustomID: fmt.Sprintf("np:queue:%s", guildID),
-				Emoji: &discordgo.ComponentEmoji{
-					Name: "📜",
-				},
-			},
-			discordgo.Button{
-				Label:    "Shuffle",
-				Style:    discordgo.SecondaryButton,
-				CustomID: fmt.Sprintf("np:shuffle:%s", guildID),
-				Emoji: &discordgo.ComponentEmoji{
-					Name: "🔀",
-				},
-			},
-		},
-	}
-
-	return []discordgo.MessageComponent{primaryRow, secondaryRow}
+	return []discordgo.MessageComponent{primaryRow}
 }
 
 func getPlayPauseEmoji(isPlaying bool) string {
