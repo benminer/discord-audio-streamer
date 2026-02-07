@@ -1536,12 +1536,11 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 		Commentary:      "", // Will be populated async by Gemini
 	}
 
-	// Build embed and buttons
+	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
-	buttons := discord.BuildPlaybackButtons(p.GuildID, true)
 
 	// Send message
-	message, err := discord.SendChannelMessage(p.LastTextChannelID, "", embed, buttons)
+	message, err := discord.SendChannelMessage(p.LastTextChannelID, "", embed, nil)
 	if err != nil {
 		log.Errorf("Failed to send now-playing card: %v", err)
 		sentry.CaptureException(err)
@@ -1620,12 +1619,11 @@ func (p *GuildPlayer) generateAndUpdateCommentary(queueItem *GuildQueueItem) {
 		Commentary:      commentary,
 	}
 
-	// Build embed and buttons
+	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
-	buttons := discord.BuildPlaybackButtons(p.GuildID, metadata.IsPlaying)
 
 	// Update message
-	if err := discord.EditChannelMessage(*p.NowPlayingChannelID, *p.NowPlayingMessageID, "", embed, buttons); err != nil {
+	if err := discord.EditChannelMessage(*p.NowPlayingChannelID, *p.NowPlayingMessageID, "", embed, nil); err != nil {
 		log.Warnf("Failed to update now-playing card with commentary: %v", err)
 	} else {
 		log.Debugf("Updated now-playing card with Gemini commentary")
@@ -1666,12 +1664,11 @@ func (p *GuildPlayer) updateNowPlayingCard(queueItem *GuildQueueItem) error {
 		Commentary:      queueItem.Commentary, // Preserve any generated commentary
 	}
 
-	// Build embed and buttons
+	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
-	buttons := discord.BuildPlaybackButtons(p.GuildID, metadata.IsPlaying)
 
 	// Update message
-	return discord.EditChannelMessage(*p.NowPlayingChannelID, *p.NowPlayingMessageID, "", embed, buttons)
+	return discord.EditChannelMessage(*p.NowPlayingChannelID, *p.NowPlayingMessageID, "", embed, nil)
 }
 
 // startNowPlayingUpdates starts periodic progress updates
@@ -1682,7 +1679,7 @@ func (p *GuildPlayer) startNowPlayingUpdates(queueItem *GuildQueueItem) {
 	p.nowPlayingUpdateStop = make(chan struct{})
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second) // Update every 5 seconds
+		ticker := time.NewTicker(2 * time.Second) // Update every 2 seconds
 		defer ticker.Stop()
 
 		for {
@@ -1707,10 +1704,34 @@ func (p *GuildPlayer) stopNowPlayingUpdates() {
 	}
 }
 
-// clearNowPlayingCard clears the now-playing card state
+// clearNowPlayingCard clears the now-playing card state and updates Discord to show completion
 func (p *GuildPlayer) clearNowPlayingCard() {
 	p.nowPlayingMutex.Lock()
 	defer p.nowPlayingMutex.Unlock()
+
+	// If we have an active message, update it to show completion
+	if p.NowPlayingMessageID != nil && p.NowPlayingChannelID != nil && p.nowPlayingCurrentItem != nil {
+		duration := p.nowPlayingCurrentItem.Video.Duration
+		if duration == 0 && p.nowPlayingCurrentItem.ProbedDuration > 0 {
+			duration = p.nowPlayingCurrentItem.ProbedDuration
+		}
+
+		metadata := &discord.NowPlayingMetadata{
+			VideoID:         p.nowPlayingCurrentItem.Video.VideoID,
+			Title:           p.nowPlayingCurrentItem.Video.Title,
+			Duration:        duration,
+			CurrentPosition: duration, // 100% complete
+			IsPlaying:       false,
+			Volume:          p.Player.GetVolume(),
+			GuildID:         p.GuildID,
+			Commentary:      "✅ Completed",
+		}
+
+		embed := discord.BuildNowPlayingEmbed(metadata)
+		if err := discord.EditChannelMessage(*p.NowPlayingChannelID, *p.NowPlayingMessageID, "", embed, nil); err != nil {
+			log.Warnf("Failed to update now-playing card on completion: %v", err)
+		}
+	}
 
 	p.NowPlayingMessageID = nil
 	p.NowPlayingChannelID = nil
