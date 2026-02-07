@@ -30,6 +30,8 @@ type Player struct {
 	mutex             sync.Mutex
 	playbackStartTime time.Time
 	playbackPosition  atomic.Int64 // microseconds
+	silenceBuffer     []int16      // Pre-allocated for pause loop
+	silenceOpus       []byte       // Pre-allocated for pause loop
 }
 
 func NewPlayer() (*Player, error) {
@@ -41,6 +43,7 @@ func NewPlayer() (*Player, error) {
 
 	encoder.SetComplexity(10)
 	encoder.SetBitrateToMax()
+	encoder.SetDTX(true)
 
 	playing := false
 
@@ -55,6 +58,8 @@ func NewPlayer() (*Player, error) {
 		volume:           100,
 		fadeOutRemaining: 0,
 		mutex:            sync.Mutex{},
+		silenceBuffer:    make([]int16, 960*2),
+		silenceOpus:      make([]byte, 960*4),
 	}
 	player.paused.Store(false)
 	player.stopping.Store(false)
@@ -182,14 +187,12 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				}
 
 				// Send silence frame to maintain stream continuity
-				silenceBuffer := make([]int16, 960*2)
-				silenceOpus := make([]byte, 960*4)
-				encoded, err := p.encoder.Encode(silenceBuffer, silenceOpus)
+				encoded, err := p.encoder.Encode(p.silenceBuffer, p.silenceOpus)
 				if err != nil {
 					p.logger.Warnf("Error encoding silence during pause: %v", err)
 					sentry.CaptureException(err)
 				} else {
-					safeSendOpus(voiceChannel, silenceOpus[:encoded], p.completed)
+					safeSendOpus(voiceChannel, p.silenceOpus[:encoded], p.completed)
 				}
 
 				time.Sleep(20 * time.Millisecond) // ~50 frames per second
@@ -327,6 +330,12 @@ func (p *Player) IsPlaying() bool {
 	isPlaying := *p.playing
 	p.logger.Tracef("Player is playing: %t", isPlaying)
 	return isPlaying
+}
+
+func (p *Player) IsPaused() bool {
+	isPaused := p.paused.Load()
+	p.logger.Tracef("Player is paused: %t", isPaused)
+	return isPaused
 }
 
 func (p *Player) SetVolume(volume int) {
