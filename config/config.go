@@ -161,11 +161,11 @@ func getYouTubePlaylistLimit() int {
 func getAudioBitrate() int {
 	bitrateStr := os.Getenv("AUDIO_BITRATE")
 	if bitrateStr == "" {
-		return 96000 // Default to 96 kbps - good balance of quality and stability
+		return 128000 // Default to 128 kbps - max for regular voice channels
 	}
 	bitrate, err := strconv.Atoi(bitrateStr)
 	if err != nil || bitrate <= 0 {
-		return 96000
+		return 128000
 	}
 	// Discord supports 8 kbps to 512 kbps for Opus
 	// Practical ranges: 8-128 kbps (voice), up to 384 kbps (stage/boost)

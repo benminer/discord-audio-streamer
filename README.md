@@ -81,14 +81,14 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    # Optional - Idle timeout (minutes before disconnecting from empty channel)
    IDLE_TIMEOUT_MINUTES=20
 
-   # Optional - Audio bitrate (in bps, default: 96000)
+   # Optional - Audio bitrate (in bps, default: 128000)
    # Range: 8000-512000 (8 kbps to 512 kbps)
    # Recommended values:
    #   64000 (64 kbps) - Very stable, slight quality trade-off
-   #   96000 (96 kbps) - Default, good balance of quality and stability
-   #   128000 (128 kbps) - Maximum for regular voice channels
+   #   96000 (96 kbps) - Good balance of quality and stability
+   #   128000 (128 kbps) - Default, maximum for regular voice channels
    #   384000 (384 kbps) - Maximum for stage channels (requires boost)
-   AUDIO_BITRATE=96000
+   AUDIO_BITRATE=128000
 
    # Optional - Sentry error tracking
    SENTRY_DSN=your_sentry_dsn
