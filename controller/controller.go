@@ -1275,7 +1275,28 @@ func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, user
 		Context:     sentryhelper.DetachFromTransaction(ctx),
 		IsRadioPick: radioPick,
 	}
-	p.Queue.Items = append(p.Queue.Items, item)
+
+	// Priority insertion: user-queued songs go before radio-queued songs
+	insertIdx := len(p.Queue.Items)
+	if !radioPick {
+		// User song: insert before first radio pick (if any)
+		for i, qitem := range p.Queue.Items {
+			if qitem.IsRadioPick {
+				insertIdx = i
+				break
+			}
+		}
+	}
+	// Radio songs always append to end (insertIdx = len already)
+
+	// Insert at calculated position using slice idiom
+	if insertIdx == len(p.Queue.Items) {
+		// Append to end (common case for radio or empty queue)
+		p.Queue.Items = append(p.Queue.Items, item)
+	} else {
+		// Insert in middle (user song jumping ahead of radio songs)
+		p.Queue.Items = append(p.Queue.Items[:insertIdx], append([]*GuildQueueItem{item}, p.Queue.Items[insertIdx:]...)...)
+	}
 
 	select {
 	case p.Queue.notifications <- QueueEvent{
