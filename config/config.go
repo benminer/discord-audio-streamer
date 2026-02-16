@@ -52,6 +52,7 @@ type Options struct {
 	EnforceVoiceChannel bool
 	Port                string
 	IdleTimeoutMinutes  int
+	AudioBitrate        int // Audio bitrate in bps (e.g., 96000 for 96 kbps)
 }
 
 func (ngrok *NGrokConfig) IsEnabled() bool {
@@ -94,6 +95,7 @@ func NewConfig() {
 			EnforceVoiceChannel: os.Getenv("ENFORCE_VOICE_CHANNEL") == "true",
 			Port:                os.Getenv("PORT"),
 			IdleTimeoutMinutes:  getIdleTimeout(),
+			AudioBitrate:        getAudioBitrate(),
 		},
 		Youtube: YoutubeConfig{
 			APIKey:        os.Getenv("YOUTUBE_API_KEY"),
@@ -154,4 +156,24 @@ func getYouTubePlaylistLimit() int {
 		return 50 // Cap at 50 (YouTube API max per page)
 	}
 	return limit
+}
+
+func getAudioBitrate() int {
+	bitrateStr := os.Getenv("AUDIO_BITRATE")
+	if bitrateStr == "" {
+		return 96000 // Default to 96 kbps - good balance of quality and stability
+	}
+	bitrate, err := strconv.Atoi(bitrateStr)
+	if err != nil || bitrate <= 0 {
+		return 96000
+	}
+	// Discord supports 8 kbps to 512 kbps for Opus
+	// Practical ranges: 8-128 kbps (voice), up to 384 kbps (stage/boost)
+	if bitrate < 8000 {
+		return 8000 // Minimum 8 kbps
+	}
+	if bitrate > 512000 {
+		return 512000 // Maximum 512 kbps (Discord Opus limit)
+	}
+	return bitrate
 }

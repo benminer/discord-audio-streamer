@@ -15,6 +15,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"gopkg.in/hraban/opus.v2"
+
+	"beatbot/config"
 )
 
 type Player struct {
@@ -42,7 +44,7 @@ func NewPlayer() (*Player, error) {
 	}
 
 	encoder.SetComplexity(10)
-	encoder.SetBitrateToMax()
+	encoder.SetBitrate(config.Config.Options.AudioBitrate)
 	encoder.SetDTX(true)
 
 	playing := false
