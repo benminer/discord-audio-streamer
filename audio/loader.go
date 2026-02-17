@@ -38,7 +38,7 @@ type LoadResult struct {
 func NewLoader() *Loader {
 	return &Loader{
 		Notifications: make(chan PlaybackNotification, 100),
-		canceled:      make(chan bool, 1),
+		canceled:      make(chan bool),
 		completed:     make(chan bool),
 		logger: log.WithFields(log.Fields{
 			"module": "audio-loader",
@@ -239,5 +239,11 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 }
 
 func (l *Loader) Cancel() {
-	l.canceled <- true
+	// Non-blocking send: signals an active Load() to abort without blocking
+	// if no load is in progress. Buffered(1) was wrong — a stale signal would
+	// sit in the buffer and incorrectly cancel the next Load() call.
+	select {
+	case l.canceled <- true:
+	default:
+	}
 }
