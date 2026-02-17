@@ -160,6 +160,7 @@ Important:
 - Return ONLY the search query (e.g., "Artist Name - Song Title")
 - Do NOT include explanations, reasoning, or extra text
 - Do NOT suggest a song that's already in the list
+- Avoid recommending the same artist or song title as any entry in the recent history, even alternate versions or uploads.
 - The query should be specific enough to find the right song
 - Focus on musical similarity (genre, mood, tempo, style)
 
