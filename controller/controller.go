@@ -712,7 +712,10 @@ func (p *GuildPlayer) listenForQueueEvents() {
 					})
 					p.Player.Stop()
 					p.playNext()
-					// PlaybackStopped event will play next song
+					// If radio is on and the skip drained the queue, auto-fill like a natural song end would
+					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
+						go p.queueRadioSong()
+					}
 				case EventClear:
 					log.Debug("queue has been cleared")
 					// we don't stop playback here, we just dump the rest of the queue
@@ -1248,6 +1251,18 @@ func ExtractArtist(title string) string {
 	return cleaned
 }
 
+// isRecentTitle returns true if the candidate title fuzzy-matches any entry in recentTitles.
+// It checks containment both ways to catch "Artist - Song" vs "Song - Artist" ordering.
+func isRecentTitle(candidate string, recentTitles []string) bool {
+	c := strings.ToLower(candidate)
+	for _, rt := range recentTitles {
+		if strings.Contains(c, rt) || strings.Contains(rt, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // queueRadioSong finds and queues a similar song based on play history using Gemini AI
 func (p *GuildPlayer) queueRadioSong() {
 	logger := log.WithFields(log.Fields{
@@ -1276,6 +1291,13 @@ func (p *GuildPlayer) queueRadioSong() {
 	// Get recent songs to build a search query
 	recent := p.SongHistory.GetRecent(3)
 	historyIDs := p.SongHistory.GetAllVideoIDs()
+
+	// Build a lowercase title set for fuzzy dedup (VideoID dedup misses re-uploads/alt videos)
+	recentForDedup := p.SongHistory.GetRecent(5)
+	recentTitles := make([]string, 0, len(recentForDedup))
+	for _, entry := range recentForDedup {
+		recentTitles = append(recentTitles, strings.ToLower(entry.Title))
+	}
 
 	// Also exclude anything currently in queue
 	p.Queue.Mutex.Lock()
@@ -1314,9 +1336,9 @@ func (p *GuildPlayer) queueRadioSong() {
 
 			videos = youtube.Query(ctx, query)
 			if len(videos) > 0 {
-				// Find first result not already played
+				// Find first result not already played (VideoID or title match)
 				for i := range videos {
-					if !historyIDs[videos[i].VideoID] {
+					if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
 						picked = &videos[i]
 						break
 					}
@@ -1344,9 +1366,9 @@ func (p *GuildPlayer) queueRadioSong() {
 			return
 		}
 
-		// Find first result not already played
+		// Find first result not already played (VideoID or title match)
 		for i := range videos {
-			if !historyIDs[videos[i].VideoID] {
+			if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
 				picked = &videos[i]
 				break
 			}
@@ -1361,7 +1383,7 @@ func (p *GuildPlayer) queueRadioSong() {
 
 			videos = youtube.Query(ctx, fallbackQuery)
 			for i := range videos {
-				if !historyIDs[videos[i].VideoID] {
+				if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
 					picked = &videos[i]
 					break
 				}

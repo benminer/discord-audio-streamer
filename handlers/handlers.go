@@ -1692,23 +1692,30 @@ func (manager *Manager) handleRecommend(ctx context.Context, transaction *sentry
 		return
 	}
 
+	log.Infof("Recommend: fetched %d history records for guild %s", len(history), interaction.GuildID)
+
 	if len(history) < 3 {
 		manager.SendFollowup(ctx, interaction, "", "Need at least 3 songs in history to make a smart recommendation. Play some more first! 🎵", true)
 		return
 	}
 
 	var songTitles []string
+	historyVideoIDs := make(map[string]bool)
 	for _, r := range history {
 		songTitles = append(songTitles, r.Title)
+		if r.VideoID != "" {
+			historyVideoIDs[r.VideoID] = true
+		}
 	}
 
 	query := gemini.GenerateSongRecommendation(ctx, songTitles)
 	if query == "" {
+		log.Warnf("Recommend: Gemini returned empty query despite %d history records for guild %s", len(history), interaction.GuildID)
 		manager.SendFollowup(ctx, interaction, "", "Couldn't generate a recommendation right now. Try again in a moment! 🤖", true)
 		return
 	}
 
-	log.Debugf("Recommend generated query: %s", query)
+	log.Infof("Recommend: Gemini query='%s' for guild %s", query, interaction.GuildID)
 
 	// Voice check like in other handlers
 	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
@@ -1748,12 +1755,27 @@ func (manager *Manager) handleRecommend(ctx context.Context, transaction *sentry
 
 	// Search YouTube
 	videos := youtube.Query(ctx, query)
+	log.Infof("Recommend: YouTube returned %d results for query='%s' guild=%s", len(videos), query, interaction.GuildID)
 	if len(videos) == 0 {
 		manager.SendFollowup(ctx, interaction, "", "No suitable tracks found for this recommendation. Try again soon! 🔍", true)
 		return
 	}
 
-	video := videos[0]
+	// Pick first result not already in history
+	var video youtube.VideoResponse
+	picked := false
+	for _, v := range videos {
+		if !historyVideoIDs[v.VideoID] {
+			video = v
+			picked = true
+			break
+		}
+	}
+	if !picked {
+		// All results are in history — just take the top result rather than failing
+		log.Warnf("Recommend: all YouTube results already in history, using top result anyway for guild %s", interaction.GuildID)
+		video = videos[0]
+	}
 	log.Debugf("Recommend selected video: %s (ID: %s)", video.Title, video.VideoID)
 
 	// Determine if first song
