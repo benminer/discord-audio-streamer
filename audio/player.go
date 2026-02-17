@@ -57,6 +57,7 @@ func NewPlayer() (*Player, error) {
 	}
 	player.paused.Store(false)
 	player.stopping.Store(false)
+	player.volume.Store(100) // default to 100% volume
 	return player, nil
 }
 
