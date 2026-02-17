@@ -545,25 +545,9 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 		},
 	})
 
-	p.applyChannelBitrate(voiceState.ChannelID)
-
 	log.Tracef("joined voice channel: %s", voiceState.ChannelID)
 
 	return nil
-}
-
-// applyChannelBitrate reads the Discord voice channel's configured bitrate and
-// updates the Opus encoder to match. This lets boosted servers automatically
-// benefit from higher quality (128k / 256k / 384k) without any manual config.
-func (p *GuildPlayer) applyChannelBitrate(channelID string) {
-	ch, err := p.Discord.Channel(channelID)
-	if err != nil || ch == nil || ch.Bitrate == 0 {
-		log.Warnf("[bitrate] could not fetch channel bitrate for %s, using encoder max: %v", channelID, err)
-		p.Player.SetEncoderBitrate(0) // falls back to SetBitrateToMax
-		return
-	}
-	log.Infof("[bitrate] setting encoder bitrate to %d bps (%d kbps) for channel %s", ch.Bitrate, ch.Bitrate/1000, channelID)
-	p.Player.SetEncoderBitrate(ch.Bitrate)
 }
 
 // getGuildName looks up the guild name from Discord, falling back to ID if unavailable
@@ -1540,9 +1524,6 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 		// Success! Update connection and resume
 		p.VoiceConnection = vc
 		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
-
-		// Re-apply channel bitrate in case boost level changed during downtime
-		p.applyChannelBitrate(*currentChannelID)
 
 		// Reset reconnection attempts on success
 		p.reconnectAttempts = 0
