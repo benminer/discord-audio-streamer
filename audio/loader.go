@@ -38,7 +38,7 @@ type LoadResult struct {
 func NewLoader() *Loader {
 	return &Loader{
 		Notifications: make(chan PlaybackNotification, 100),
-		canceled:      make(chan bool),
+		canceled:      make(chan bool, 1),
 		completed:     make(chan bool),
 		logger: log.WithFields(log.Fields{
 			"module": "audio-loader",
