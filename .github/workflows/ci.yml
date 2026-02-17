@@ -1,0 +1,101 @@
+name: Go CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.go/pkg/mod
+          ~/.go/build-cache
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: Check go.mod tidy
+      run: |
+        go mod tidy
+        git diff --exit-code
+    - name: Check formatting
+      run: |
+        files=$(gofmt -l .)
+        [ -z "$files" ] || { echo "Unformatted files: $files"; exit 1; }
+
+  go-vet:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.go/pkg/mod
+          ~/.go/build-cache
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: Check go.mod tidy
+      run: |
+        go mod tidy
+        git diff --exit-code
+    - name: Vet
+      run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.go/pkg/mod
+          ~/.go/build-cache
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: Check go.mod tidy
+      run: |
+        go mod tidy
+        git diff --exit-code
+    - name: Test
+      run: go test ./... -v -race
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.go/pkg/mod
+          ~/.go/build-cache
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - name: Check go.mod tidy
+      run: |
+        go mod tidy
+        git diff --exit-code
+    - name: Build
+      run: go build ./...
