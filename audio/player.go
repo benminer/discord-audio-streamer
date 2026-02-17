@@ -359,6 +359,18 @@ func (p *Player) GetVolume() int {
 	return p.volume
 }
 
+// SetEncoderBitrate updates the Opus encoder bitrate to match the Discord
+// voice channel's configured bitrate. Boosted servers support higher limits
+// (128k → 256k → 384k), so this should be called whenever the bot joins or
+// rejoins a channel. Pass 0 to revert to the encoder's maximum.
+func (p *Player) SetEncoderBitrate(bps int) {
+	if bps <= 0 {
+		p.encoder.SetBitrateToMax()
+		return
+	}
+	p.encoder.SetBitrate(bps)
+}
+
 func (p *Player) GetPosition() time.Duration {
 	if p.playing == nil || !*p.playing {
 		return 0
