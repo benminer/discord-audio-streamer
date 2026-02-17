@@ -103,6 +103,7 @@ type GuildPlayer struct {
 	DB                   *database.Database
 	GuildID              string
 	CurrentSong          *string
+	currentSongMutex     sync.RWMutex
 	Queue                *GuildQueue
 	VoiceChannelMutex    sync.RWMutex
 	VoiceChannelID       *string
@@ -116,6 +117,9 @@ type GuildPlayer struct {
 	LastActivityAt       time.Time
 	LastTextChannelID    string
 	idleCheckStop        chan struct{}
+	queueListenerStop    chan struct{}
+	playbackListenerStop chan struct{}
+	loadListenerStop     chan struct{}
 	RadioEnabled         bool
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
@@ -238,11 +242,14 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
-		Loader:         audio.NewLoader(),
-		Player:         player,
-		LastActivityAt: time.Now(),
-		idleCheckStop:  make(chan struct{}),
-		SongHistory:    NewSongHistory(20),
+		Loader:               audio.NewLoader(),
+		Player:               player,
+		LastActivityAt:       time.Now(),
+		idleCheckStop:        make(chan struct{}),
+		queueListenerStop:    make(chan struct{}),
+		playbackListenerStop: make(chan struct{}),
+		loadListenerStop:     make(chan struct{}),
+		SongHistory:          NewSongHistory(20),
 	}
 
 	session.listenForQueueEvents()
@@ -268,9 +275,21 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
-	// Stop the idle checker
+	// Stop the idle checker and all event listeners
 	select {
 	case p.idleCheckStop <- struct{}{}:
+	default:
+	}
+	select {
+	case p.queueListenerStop <- struct{}{}:
+	default:
+	}
+	select {
+	case p.playbackListenerStop <- struct{}{}:
+	default:
+	}
+	select {
+	case p.loadListenerStop <- struct{}{}:
 	default:
 	}
 
@@ -300,15 +319,23 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 
 	p.Queue.Listening = false
 	p.Queue.Items = nil
+	p.currentSongMutex.Lock()
 	p.CurrentSong = nil
+	p.currentSongMutex.Unlock()
 	p.currentItemMutex.Lock()
 	p.CurrentItem = nil
 	p.currentItemMutex.Unlock()
 	p.LastActivityAt = time.Now()
 
-	// Restart the idle checker
+	// Restart the idle checker and all event listeners with fresh stop channels
 	p.idleCheckStop = make(chan struct{})
+	p.queueListenerStop = make(chan struct{})
+	p.playbackListenerStop = make(chan struct{})
+	p.loadListenerStop = make(chan struct{})
 	p.startIdleChecker()
+	p.listenForQueueEvents()
+	p.listenForPlaybackEvents()
+	p.listenForLoadEvents()
 
 	go discord.SendFollowup(&discord.FollowUpRequest{
 		Token:   interaction.InteractionToken,
@@ -422,7 +449,9 @@ func (p *GuildPlayer) playNext() {
 		}
 	} else {
 		log.Tracef("no more songs in queue, stopping player")
+		p.currentSongMutex.Lock()
 		p.CurrentSong = nil
+		p.currentSongMutex.Unlock()
 	}
 }
 
@@ -489,7 +518,11 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 
 	shouldPlay := vc != nil &&
 		vcid != nil &&
-		p.CurrentSong == nil &&
+		func() bool {
+			p.currentSongMutex.RLock()
+			defer p.currentSongMutex.RUnlock()
+			return p.CurrentSong == nil
+		}() &&
 		!p.Player.IsPlaying()
 
 	// if the player is stopped, or not loading anything, play the next song in the queue
@@ -656,28 +689,36 @@ func (p *GuildPlayer) getIndexForItem(queueItem *GuildQueueItem) int {
 func (p *GuildPlayer) listenForQueueEvents() {
 	p.Queue.Listening = true
 	go func() {
-		for event := range p.Queue.notifications {
-			log.Tracef("Queue event: %s", event.Type)
-			switch event.Type {
-			case EventAdd:
-				p.handleAdd(event)
-			case EventSkip:
-				log.Printf("Skipping to next song in queue")
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "queue",
-					Message:  "Skip requested",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id":   p.GuildID,
-						"guild_name": p.getGuildName(),
-					},
-				})
-				p.Player.Stop()
-				p.playNext()
-				// PlaybackStopped event will play next song
-			case EventClear:
-				log.Debug("queue has been cleared")
-				// we don't stop playback here, we just dump the rest of the queue
+		for {
+			select {
+			case event, ok := <-p.Queue.notifications:
+				if !ok {
+					return
+				}
+				log.Tracef("Queue event: %s", event.Type)
+				switch event.Type {
+				case EventAdd:
+					p.handleAdd(event)
+				case EventSkip:
+					log.Printf("Skipping to next song in queue")
+					sentry.AddBreadcrumb(&sentry.Breadcrumb{
+						Category: "queue",
+						Message:  "Skip requested",
+						Level:    sentry.LevelInfo,
+						Data: map[string]interface{}{
+							"guild_id":   p.GuildID,
+							"guild_name": p.getGuildName(),
+						},
+					})
+					p.Player.Stop()
+					p.playNext()
+					// PlaybackStopped event will play next song
+				case EventClear:
+					log.Debug("queue has been cleared")
+					// we don't stop playback here, we just dump the rest of the queue
+				}
+			case <-p.queueListenerStop:
+				return
 			}
 		}
 	}()
@@ -686,136 +727,74 @@ func (p *GuildPlayer) listenForQueueEvents() {
 func (p *GuildPlayer) listenForLoadEvents() {
 	log.Tracef("listening for load events")
 	go func() {
-		for event := range p.Loader.Notifications {
-			log.Tracef("Load event: %s", event.Event)
-			videoID := event.VideoID
-			var queueItem *GuildQueueItem
-			var queueIndex int
-			if videoID != nil {
-				queueItem, queueIndex = p.findQueueItemByVideoID(*videoID)
-			}
+		for {
+			select {
+			case event, ok := <-p.Loader.Notifications:
+				if !ok {
+					return
+				}
+				log.Tracef("Load event: %s", event.Event)
+				videoID := event.VideoID
+				var queueItem *GuildQueueItem
+				var queueIndex int
+				if videoID != nil {
+					queueItem, queueIndex = p.findQueueItemByVideoID(*videoID)
+				}
 
-			switch event.Event {
-			case audio.PlaybackLoaded:
-				if queueItem != nil && event.LoadResult != nil {
-					if queueIndex == 0 && p.CurrentSong == nil {
-						log.Tracef("loaded song is next up, playing")
-						ctx := queueItem.Context
-						if ctx == nil {
-							ctx = context.Background()
+				switch event.Event {
+				case audio.PlaybackLoaded:
+					if queueItem != nil && event.LoadResult != nil {
+						p.currentSongMutex.RLock()
+						currentSongNil := p.CurrentSong == nil
+						p.currentSongMutex.RUnlock()
+						if queueIndex == 0 && currentSongNil {
+							log.Tracef("loaded song is next up, playing")
+							ctx := queueItem.Context
+							if ctx == nil {
+								ctx = context.Background()
+							}
+							go p.play(ctx, event.LoadResult)
+						} else {
+							log.Tracef("loaded song ready for index %d, setting load result", queueIndex)
+							queueItem.LoadResult = event.LoadResult
+							queueItem.ProbedDuration = event.LoadResult.Duration
 						}
-						go p.play(ctx, event.LoadResult)
-					} else {
-						log.Tracef("loaded song ready for index %d, setting load result", queueIndex)
-						queueItem.LoadResult = event.LoadResult
-						queueItem.ProbedDuration = event.LoadResult.Duration
 					}
-				}
-			case audio.PlaybackLoadCanceled:
-				log.Tracef("load for %s canceled", *event.VideoID)
-			case audio.PlaybackLoadError:
-				err := event.Error
-				var errStr string
-				if err != nil {
-					errStr = (*err).Error()
-				}
+				case audio.PlaybackLoadCanceled:
+					log.Tracef("load for %s canceled", *event.VideoID)
+				case audio.PlaybackLoadError:
+					err := event.Error
+					var errStr string
+					if err != nil {
+						errStr = (*err).Error()
+					}
 
-				log.Tracef("[loaderror] queueItem: %+v", queueItem)
+					log.Tracef("[loaderror] queueItem: %+v", queueItem)
 
-				if queueItem != nil {
-					// Increment load attempts for circuit breaker
-					queueItem.LoadAttempts++
+					if queueItem != nil {
+						// Increment load attempts for circuit breaker
+						queueItem.LoadAttempts++
 
-					log.Warnf("Load failed for %s (attempt %d/%d): %s",
-						queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts, errStr)
+						log.Warnf("Load failed for %s (attempt %d/%d): %s",
+							queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts, errStr)
 
-					// Check if we've exceeded max retry attempts
-					if queueItem.LoadAttempts >= queueItem.MaxAttempts {
-						// Remove item permanently after max retries
-						p.removeItemByVideoID(*event.VideoID)
+						// Check if we've exceeded max retry attempts
+						if queueItem.LoadAttempts >= queueItem.MaxAttempts {
+							// Remove item permanently after max retries
+							p.removeItemByVideoID(*event.VideoID)
 
-						var msg string
-						if strings.Contains(errStr, "ffmpeg timed out") {
-							msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
-								strconv.Itoa(queueItem.MaxAttempts) + " failed attempts\n" +
-								"It may be too long, try something shorter :)"
-						} else if errStr != "" {
-							msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
-								strconv.Itoa(queueItem.MaxAttempts) + " failed attempts\n" +
-								"Error: " + errStr
-						} else {
-							msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
-								strconv.Itoa(queueItem.MaxAttempts) + " failed attempts"
-						}
-
-						go discord.SendFollowup(&discord.FollowUpRequest{
-							Token:           queueItem.Interaction.InteractionToken,
-							AppID:           queueItem.Interaction.AppID,
-							UserID:          queueItem.Interaction.UserID,
-							Content:         msg,
-							GenerateContent: false,
-						})
-
-						log.Infof("Removed %s from queue after %d failed load attempts",
-							queueItem.Video.Title, queueItem.MaxAttempts)
-					} else {
-						// Check if this is a 403 error - refresh stream URL before retry
-						if strings.Contains(errStr, "403 Forbidden") {
-							log.Infof("Got 403, refreshing stream URL for %s", queueItem.Video.Title)
-
-							// Notify user we're reloading the track (with attempt count for consistency)
-							discord.SendFollowup(&discord.FollowUpRequest{
-								Token:  queueItem.Interaction.InteractionToken,
-								AppID:  queueItem.Interaction.AppID,
-								UserID: queueItem.Interaction.UserID,
-								Content: "🔄 YouTube rejected the stream, reloading **" + queueItem.Video.Title +
-									"** (attempt " + strconv.Itoa(queueItem.LoadAttempts) + "/" +
-									strconv.Itoa(queueItem.MaxAttempts) + ")...",
-								GenerateContent: false,
-							})
-
-							retryCtx := queueItem.Context
-							if retryCtx == nil {
-								retryCtx = context.Background()
-							}
-							newStream, streamErr := youtube.GetVideoStream(retryCtx, queueItem.Video)
-							if streamErr == nil {
-								queueItem.Stream = newStream
-								log.Infof("Successfully refreshed stream URL for %s", queueItem.Video.Title)
-
-								go discord.SendFollowup(&discord.FollowUpRequest{
-									Token:           queueItem.Interaction.InteractionToken,
-									AppID:           queueItem.Interaction.AppID,
-									UserID:          queueItem.Interaction.UserID,
-									Content:         "✅ Stream reloaded successfully, retrying...",
-									GenerateContent: false,
-								})
-							} else {
-								log.Warnf("Failed to refresh stream URL: %v", streamErr)
-
-								go discord.SendFollowup(&discord.FollowUpRequest{
-									Token:           queueItem.Interaction.InteractionToken,
-									AppID:           queueItem.Interaction.AppID,
-									UserID:          queueItem.Interaction.UserID,
-									Content:         "⚠️ Could not reload stream, will retry with original URL",
-									GenerateContent: false,
-								})
-							}
-						} else {
-							// Retry - notify user we're retrying (non-403 errors)
 							var msg string
 							if strings.Contains(errStr, "ffmpeg timed out") {
-								msg = "⚠️ Timeout loading **" + queueItem.Video.Title + "** (attempt " +
-									strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
-									"), retrying..."
+								msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
+									strconv.Itoa(queueItem.MaxAttempts) + " failed attempts\n" +
+									"It may be too long, try something shorter :)"
 							} else if errStr != "" {
-								msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
-									strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
-									"), retrying...\nError: " + errStr
+								msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
+									strconv.Itoa(queueItem.MaxAttempts) + " failed attempts\n" +
+									"Error: " + errStr
 							} else {
-								msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
-									strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
-									"), retrying..."
+								msg = "❌ Permanently removed **" + queueItem.Video.Title + "** after " +
+									strconv.Itoa(queueItem.MaxAttempts) + " failed attempts"
 							}
 
 							go discord.SendFollowup(&discord.FollowUpRequest{
@@ -825,19 +804,92 @@ func (p *GuildPlayer) listenForLoadEvents() {
 								Content:         msg,
 								GenerateContent: false,
 							})
+
+							log.Infof("Removed %s from queue after %d failed load attempts",
+								queueItem.Video.Title, queueItem.MaxAttempts)
+						} else {
+							// Check if this is a 403 error - refresh stream URL before retry
+							if strings.Contains(errStr, "403 Forbidden") {
+								log.Infof("Got 403, refreshing stream URL for %s", queueItem.Video.Title)
+
+								// Notify user we're reloading the track (with attempt count for consistency)
+								discord.SendFollowup(&discord.FollowUpRequest{
+									Token:  queueItem.Interaction.InteractionToken,
+									AppID:  queueItem.Interaction.AppID,
+									UserID: queueItem.Interaction.UserID,
+									Content: "🔄 YouTube rejected the stream, reloading **" + queueItem.Video.Title +
+										"** (attempt " + strconv.Itoa(queueItem.LoadAttempts) + "/" +
+										strconv.Itoa(queueItem.MaxAttempts) + ")...",
+									GenerateContent: false,
+								})
+
+								retryCtx := queueItem.Context
+								if retryCtx == nil {
+									retryCtx = context.Background()
+								}
+								newStream, streamErr := youtube.GetVideoStream(retryCtx, queueItem.Video)
+								if streamErr == nil {
+									queueItem.Stream = newStream
+									log.Infof("Successfully refreshed stream URL for %s", queueItem.Video.Title)
+
+									go discord.SendFollowup(&discord.FollowUpRequest{
+										Token:           queueItem.Interaction.InteractionToken,
+										AppID:           queueItem.Interaction.AppID,
+										UserID:          queueItem.Interaction.UserID,
+										Content:         "✅ Stream reloaded successfully, retrying...",
+										GenerateContent: false,
+									})
+								} else {
+									log.Warnf("Failed to refresh stream URL: %v", streamErr)
+
+									go discord.SendFollowup(&discord.FollowUpRequest{
+										Token:           queueItem.Interaction.InteractionToken,
+										AppID:           queueItem.Interaction.AppID,
+										UserID:          queueItem.Interaction.UserID,
+										Content:         "⚠️ Could not reload stream, will retry with original URL",
+										GenerateContent: false,
+									})
+								}
+							} else {
+								// Retry - notify user we're retrying (non-403 errors)
+								var msg string
+								if strings.Contains(errStr, "ffmpeg timed out") {
+									msg = "⚠️ Timeout loading **" + queueItem.Video.Title + "** (attempt " +
+										strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+										"), retrying..."
+								} else if errStr != "" {
+									msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
+										strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+										"), retrying...\nError: " + errStr
+								} else {
+									msg = "⚠️ Error loading **" + queueItem.Video.Title + "** (attempt " +
+										strconv.Itoa(queueItem.LoadAttempts) + "/" + strconv.Itoa(queueItem.MaxAttempts) +
+										"), retrying..."
+								}
+
+								go discord.SendFollowup(&discord.FollowUpRequest{
+									Token:           queueItem.Interaction.InteractionToken,
+									AppID:           queueItem.Interaction.AppID,
+									UserID:          queueItem.Interaction.UserID,
+									Content:         msg,
+									GenerateContent: false,
+								})
+							}
+
+							log.Infof("Retrying load for %s (attempt %d/%d)",
+								queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts)
 						}
-
-						log.Infof("Retrying load for %s (attempt %d/%d)",
-							queueItem.Video.Title, queueItem.LoadAttempts, queueItem.MaxAttempts)
 					}
-				}
 
-				// Always try to play next, either the retried item or the next one if removed
-				go p.playNext()
-			case audio.PlaybackLoading:
-				log.Tracef("Loading %s", event.Event)
-			default:
-				log.Warnf("Unknown load event: %s", event.Event)
+					// Always try to play next, either the retried item or the next one if removed
+					go p.playNext()
+				case audio.PlaybackLoading:
+					log.Tracef("Loading %s", event.Event)
+				default:
+					log.Warnf("Unknown load event: %s", event.Event)
+				}
+			case <-p.loadListenerStop:
+				return
 			}
 		}
 	}()
@@ -846,216 +898,232 @@ func (p *GuildPlayer) listenForLoadEvents() {
 func (p *GuildPlayer) listenForPlaybackEvents() {
 	log.Tracef("listening for playback events")
 	go func() {
-		for event := range p.Player.Notifications {
-			log.Tracef("Playback event: %s", event.Event)
-			videoID := event.VideoID
-			var queueItem *GuildQueueItem
-			if videoID != nil {
-				queueItem, _ = p.findQueueItemByVideoID(*videoID)
-			}
-
-			switch event.Event {
-			case audio.PlaybackPaused:
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "playback",
-					Message:  "Playback paused",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id":   p.GuildID,
-						"guild_name": p.getGuildName(),
-					},
-				})
-				p.speakOnVC(false)
-
-				// Update now-playing card state
-				if p.nowPlayingCurrentItem != nil {
-					go func() {
-						if err := p.updateNowPlayingCard(p.nowPlayingCurrentItem); err != nil {
-							log.Warnf("Failed to update paused state: %v", err)
-						}
-					}()
+		for {
+			select {
+			case event, ok := <-p.Player.Notifications:
+				if !ok {
+					return
 				}
-			case audio.PlaybackResumed:
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "playback",
-					Message:  "Playback resumed",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id":   p.GuildID,
-						"guild_name": p.getGuildName(),
-					},
-				})
-				p.speakOnVC(true)
-
-				// Update now-playing card state
-				if p.nowPlayingCurrentItem != nil {
-					go func() {
-						if err := p.updateNowPlayingCard(p.nowPlayingCurrentItem); err != nil {
-							log.Warnf("Failed to update resumed state: %v", err)
-						}
-					}()
+				log.Tracef("Playback event: %s", event.Event)
+				videoID := event.VideoID
+				var queueItem *GuildQueueItem
+				if videoID != nil {
+					queueItem, _ = p.findQueueItemByVideoID(*videoID)
 				}
-			case audio.PlaybackStopped:
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "playback",
-					Message:  "Playback stopped",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id":   p.GuildID,
-						"guild_name": p.getGuildName(),
-					},
-				})
-				p.CurrentSong = nil
-				p.speakOnVC(false)
 
-				// Stop now-playing updates
-				p.stopNowPlayingUpdates()
-				p.clearNowPlayingCard()
-			case audio.PlaybackCompleted:
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "playback",
-					Message:  "Playback completed",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id":   p.GuildID,
-						"guild_name": p.getGuildName(),
-						"video_id":   videoID,
-					},
-				})
-				p.CurrentSong = nil
-				p.speakOnVC(false)
-
-				// Stop now-playing updates
-				p.stopNowPlayingUpdates()
-				p.clearNowPlayingCard()
-
-				// Loop current song if enabled
-				p.currentItemMutex.RLock()
-				currentItemForLoop := p.CurrentItem
-				p.currentItemMutex.RUnlock()
-				if p.IsLoopEnabled() && currentItemForLoop != nil {
-					log.Debugf("Loop enabled, requeuing current song: %s", currentItemForLoop.Video.Title)
-					newItem := &GuildQueueItem{
-						Video:          currentItemForLoop.Video,
-						ProbedDuration: currentItemForLoop.ProbedDuration,
-						AddedAt:        time.Now(),
-						LoadAttempts:   0,
-						MaxAttempts:    3,
-						Context:        sentryhelper.DetachFromTransaction(context.Background()),
-						Commentary:     "",
-						IsRadioPick:    false,
-						Interaction:    nil,
-						LoadResult:     nil,
-						Stream:         nil,
-					}
-					p.Queue.Mutex.Lock()
-					p.Queue.Items = append([]*GuildQueueItem{newItem}, p.Queue.Items...)
-					p.Queue.Mutex.Unlock()
-					select {
-					case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: newItem}:
-						log.Debugf("Loop requeue notified for guild %s: %s", p.GuildID, newItem.Video.Title)
-					default:
-						log.Warnf("Failed to notify loop requeue for guild %s: %s", p.GuildID, newItem.Video.Title)
-					}
-				}
-				p.currentItemMutex.Lock()
-				p.CurrentItem = nil
-				p.currentItemMutex.Unlock()
-
-				p.playNext()
-
-				// If radio is enabled and queue is empty, auto-queue a similar song
-				if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
-					go p.queueRadioSong()
-				}
-			case audio.PlaybackStarted:
-				if queueItem != nil {
-					log.Tracef("playback started for %s", queueItem.Video.Title)
-					p.CurrentSong = &queueItem.Video.Title
-					p.currentItemMutex.Lock()
-					p.CurrentItem = queueItem
-					p.currentItemMutex.Unlock()
+				switch event.Event {
+				case audio.PlaybackPaused:
 					sentry.AddBreadcrumb(&sentry.Breadcrumb{
 						Category: "playback",
-						Message:  "Playback started: " + queueItem.Video.Title,
+						Message:  "Playback paused",
 						Level:    sentry.LevelInfo,
 						Data: map[string]interface{}{
 							"guild_id":   p.GuildID,
 							"guild_name": p.getGuildName(),
-							"video_id":   queueItem.Video.VideoID,
-							"title":      queueItem.Video.Title,
 						},
 					})
+					p.speakOnVC(false)
 
-					// Send now-playing card
-					go p.sendNowPlayingCard(queueItem)
-
-					// Record in song history for radio mode
-					p.SongHistory.Add(SongHistoryEntry{
-						VideoID: queueItem.Video.VideoID,
-						Title:   queueItem.Video.Title,
+					// Update now-playing card state
+					if p.nowPlayingCurrentItem != nil {
+						go func() {
+							if err := p.updateNowPlayingCard(p.nowPlayingCurrentItem); err != nil {
+								log.Warnf("Failed to update paused state: %v", err)
+							}
+						}()
+					}
+				case audio.PlaybackResumed:
+					sentry.AddBreadcrumb(&sentry.Breadcrumb{
+						Category: "playback",
+						Message:  "Playback resumed",
+						Level:    sentry.LevelInfo,
+						Data: map[string]interface{}{
+							"guild_id":   p.GuildID,
+							"guild_name": p.getGuildName(),
+						},
 					})
+					p.speakOnVC(true)
 
-					// Record play in database
-					if p.DB != nil {
-						userID := ""
-						username := ""
-						if queueItem.Interaction != nil {
-							userID = queueItem.Interaction.UserID
-							// Fetch username from cache or Discord API
-							if userID != "" {
-								username = p.DB.GetOrFetchUsername(p.GuildID, userID)
+					// Update now-playing card state
+					if p.nowPlayingCurrentItem != nil {
+						go func() {
+							if err := p.updateNowPlayingCard(p.nowPlayingCurrentItem); err != nil {
+								log.Warnf("Failed to update resumed state: %v", err)
+							}
+						}()
+					}
+				case audio.PlaybackStopped:
+					sentry.AddBreadcrumb(&sentry.Breadcrumb{
+						Category: "playback",
+						Message:  "Playback stopped",
+						Level:    sentry.LevelInfo,
+						Data: map[string]interface{}{
+							"guild_id":   p.GuildID,
+							"guild_name": p.getGuildName(),
+						},
+					})
+					p.currentSongMutex.Lock()
+					p.CurrentSong = nil
+					p.currentSongMutex.Unlock()
+					p.speakOnVC(false)
+
+					// Stop now-playing updates
+					p.stopNowPlayingUpdates()
+					p.clearNowPlayingCard()
+				case audio.PlaybackCompleted:
+					sentry.AddBreadcrumb(&sentry.Breadcrumb{
+						Category: "playback",
+						Message:  "Playback completed",
+						Level:    sentry.LevelInfo,
+						Data: map[string]interface{}{
+							"guild_id":   p.GuildID,
+							"guild_name": p.getGuildName(),
+							"video_id":   videoID,
+						},
+					})
+					p.currentSongMutex.Lock()
+					p.CurrentSong = nil
+					p.currentSongMutex.Unlock()
+					p.speakOnVC(false)
+
+					// Stop now-playing updates
+					p.stopNowPlayingUpdates()
+					p.clearNowPlayingCard()
+
+					// Loop current song if enabled
+					p.currentItemMutex.RLock()
+					currentItemForLoop := p.CurrentItem
+					p.currentItemMutex.RUnlock()
+					if p.IsLoopEnabled() && currentItemForLoop != nil {
+						log.Debugf("Loop enabled, requeuing current song: %s", currentItemForLoop.Video.Title)
+						newItem := &GuildQueueItem{
+							Video:          currentItemForLoop.Video,
+							ProbedDuration: currentItemForLoop.ProbedDuration,
+							AddedAt:        time.Now(),
+							LoadAttempts:   0,
+							MaxAttempts:    3,
+							Context:        sentryhelper.DetachFromTransaction(context.Background()),
+							Commentary:     "",
+							IsRadioPick:    false,
+							Interaction:    nil,
+							LoadResult:     nil,
+							Stream:         nil,
+						}
+						p.Queue.Mutex.Lock()
+						p.Queue.Items = append([]*GuildQueueItem{newItem}, p.Queue.Items...)
+						p.Queue.Mutex.Unlock()
+						select {
+						case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: newItem}:
+							log.Debugf("Loop requeue notified for guild %s: %s", p.GuildID, newItem.Video.Title)
+						default:
+							log.Warnf("Failed to notify loop requeue for guild %s: %s", p.GuildID, newItem.Video.Title)
+						}
+					}
+					p.currentItemMutex.Lock()
+					p.CurrentItem = nil
+					p.currentItemMutex.Unlock()
+
+					p.playNext()
+
+					// If radio is enabled and queue is empty, auto-queue a similar song
+					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
+						go p.queueRadioSong()
+					}
+				case audio.PlaybackStarted:
+					if queueItem != nil {
+						log.Tracef("playback started for %s", queueItem.Video.Title)
+						p.currentSongMutex.Lock()
+						p.CurrentSong = &queueItem.Video.Title
+						p.currentSongMutex.Unlock()
+						p.currentItemMutex.Lock()
+						p.CurrentItem = queueItem
+						p.currentItemMutex.Unlock()
+						sentry.AddBreadcrumb(&sentry.Breadcrumb{
+							Category: "playback",
+							Message:  "Playback started: " + queueItem.Video.Title,
+							Level:    sentry.LevelInfo,
+							Data: map[string]interface{}{
+								"guild_id":   p.GuildID,
+								"guild_name": p.getGuildName(),
+								"video_id":   queueItem.Video.VideoID,
+								"title":      queueItem.Video.Title,
+							},
+						})
+
+						// Send now-playing card
+						go p.sendNowPlayingCard(queueItem)
+
+						// Record in song history for radio mode
+						p.SongHistory.Add(SongHistoryEntry{
+							VideoID: queueItem.Video.VideoID,
+							Title:   queueItem.Video.Title,
+						})
+
+						// Record play in database
+						if p.DB != nil {
+							userID := ""
+							username := ""
+							if queueItem.Interaction != nil {
+								userID = queueItem.Interaction.UserID
+								// Fetch username from cache or Discord API
+								if userID != "" {
+									username = p.DB.GetOrFetchUsername(p.GuildID, userID)
+								}
+							}
+							url := "https://www.youtube.com/watch?v=" + queueItem.Video.VideoID
+							if err := p.DB.RecordPlay(p.GuildID, queueItem.Video.VideoID, queueItem.Video.Title, url, userID, username, 0); err != nil {
+								log.Errorf("Failed to record play in database: %v", err)
 							}
 						}
-						url := "https://www.youtube.com/watch?v=" + queueItem.Video.VideoID
-						if err := p.DB.RecordPlay(p.GuildID, queueItem.Video.VideoID, queueItem.Video.Title, url, userID, username, 0); err != nil {
-							log.Errorf("Failed to record play in database: %v", err)
+					}
+					p.speakOnVC(true)
+					// once a song starts playback, we can pop it from the queue
+					p.popQueue()
+					// if there are more songs in the queue, load the next one
+					p.loadNext()
+				case audio.PlaybackError:
+					p.currentSongMutex.Lock()
+					p.CurrentSong = nil
+					p.currentSongMutex.Unlock()
+					p.currentItemMutex.Lock()
+					p.CurrentItem = nil
+					p.currentItemMutex.Unlock()
+					p.speakOnVC(false)
+
+					err := event.Error
+
+					// parse the error, if any
+					var errStr string
+					if err != nil {
+						log.Errorf("Error playing stream: %v", err)
+						errStr = (*err).Error()
+					}
+
+					log.Tracef("[loaderror] queueItem: %+v", queueItem.Video.Title)
+
+					// if we found a queue item, send a followup to the user notifying them of the error
+					if queueItem != nil {
+						var msg string
+						if errStr != "" {
+							msg = "Something went wrong while playing " + queueItem.Video.Title + "\nError: " + errStr
+						} else {
+							msg = "Something went wrong while playing " + queueItem.Video.Title
 						}
-					}
-				}
-				p.speakOnVC(true)
-				// once a song starts playback, we can pop it from the queue
-				p.popQueue()
-				// if there are more songs in the queue, load the next one
-				p.loadNext()
-			case audio.PlaybackError:
-				p.CurrentSong = nil
-				p.currentItemMutex.Lock()
-				p.CurrentItem = nil
-				p.currentItemMutex.Unlock()
-				p.speakOnVC(false)
 
-				err := event.Error
-
-				// parse the error, if any
-				var errStr string
-				if err != nil {
-					log.Errorf("Error playing stream: %v", err)
-					errStr = (*err).Error()
-				}
-
-				log.Tracef("[loaderror] queueItem: %+v", queueItem.Video.Title)
-
-				// if we found a queue item, send a followup to the user notifying them of the error
-				if queueItem != nil {
-					var msg string
-					if errStr != "" {
-						msg = "Something went wrong while playing " + queueItem.Video.Title + "\nError: " + errStr
-					} else {
-						msg = "Something went wrong while playing " + queueItem.Video.Title
+						go discord.UpdateMessage(&discord.FollowUpRequest{
+							Token:   queueItem.Interaction.InteractionToken,
+							AppID:   queueItem.Interaction.AppID,
+							UserID:  queueItem.Interaction.UserID,
+							Content: msg,
+						})
 					}
 
-					go discord.UpdateMessage(&discord.FollowUpRequest{
-						Token:   queueItem.Interaction.InteractionToken,
-						AppID:   queueItem.Interaction.AppID,
-						UserID:  queueItem.Interaction.UserID,
-						Content: msg,
-					})
+					p.playNext()
+				default:
+					log.Warnf("Unknown playback event: %s", event.Event)
 				}
-
-				p.playNext()
-			default:
-				log.Warnf("Unknown playback event: %s", event.Event)
+			case <-p.playbackListenerStop:
+				return
 			}
 		}
 	}()

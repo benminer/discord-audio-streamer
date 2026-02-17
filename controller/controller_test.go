@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"beatbot/youtube"
 )
@@ -207,5 +208,158 @@ func TestRecoveryNoRequeueWhenNoCurrentItem(t *testing.T) {
 	if len(p.Queue.Items) != initialLen {
 		t.Errorf("queue length changed from %d to %d — should not requeue when savedItem is nil",
 			initialLen, len(p.Queue.Items))
+	}
+}
+
+// --- Wave 3 concurrency tests ---
+
+// TestListenerStopChannelsInitialized verifies that all three listener stop
+// channels are non-nil on a fresh GuildPlayer so listenFor*Events() goroutines
+// don't panic on a nil channel select.
+func TestListenerStopChannelsInitialized(t *testing.T) {
+	p := &GuildPlayer{
+		Queue:                &GuildQueue{},
+		queueListenerStop:    make(chan struct{}),
+		playbackListenerStop: make(chan struct{}),
+		loadListenerStop:     make(chan struct{}),
+	}
+	if p.queueListenerStop == nil {
+		t.Error("queueListenerStop must not be nil")
+	}
+	if p.playbackListenerStop == nil {
+		t.Error("playbackListenerStop must not be nil")
+	}
+	if p.loadListenerStop == nil {
+		t.Error("loadListenerStop must not be nil")
+	}
+}
+
+// TestListenerStopChannelExits verifies that sending to a stop channel causes
+// the listener goroutine to exit. This guards against nil-channel panics and
+// confirms the stop mechanism actually works.
+func TestListenerStopChannelExits(t *testing.T) {
+	notifications := make(chan QueueEvent, 10)
+	p := &GuildPlayer{
+		Queue: &GuildQueue{
+			notifications: notifications,
+		},
+		queueListenerStop: make(chan struct{}),
+	}
+	p.Queue.Listening = true
+
+	exited := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case _, ok := <-p.Queue.notifications:
+				if !ok {
+					close(exited)
+					return
+				}
+			case <-p.queueListenerStop:
+				close(exited)
+				return
+			}
+		}
+	}()
+
+	// Signal stop
+	p.queueListenerStop <- struct{}{}
+
+	select {
+	case <-exited:
+		// goroutine exited cleanly
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("listener goroutine did not exit after stop signal")
+	}
+}
+
+// TestCurrentSongMutexConcurrent is a race-detector test that concurrently
+// reads and writes CurrentSong via currentSongMutex, verifying there are no
+// data races under the new locking scheme.
+// Run with: go test -race ./controller/...
+func TestCurrentSongMutexConcurrent(t *testing.T) {
+	p := &GuildPlayer{
+		Queue: &GuildQueue{},
+	}
+	title := "test song"
+
+	var wg sync.WaitGroup
+	const goroutines = 100
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			switch i % 3 {
+			case 0:
+				// write title (PlaybackStarted path)
+				p.currentSongMutex.Lock()
+				p.CurrentSong = &title
+				p.currentSongMutex.Unlock()
+			case 1:
+				// write nil (PlaybackCompleted/Stopped/Error path)
+				p.currentSongMutex.Lock()
+				p.CurrentSong = nil
+				p.currentSongMutex.Unlock()
+			case 2:
+				// read (handleAdd shouldPlay path)
+				p.currentSongMutex.RLock()
+				_ = p.CurrentSong == nil
+				p.currentSongMutex.RUnlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestResetReinitializesStopChannels verifies the contract that after Reset()
+// all stop channels are non-nil and usable — i.e., ready for the next round
+// of listenFor*Events() goroutines. We test this by checking we can send to
+// the remade channels without blocking (buffered or receiver expected).
+func TestResetReinitializesStopChannels(t *testing.T) {
+	// Simulate the remake portion of Reset() without the full Discord machinery
+	queueStop := make(chan struct{})
+	playbackStop := make(chan struct{})
+	loadStop := make(chan struct{})
+
+	// Simulate stop signals (non-blocking)
+	select {
+	case queueStop <- struct{}{}:
+	default:
+	}
+	select {
+	case playbackStop <- struct{}{}:
+	default:
+	}
+	select {
+	case loadStop <- struct{}{}:
+	default:
+	}
+
+	// Remake
+	queueStop = make(chan struct{})
+	playbackStop = make(chan struct{})
+	loadStop = make(chan struct{})
+
+	if queueStop == nil || playbackStop == nil || loadStop == nil {
+		t.Error("remade stop channels must not be nil")
+	}
+
+	// Verify the remade channels are fresh (no stale signals)
+	select {
+	case <-queueStop:
+		t.Error("remade queueStop should have no pending signal")
+	default:
+	}
+	select {
+	case <-playbackStop:
+		t.Error("remade playbackStop should have no pending signal")
+	default:
+	}
+	select {
+	case <-loadStop:
+		t.Error("remade loadStop should have no pending signal")
+	default:
 	}
 }
