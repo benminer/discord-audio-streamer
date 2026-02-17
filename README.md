@@ -23,16 +23,7 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    - Install from [ffmpeg.org](https://ffmpeg.org/download.html) or via package manager
    - Verify installation with: `ffmpeg -version`
 
-4. **ngrok** - Tunneling service for local development or self-hosting
-
-   - Sign up at [ngrok.com](https://ngrok.com)
-   - Set up your authtoken and reserved domain
-   - Required environment variables:
-     - `NGROK_AUTHTOKEN`: Your ngrok authentication token
-     - `NGROK_DOMAIN`: Your reserved ngrok domain (optional, but URL changes on each restart without it)
-   - Documentation: [ngrok docs](https://ngrok.com/docs)
-
-5. **Docker** (optional) - Containerization tool
+4. **Docker** (optional) - Containerization tool
 
    - Install from [Docker](https://docs.docker.com/get-docker/)
    - Verify installation with: `docker --version`
@@ -61,10 +52,6 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    DISCORD_APP_ID=your_app_id
    YOUTUBE_API_KEY=your_youtube_api_key
 
-   # Optional - Ngrok
-   NGROK_AUTHTOKEN=your_ngrok_token
-   NGROK_DOMAIN=your_reserved_domain
-
    # Optional - YouTube playlist limit
    YOUTUBE_PLAYLIST_LIMIT=15
 
@@ -89,6 +76,9 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    #   128000 (128 kbps) - Default, maximum for regular voice channels
    #   384000 (384 kbps) - Maximum for stage channels (requires boost)
    AUDIO_BITRATE=128000
+
+   # Optional - Cloudflare Tunnel public URL (used to register Discord interactions endpoint)
+   CLOUDFLARE_TUNNEL_URL=https://beatbot.yourdomain.com
 
    # Optional - Sentry error tracking
    SENTRY_DSN=your_sentry_dsn
@@ -149,13 +139,96 @@ A simple bot implementation for playing audio in Discord voice channels using [y
       -e SPOTIFY_ENABLED=$SPOTIFY_ENABLED \
       -e IDLE_TIMEOUT_MINUTES=$IDLE_TIMEOUT_MINUTES \
       -e AUDIO_BITRATE=$AUDIO_BITRATE \
-      -e NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN \
-      -e NGROK_DOMAIN=$NGROK_DOMAIN \
       -e SENTRY_DSN=$SENTRY_DSN \
       discord-music-bot:latest
     ```
 
     Recommended: at least 1GB memory with 2GB swap, since songs are buffered in memory during playback.
+
+## Cloudflare Tunnel Setup
+
+The bot exposes an HTTP server on port 8080 for Discord interactions. In production, a Cloudflare Tunnel is used to route traffic from a public URL (e.g. `https://beatbot.yourdomain.com`) to `localhost:8080` without opening firewall ports.
+
+### Prerequisites
+
+Install `cloudflared`:
+
+```bash
+# macOS
+brew install cloudflare/cloudflare/cloudflared
+
+# Linux
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+chmod +x /usr/local/bin/cloudflared
+```
+
+### One-Time Setup
+
+1. **Authenticate** with your Cloudflare account:
+
+   ```bash
+   cloudflared tunnel login
+   ```
+
+2. **Create a named tunnel:**
+
+   ```bash
+   cloudflared tunnel create beatbot
+   ```
+
+   This outputs a tunnel ID — note it down.
+
+3. **Create a config file** at `~/.cloudflared/beatbot.yml`:
+
+   ```yaml
+   tunnel: <your-tunnel-id>
+   credentials-file: /Users/<you>/.cloudflared/<tunnel-id>.json
+
+   ingress:
+     - hostname: beatbot.yourdomain.com
+       service: http://localhost:8080
+     - service: http_status:404
+   ```
+
+4. **Create a DNS route** (maps your hostname to the tunnel):
+
+   ```bash
+   cloudflared tunnel route dns beatbot beatbot.yourdomain.com
+   ```
+
+5. **Set the env var** in your `.env`:
+
+   ```bash
+   CLOUDFLARE_TUNNEL_URL=https://beatbot.yourdomain.com
+   ```
+
+   This is used by the bot to register its interaction endpoint with Discord.
+
+### Running the Tunnel
+
+Start manually:
+
+```bash
+cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot
+```
+
+Or use `docker-restart.sh`, which starts the container and the tunnel automatically:
+
+```bash
+./docker-restart.sh
+# With image rebuild:
+./docker-restart.sh rebuild
+```
+
+The script waits for the bot to be healthy on `:8080` before starting the tunnel, so Discord interactions are only routed once the server is ready.
+
+### Registering with Discord
+
+Set the Interactions Endpoint URL in the [Discord Developer Portal](https://discord.com/developers/applications) to:
+
+```
+https://beatbot.yourdomain.com/interactions
+```
 
 ## Optional Features
 

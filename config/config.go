@@ -7,7 +7,6 @@ import (
 
 type ConfigStruct struct {
 	Discord    DiscordConfig
-	NGrok      NGrokConfig
 	Tunnel     TunnelConfig
 	Options    Options
 	Youtube    YoutubeConfig
@@ -21,13 +20,7 @@ type DiscordConfig struct {
 	PublicKey string
 }
 
-type NGrokConfig struct {
-	Domain    string
-	AuthToken string
-}
-
 type TunnelConfig struct {
-	Provider           string // "ngrok" or "cloudflare"
 	CloudflareTunnelURL string
 }
 
@@ -55,19 +48,8 @@ type Options struct {
 	AudioBitrate        int // Audio bitrate in bps (e.g., 96000 for 96 kbps)
 }
 
-func (ngrok *NGrokConfig) IsEnabled() bool {
-	return ngrok.Domain != "" && ngrok.AuthToken != ""
-}
-
 func (t *TunnelConfig) IsCloudflare() bool {
-	return t.Provider == "cloudflare" && t.CloudflareTunnelURL != ""
-}
-
-func getEnvDefault(key, defaultVal string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	return defaultVal
+	return t.CloudflareTunnelURL != ""
 }
 
 func (options *Options) EnforceVoiceChannelEnabled() bool {
@@ -83,12 +65,7 @@ func NewConfig() {
 			AppID:     os.Getenv("DISCORD_APP_ID"),
 			PublicKey: os.Getenv("DISCORD_PUBLIC_KEY"),
 		},
-		NGrok: NGrokConfig{
-			Domain:    os.Getenv("NGROK_DOMAIN"),
-			AuthToken: os.Getenv("NGROK_AUTHTOKEN"),
-		},
 		Tunnel: TunnelConfig{
-			Provider:           getEnvDefault("TUNNEL_PROVIDER", "ngrok"),
 			CloudflareTunnelURL: os.Getenv("CLOUDFLARE_TUNNEL_URL"),
 		},
 		Options: Options{

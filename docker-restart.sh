@@ -1,9 +1,6 @@
 #!/bin/bash
 
 # Optimized for Mac Mini ARM64: higher resources, ARM64 image, consistent naming
-# Runs both ngrok (via app) and cloudflared in parallel during transition.
-# To fully cut over to cloudflare: set TUNNEL_PROVIDER=cloudflare in .env
-# and update the Discord webhook URL to https://beatbot.bensserver.com
 
 source .env
 
@@ -28,7 +25,7 @@ if docker ps -a --format '{{.Names}}' | grep -q "^discord-audio-streamer$"; then
 fi
 
 # --- Start Docker container ---
-# Port 8080 always exposed so cloudflared can reach it regardless of TUNNEL_PROVIDER
+# Port 8080 always exposed so cloudflared can reach it
 echo "Starting discord-audio-streamer container..."
 docker run -d --name discord-audio-streamer \
   --restart always \
@@ -47,9 +44,6 @@ docker run -d --name discord-audio-streamer \
   -e SPOTIFY_ENABLED=true \
   -e GEMINI_API_KEY=$GEMINI_API_KEY \
   -e GEMINI_ENABLED=$GEMINI_ENABLED \
-  -e NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN \
-  -e NGROK_DOMAIN=$NGROK_DOMAIN \
-  -e TUNNEL_PROVIDER=${TUNNEL_PROVIDER:-ngrok} \
   -e CLOUDFLARE_TUNNEL_URL=$CLOUDFLARE_TUNNEL_URL \
   -e SENTRY_DSN=$SENTRY_DSN \
   benminer/discord-audio-streamer:latest
@@ -71,10 +65,4 @@ echo "Cloudflare tunnel started (PID: $!)"
 
 echo ""
 echo "=== Done ==="
-echo "ngrok URL:       https://${NGROK_DOMAIN} (active if TUNNEL_PROVIDER=ngrok)"
-echo "Cloudflare URL:  https://beatbot.bensserver.com (always active)"
-echo ""
-echo "To cut over to Cloudflare fully:"
-echo "  1. Update Discord webhook URL to https://beatbot.bensserver.com"
-echo "  2. Set TUNNEL_PROVIDER=cloudflare in .env"
-echo "  3. Re-run ./docker-restart.sh"
+echo "URL: https://beatbot.bensserver.com"

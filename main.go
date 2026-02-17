@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.ngrok.com/ngrok/v2"
 
 	"github.com/joho/godotenv"
 
@@ -204,7 +203,6 @@ func run(ctx context.Context) error {
 
 		interaction, err := manager.ParseInteraction(bodyBytes)
 
-		// for registering the application, we need to respond with a pong
 		if interaction.Type == 1 {
 			c.JSON(http.StatusOK, gin.H{
 				"type": 1,
@@ -232,30 +230,6 @@ func run(ctx context.Context) error {
 		router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
 		log.Infof("Starting server on :%s (Cloudflare tunnel handles external traffic)", port)
 		return router.Run(":" + port)
-	}
-
-	if appConfig.Config.NGrok.IsEnabled() {
-		log.Info("using ngrok")
-		listener, err := ngrok.Listen(ctx,
-			ngrok.WithURL(appConfig.Config.NGrok.Domain),
-		)
-		if err != nil {
-			return err
-		}
-
-		log.Println("Ngrok URL:", listener.URL())
-		
-		// Start local server for health checks in background
-		go func() {
-			router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
-			log.Infof("Starting local health check server on :%s", port)
-			if err := router.Run(":" + port); err != nil {
-				log.Errorf("Health check server failed: %v", err)
-			}
-		}()
-		
-		// Start ngrok server (blocks)
-		return http.Serve(listener, router)
 	}
 
 	router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
