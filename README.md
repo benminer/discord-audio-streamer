@@ -77,6 +77,9 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    #   384000 (384 kbps) - Maximum for stage channels (requires boost)
    AUDIO_BITRATE=128000
 
+   # Optional - Cloudflare Tunnel public URL (used to register Discord interactions endpoint)
+   CLOUDFLARE_TUNNEL_URL=https://beatbot.yourdomain.com
+
    # Optional - Sentry error tracking
    SENTRY_DSN=your_sentry_dsn
    ```
@@ -141,6 +144,91 @@ A simple bot implementation for playing audio in Discord voice channels using [y
     ```
 
     Recommended: at least 1GB memory with 2GB swap, since songs are buffered in memory during playback.
+
+## Cloudflare Tunnel Setup
+
+The bot exposes an HTTP server on port 8080 for Discord interactions. In production, a Cloudflare Tunnel is used to route traffic from a public URL (e.g. `https://beatbot.yourdomain.com`) to `localhost:8080` without opening firewall ports.
+
+### Prerequisites
+
+Install `cloudflared`:
+
+```bash
+# macOS
+brew install cloudflare/cloudflare/cloudflared
+
+# Linux
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+chmod +x /usr/local/bin/cloudflared
+```
+
+### One-Time Setup
+
+1. **Authenticate** with your Cloudflare account:
+
+   ```bash
+   cloudflared tunnel login
+   ```
+
+2. **Create a named tunnel:**
+
+   ```bash
+   cloudflared tunnel create beatbot
+   ```
+
+   This outputs a tunnel ID — note it down.
+
+3. **Create a config file** at `~/.cloudflared/beatbot.yml`:
+
+   ```yaml
+   tunnel: <your-tunnel-id>
+   credentials-file: /Users/<you>/.cloudflared/<tunnel-id>.json
+
+   ingress:
+     - hostname: beatbot.yourdomain.com
+       service: http://localhost:8080
+     - service: http_status:404
+   ```
+
+4. **Create a DNS route** (maps your hostname to the tunnel):
+
+   ```bash
+   cloudflared tunnel route dns beatbot beatbot.yourdomain.com
+   ```
+
+5. **Set the env var** in your `.env`:
+
+   ```bash
+   CLOUDFLARE_TUNNEL_URL=https://beatbot.yourdomain.com
+   ```
+
+   This is used by the bot to register its interaction endpoint with Discord.
+
+### Running the Tunnel
+
+Start manually:
+
+```bash
+cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot
+```
+
+Or use `docker-restart.sh`, which starts the container and the tunnel automatically:
+
+```bash
+./docker-restart.sh
+# With image rebuild:
+./docker-restart.sh rebuild
+```
+
+The script waits for the bot to be healthy on `:8080` before starting the tunnel, so Discord interactions are only routed once the server is ready.
+
+### Registering with Discord
+
+Set the Interactions Endpoint URL in the [Discord Developer Portal](https://discord.com/developers/applications) to:
+
+```
+https://beatbot.yourdomain.com/interactions
+```
 
 ## Optional Features
 
