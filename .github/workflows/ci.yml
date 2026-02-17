@@ -49,6 +49,8 @@ jobs:
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-
+    - name: Install native dependencies
+      run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
     - name: Check go.mod tidy
       run: |
         go mod tidy
@@ -71,6 +73,8 @@ jobs:
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-
+    - name: Install native dependencies
+      run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
     - name: Check go.mod tidy
       run: |
         go mod tidy
@@ -93,6 +97,8 @@ jobs:
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-
+    - name: Install native dependencies
+      run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
     - name: Check go.mod tidy
       run: |
         go mod tidy
