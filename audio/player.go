@@ -181,6 +181,14 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 
 			if p.paused.Load() {
+				// If a stop was requested while paused, unblock so the stopping
+				// check below can run its fade-out and exit cleanly.
+				if p.stopping.Load() {
+					p.logger.Debug("Stop requested while paused, exiting pause loop")
+					p.paused.Store(false)
+					continue
+				}
+
 				// Drain buffer to prevent stale data buildup
 				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
