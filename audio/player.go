@@ -359,7 +359,6 @@ func (p *Player) GetVolume() int {
 	return p.volume
 }
 
-
 func (p *Player) GetPosition() time.Duration {
 	if p.playing == nil || !*p.playing {
 		return 0
