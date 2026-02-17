@@ -103,6 +103,7 @@ type GuildPlayer struct {
 	DB                   *database.Database
 	GuildID              string
 	CurrentSong          *string
+	currentSongMutex     sync.RWMutex
 	Queue                *GuildQueue
 	VoiceChannelMutex    sync.RWMutex
 	VoiceChannelID       *string
@@ -116,6 +117,9 @@ type GuildPlayer struct {
 	LastActivityAt       time.Time
 	LastTextChannelID    string
 	idleCheckStop        chan struct{}
+	queueListenerStop    chan struct{}
+	playbackListenerStop chan struct{}
+	loadListenerStop     chan struct{}
 	RadioEnabled         bool
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
@@ -656,28 +660,36 @@ func (p *GuildPlayer) getIndexForItem(queueItem *GuildQueueItem) int {
 func (p *GuildPlayer) listenForQueueEvents() {
 	p.Queue.Listening = true
 	go func() {
-		for event := range p.Queue.notifications {
-			log.Tracef("Queue event: %s", event.Type)
-			switch event.Type {
-			case EventAdd:
-				p.handleAdd(event)
-			case EventSkip:
-				log.Printf("Skipping to next song in queue")
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "queue",
-					Message:  "Skip requested",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id":   p.GuildID,
-						"guild_name": p.getGuildName(),
-					},
-				})
-				p.Player.Stop()
-				p.playNext()
-				// PlaybackStopped event will play next song
-			case EventClear:
-				log.Debug("queue has been cleared")
-				// we don't stop playback here, we just dump the rest of the queue
+		for {
+			select {
+			case event, ok := <-p.Queue.notifications:
+				if !ok {
+					return
+				}
+				log.Tracef("Queue event: %s", event.Type)
+				switch event.Type {
+				case EventAdd:
+					p.handleAdd(event)
+				case EventSkip:
+					log.Printf("Skipping to next song in queue")
+					sentry.AddBreadcrumb(&sentry.Breadcrumb{
+						Category: "queue",
+						Message:  "Skip requested",
+						Level:    sentry.LevelInfo,
+						Data: map[string]interface{}{
+							"guild_id":   p.GuildID,
+							"guild_name": p.getGuildName(),
+						},
+					})
+					p.Player.Stop()
+					p.playNext()
+					// PlaybackStopped event will play next song
+				case EventClear:
+					log.Debug("queue has been cleared")
+					// we don't stop playback here, we just dump the rest of the queue
+				}
+			case <-p.queueListenerStop:
+				return
 			}
 		}
 	}()
@@ -686,8 +698,13 @@ func (p *GuildPlayer) listenForQueueEvents() {
 func (p *GuildPlayer) listenForLoadEvents() {
 	log.Tracef("listening for load events")
 	go func() {
-		for event := range p.Loader.Notifications {
-			log.Tracef("Load event: %s", event.Event)
+		for {
+			select {
+			case event, ok := <-p.Loader.Notifications:
+				if !ok {
+					return
+				}
+				log.Tracef("Load event: %s", event.Event)
 			videoID := event.VideoID
 			var queueItem *GuildQueueItem
 			var queueIndex int
@@ -839,6 +856,9 @@ func (p *GuildPlayer) listenForLoadEvents() {
 			default:
 				log.Warnf("Unknown load event: %s", event.Event)
 			}
+			case <-p.loadListenerStop:
+				return
+			}
 		}
 	}()
 }
@@ -846,8 +866,13 @@ func (p *GuildPlayer) listenForLoadEvents() {
 func (p *GuildPlayer) listenForPlaybackEvents() {
 	log.Tracef("listening for playback events")
 	go func() {
-		for event := range p.Player.Notifications {
-			log.Tracef("Playback event: %s", event.Event)
+		for {
+			select {
+			case event, ok := <-p.Player.Notifications:
+				if !ok {
+					return
+				}
+				log.Tracef("Playback event: %s", event.Event)
 			videoID := event.VideoID
 			var queueItem *GuildQueueItem
 			if videoID != nil {
@@ -1056,6 +1081,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				p.playNext()
 			default:
 				log.Warnf("Unknown playback event: %s", event.Event)
+			}
+			case <-p.playbackListenerStop:
+				return
 			}
 		}
 	}()

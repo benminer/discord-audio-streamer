@@ -58,7 +58,7 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 	l.mutex.Lock()
 	defer func() {
 		l.mutex.Unlock()
-		l.completed <- true
+		select {	case l.completed <- true:	default:	}
 		span.Finish()
 	}()
 
