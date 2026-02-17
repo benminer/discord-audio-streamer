@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/bwmarrin/discordgo"
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 
@@ -24,6 +25,7 @@ import (
 	"beatbot/controller"
 	"beatbot/discord"
 	"beatbot/gemini"
+	"beatbot/lyrics"
 	"beatbot/sentryhelper"
 	"beatbot/spotify"
 	"beatbot/youtube"
@@ -1735,7 +1737,7 @@ func (manager *Manager) handleRecommend(ctx context.Context, transaction *sentry
 		if err != nil {
 			errStr := err.Error()
 			if errStr == "voice state not found" {
-				manager.SendFollowup(ctx, interaction, "", "You gotta join a voice channel first!", "Error joining voice channel: "+errStr, true)
+				manager.SendFollowup(ctx, interaction, "", "You gotta join a voice channel first!", true)
 				return
 			}
 			sentryhelper.CaptureException(ctx, err)
@@ -1776,6 +1778,102 @@ Announce it like a cool DJ - excited, conversational, with music nerd vibe.`,
 		interaction.Member.User.Username, video.Title)
 
 	manager.SendFollowup(ctx, interaction, aiPrompt, backupMsg, false)
+}
+
+func (manager *Manager) handleFavorite(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+	if player.CurrentSong == nil || player.CurrentItem == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Nothing is currently playing.", Flags: 64}}
+	}
+
+	userID := interaction.Member.User.ID
+	song := player.CurrentItem
+
+	if db.IsFavorite(userID, interaction.GuildID, song.Video.VideoID) {
+		return Response{Type: 4, Data: ResponseData{
+			Content: fmt.Sprintf("**%s** is already in your favorites.", song.Video.Title),
+			Flags:   64,
+		}}
+	}
+
+	videoURL := "https://www.youtube.com/watch?v=" + song.Video.VideoID
+	if err := db.AddFavorite(userID, interaction.GuildID, song.Video.VideoID, song.Video.Title, videoURL); err != nil {
+		log.Errorf("Error adding favorite: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to save favorite. Try again.", Flags: 64}}
+	}
+
+	return Response{Type: 4, Data: ResponseData{
+		Content: fmt.Sprintf("❤️ Added **%s** to your favorites.", song.Video.Title),
+		Flags:   64,
+	}}
+}
+
+func (manager *Manager) handleFavorites(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	userID := interaction.Member.User.ID
+	records, err := db.GetFavorites(userID, interaction.GuildID, 25)
+	if err != nil {
+		log.Errorf("Error fetching favorites: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to fetch favorites.", Flags: 64}}
+	}
+
+	if len(records) == 0 {
+		return Response{Type: 4, Data: ResponseData{
+			Content: "You haven't saved any favorites yet. Use `/favorite` while a song is playing!",
+			Flags:   64,
+		}}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("❤️ **Your Favorites**\n\n")
+	for i, r := range records {
+		sb.WriteString(fmt.Sprintf("`%d.` [%s](%s)\n", i+1, r.Title, r.URL))
+	}
+
+	return Response{Type: 4, Data: ResponseData{Content: sb.String()}}
+}
+
+func (manager *Manager) handleUnfavorite(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	userID := interaction.Member.User.ID
+
+	var songNumber int
+	for _, opt := range interaction.Data.Options {
+		if opt.Name == "song_number" {
+			n, err := strconv.Atoi(opt.Value)
+			if err != nil || n < 1 {
+				return Response{Type: 4, Data: ResponseData{Content: "Invalid song number.", Flags: 64}}
+			}
+			songNumber = n
+			break
+		}
+	}
+	if songNumber == 0 {
+		return Response{Type: 4, Data: ResponseData{Content: "Please provide a song number from `/favorites`.", Flags: 64}}
+	}
+
+	title, err := db.RemoveFavoriteByIndex(userID, interaction.GuildID, songNumber)
+	if err != nil {
+		return Response{Type: 4, Data: ResponseData{Content: "That number isn't in your favorites list.", Flags: 64}}
+	}
+
+	return Response{Type: 4, Data: ResponseData{
+		Content: fmt.Sprintf("Removed **%s** from your favorites.", title),
+		Flags:   64,
+	}}
 }
 
 func (manager *Manager) handleLeaderboard(interaction *Interaction) Response {
@@ -2025,6 +2123,16 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		finishTransaction = false
 		go manager.onLyrics(ctx, transaction, interaction)
 		return Response{Type: 5}
+	case "recommend":
+		finishTransaction = false
+		go manager.handleRecommend(ctx, transaction, interaction)
+		return Response{Type: 5}
+	case "favorite":
+		return manager.handleFavorite(interaction)
+	case "favorites":
+		return manager.handleFavorites(interaction)
+	case "unfavorite":
+		return manager.handleUnfavorite(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:
@@ -2143,20 +2251,20 @@ func (manager *Manager) onLyrics(ctx context.Context, transaction *sentry.Span, 
 
 	lc := lyrics.New()
 
-	lyrics, trackInfo, err := lc.Search(query)
+	lyricsText, trackInfo, err := lc.Search(query)
 
-	if err != nil || lyrics == "" {
+	if err != nil || lyricsText == "" {
 		manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("Couldn't find lyrics for **%s**.", title), false)
 		return
 	}
 
-	if len(lyrics) > 3800 {
-		lyrics = lyrics[:3800]
+	if len(lyricsText) > 3800 {
+		lyricsText = lyricsText[:3800]
 	}
 
 	embed := &discordgo.MessageEmbed{
 		Title:       "Lyrics: " + trackInfo,
-		Description: lyrics,
+		Description: lyricsText,
 		Color:       0x7289DA,
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: "Lyrics provided by lrclib.net",

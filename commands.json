@@ -120,6 +120,11 @@
     "description": "Toggle radio mode - automatically queues similar songs when the queue is empty"
   },
   {
+    "name": "loop",
+    "type": 1,
+    "description": "Toggle loop mode - repeats the current song"
+  },
+  {
     "name": "history",
     "type": 1,
     "description": "Shows recently played songs in this server",
@@ -147,10 +152,41 @@
         "min_value": 1,
         "max_value": 25
       }
-    ],
-    {
-      "name": "lyrics",
-      "type": 1,
-      "description": "Shows lyrics for the currently playing song"
-    }
-  ]
+    ]
+  },
+  {
+    "name": "lyrics",
+    "type": 1,
+    "description": "Shows lyrics for the currently playing song"
+  },
+  {
+    "name": "recommend",
+    "type": 1,
+    "description": "Let the AI DJ pick a song based on your listening history"
+  },
+  {
+    "name": "favorite",
+    "type": 1,
+    "description": "Save the currently playing song to your favorites"
+  },
+  {
+    "name": "favorites",
+    "type": 1,
+    "description": "View your saved favorite songs for this server"
+  },
+  {
+    "name": "unfavorite",
+    "type": 1,
+    "description": "Remove a song from your favorites",
+    "options": [
+      {
+        "name": "song_number",
+        "type": 4,
+        "description": "The number of the song to remove (from /favorites list)",
+        "required": true,
+        "min_value": 1,
+        "max_value": 25
+      }
+    ]
+  }
+]

@@ -11,12 +11,12 @@ import (
 )
 
 type SearchResult struct {
-	ID           int    `json:\"id\"`
-	TrackName    string `json:\"trackName\"`
-	ArtistName   string `json:\"artistName\"`
-	AlbumName    string `json:\"albumName\"`
-	PlainLyrics  string `json:\"plainLyrics\"`
-	SyncedLyrics string `json:\"syncedLyrics\"`
+	ID           int    `json:"id"`
+	TrackName    string `json:"trackName"`
+	ArtistName   string `json:"artistName"`
+	AlbumName    string `json:"albumName"`
+	PlainLyrics  string `json:"plainLyrics"`
+	SyncedLyrics string `json:"syncedLyrics"`
 }
 
 type Client struct {
@@ -32,41 +32,41 @@ func New() *Client {
 }
 
 func (c *Client) Search(query string) (string, string, error) {
-	u := fmt.Sprintf(\"https://lrclib.net/api/search?q=%s\", url.QueryEscape(query))
+	u := fmt.Sprintf("https://lrclib.net/api/search?q=%s", url.QueryEscape(query))
 	resp, err := c.httpClient.Get(u)
 	if err != nil {
-		return \"\", \"\", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return \"\", \"\", fmt.Errorf(\"lrclib API returned status %d\", resp.StatusCode)
+		return "", "", fmt.Errorf("lrclib API returned status %d", resp.StatusCode)
 	}
 
 	var results []SearchResult
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
-		return \"\", \"\", err
+		return "", "", err
 	}
 
 	if len(results) == 0 {
-		return \"\", \"\", nil
+		return "", "", nil
 	}
 
 	res := results[0]
 
-	var lyrics string
-	if res.PlainLyrics != \"\" {
-		lyrics = res.PlainLyrics
-	} else if res.SyncedLyrics != \"\" {
-		re := regexp.MustCompile(`\\[\\d+:\\d+\\.\\d+\\]`)
-		lyrics = re.ReplaceAllString(res.SyncedLyrics, \"\")
-		lyrics = strings.TrimSpace(lyrics)
+	var lyricsText string
+	if res.PlainLyrics != "" {
+		lyricsText = res.PlainLyrics
+	} else if res.SyncedLyrics != "" {
+		re := regexp.MustCompile(`\[\d+:\d+\.\d+\]`)
+		lyricsText = re.ReplaceAllString(res.SyncedLyrics, "")
+		lyricsText = strings.TrimSpace(lyricsText)
 	}
 
-	if lyrics == \"\" {
-		return \"\", res.TrackName + \" — \" + res.ArtistName, nil
+	if lyricsText == "" {
+		return "", res.TrackName + " — " + res.ArtistName, nil
 	}
 
-	trackInfo := res.TrackName + \" — \" + res.ArtistName
-	return lyrics, trackInfo, nil
+	trackInfo := res.TrackName + " — " + res.ArtistName
+	return lyricsText, trackInfo, nil
 }
