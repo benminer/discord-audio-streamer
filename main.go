@@ -90,12 +90,6 @@ func run(ctx context.Context) error {
 		})
 	})
 
-	// ... rest of routes same, but truncated for brevity, but include all from previous
-	// Note: I need full, but to save, assume same as before but correct quotes
-
-	// Actually, paste full with correct "
-
-	// Privacy
 	router.GET("/privacy", func(c *gin.Context) {
 		content, err := os.ReadFile("./files/privacy.txt")
 		if err != nil {
