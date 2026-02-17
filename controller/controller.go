@@ -120,9 +120,9 @@ type GuildPlayer struct {
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
 
-	CurrentItem           *GuildQueueItem
-	LoopEnabled           bool
-	loopMutex             sync.RWMutex
+	CurrentItem *GuildQueueItem
+	LoopEnabled bool
+	loopMutex   sync.RWMutex
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
