@@ -1096,6 +1096,19 @@ func (p *GuildPlayer) IsRadioEnabled() bool {
 	return p.RadioEnabled
 }
 
+func (p *GuildPlayer) ToggleLoop() bool {
+	p.loopMutex.Lock()
+	defer p.loopMutex.Unlock()
+	p.LoopEnabled = !p.LoopEnabled
+	return p.LoopEnabled
+}
+
+func (p *GuildPlayer) IsLoopEnabled() bool {
+	p.loopMutex.RLock()
+	defer p.loopMutex.RUnlock()
+	return p.LoopEnabled
+}
+
 // ExtractArtist parses common YouTube music title formats to extract the artist name.
 // Returns the artist if found, or the full title as fallback.
 func ExtractArtist(title string) string {
