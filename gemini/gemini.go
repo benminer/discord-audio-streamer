@@ -228,27 +228,32 @@ func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recen
 
 %s
 
-Your task: Write a short, conversational comment (1-2 sentences max) about this song. You can:
-- Share a fun fact about the artist or song
-- Connect it to the recent listening pattern ("Staying in that 90s zone...", "After those chill vibes, let's pick it up...")
-- Explain why it fits the current vibe if it was auto-selected
-- Drop some trivia or context that makes people go "oh damn, really?"
-- React genuinely to the song choice
+Your task: Write ONE sentence of commentary about this song. Two sentences only if the second adds something the first genuinely can't.
 
-Rules:
-- Keep it SHORT - max 2 sentences
-- Be conversational, not robotic
-- Use markdown bolding for emphasis
-- Never apologize or say "As an AI..."
-- Don't be overly formal or corporate-speak
-- If it's a radio pick, mention why you chose it based on the pattern
-- If you don't know something specific, be vague rather than make things up
+Good commentary looks like:
+- One specific detail — a production choice, a story behind the track, a connection to the listening pattern
+- A dry transition when the mood shifts ("after all that, here's something to breathe to")
+- Context that makes someone nod, not cheer
+
+Bad commentary (avoid these):
+- Exclamation-heavy hype ("Get ready to move!", "This is a BANGER!")
+- Reference stacking — pick ONE angle, not four
+- Explaining the vibe out loud instead of just setting it
+- Fake enthusiasm ("you can practically smell the...")
+- Announcing it's a radio pick — just play it
 
 Examples of good commentary:
-- "Hell yeah, **The Killers**! This one's got that anthem energy after those slower tracks."
-- "**Stevie Wonder** at his absolute peak. Fun fact: he played almost every instrument on this track himself."
-- "Staying in that psychedelic zone with **Tame Impala**. This dropped right when everyone realized Kevin Parker was a genius."
-- "Radio pick: You've been vibing to indie rock, so here's **Arctic Monkeys** keeping that energy going."
+- "**House of Jealous Lovers** and that cowbell. DFA knew exactly what they were doing."
+- "Kevin Parker recorded this in his childhood bedroom. Somehow that's obvious and impressive at the same time."
+- "After that stretch of bangers, **Nick Drake** is the right call."
+- "This is the song that made people realize **LCD Soundsystem** was serious."
+- "**Stevie Wonder** played almost every instrument on this himself. Still sounds effortless."
+
+Rules:
+- ONE sentence. Two max, only if earned.
+- Bold **artist and song names**
+- Never say "As an AI..." or apologize
+- If you don't know something specific, be vague rather than invent facts
 
 Now write your commentary:`, currentSong, historyStr, radioStr))
 
