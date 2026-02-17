@@ -104,7 +104,7 @@ type GuildPlayer struct {
 	GuildID              string
 	CurrentSong          *string
 	Queue                *GuildQueue
-	VoiceChannelMutex    sync.Mutex
+	VoiceChannelMutex    sync.RWMutex
 	VoiceChannelID       *string
 	VoiceJoinedAt        *time.Time
 	VoiceConnection      *discordgo.VoiceConnection
@@ -281,6 +281,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	// Stop voice connection monitoring
 	p.stopVoiceConnectionMonitor()
 
+	p.VoiceChannelMutex.Lock()
 	// Disconnect from voice to ensure a clean rejoin on next play.
 	// Without this, the voice connection can go stale after reset,
 	// causing the next play command to hang.
@@ -293,6 +294,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 		p.VoiceConnection = nil
 	}
 	p.VoiceChannelID = nil
+	p.VoiceChannelMutex.Unlock()
 	p.reconnectAttempts = 0
 
 	p.Queue.Listening = false
@@ -425,7 +427,15 @@ func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 	log.Debugf("playing: %s", data.Title)
 	p.LastActivityAt = time.Now()
 
-	if err := p.Player.Play(ctx, data, p.VoiceConnection); err != nil {
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if vc == nil {
+		log.Warn("No voice connection available for playback")
+		return
+	}
+
+	if err := p.Player.Play(ctx, data, vc); err != nil {
 		sentryhelper.CaptureException(ctx, err)
 		log.Errorf("Error starting stream: %v", err)
 	}
@@ -469,8 +479,13 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	log.Tracef("got stream for %s", event.Item.Video.Title)
 	event.Item.Stream = stream
 
-	shouldPlay := p.VoiceConnection != nil &&
-		p.VoiceChannelID != nil &&
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	vcid := p.VoiceChannelID
+	p.VoiceChannelMutex.RUnlock()
+
+	shouldPlay := vc != nil &&
+		vcid != nil &&
 		p.CurrentSong == nil &&
 		!p.Player.IsPlaying()
 
@@ -1485,25 +1500,33 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 	p.reconnectAttempts++
 	log.Infof("Voice reconnection attempt %d/%d for guild %s", p.reconnectAttempts, p.maxReconnectAttempts, p.GuildID)
 
-	// Save current state before attempting recovery
+	// Snapshot state before touching anything
 	wasPlaying := p.Player.IsPlaying()
+	savedItem := p.CurrentItem // may be nil; LoadResult inside may also be nil
+
+	p.VoiceChannelMutex.RLock()
 	currentChannelID := p.VoiceChannelID
+	p.VoiceChannelMutex.RUnlock()
 
 	if wasPlaying {
-		// Pause playback during recovery
-		ctx := context.Background()
-		p.Player.Pause(ctx)
-		log.Infof("Paused playback during voice recovery for guild %s", p.GuildID)
+		// Stop (not pause) so the Play() goroutine exits cleanly and releases
+		// its captured voice connection pointer. Resuming on a stale VC after
+		// a reconnect silently loses audio — Stop + relaunch is the safe path.
+		p.Player.Stop()
+		log.Infof("Stopped playback for voice recovery in guild %s", p.GuildID)
 	}
 
-	// Disconnect current connection if it exists
+	// Disconnect the stale connection
+	p.VoiceChannelMutex.Lock()
 	if p.VoiceConnection != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if err := p.VoiceConnection.Disconnect(ctx); err != nil {
 			log.Errorf("Error disconnecting during recovery for guild %s: %v", p.GuildID, err)
 		}
 		cancel()
+		p.VoiceConnection = nil
 	}
+	p.VoiceChannelMutex.Unlock()
 
 	// Attempt to rejoin the voice channel
 	if currentChannelID != nil {
@@ -1521,18 +1544,21 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 			return
 		}
 
-		// Success! Update connection and resume
+		// Success — update the connection under write lock
+		p.VoiceChannelMutex.Lock()
 		p.VoiceConnection = vc
-		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
+		p.VoiceChannelMutex.Unlock()
 
-		// Reset reconnection attempts on success
+		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
 		p.reconnectAttempts = 0
 
-		// Resume playback if we were playing before
-		if wasPlaying {
+		// Relaunch playback with the fresh VC if we were playing before.
+		// We do NOT resume — we call play() directly so it picks up the new
+		// VC pointer instead of the stale one the old goroutine had captured.
+		if wasPlaying && savedItem != nil && savedItem.LoadResult != nil {
 			ctx := context.Background()
-			p.Player.Resume(ctx)
-			log.Infof("Resumed playback after voice recovery for guild %s", p.GuildID)
+			log.Infof("Relaunching playback after voice recovery for guild %s", p.GuildID)
+			go p.play(ctx, savedItem.LoadResult)
 		}
 
 		// Send notification to channel about recovery
