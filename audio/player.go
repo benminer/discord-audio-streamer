@@ -25,8 +25,8 @@ type Player struct {
 	paused            atomic.Bool
 	stopping          atomic.Bool
 	playing           atomic.Bool
-	volume            int
-	fadeOutRemaining  int
+	volume            atomic.Int32
+	fadeOutRemaining  atomic.Int32
 	mutex             sync.Mutex
 	playbackStartTime time.Time
 	playbackPosition  atomic.Int64 // microseconds
@@ -50,15 +50,14 @@ func NewPlayer() (*Player, error) {
 		logger: log.WithFields(log.Fields{
 			"module": "player",
 		}),
-		encoder:          encoder,
-		volume:           100,
-		fadeOutRemaining: 0,
-		mutex:            sync.Mutex{},
-		silenceBuffer:    make([]int16, 960*2),
-		silenceOpus:      make([]byte, 960*4),
+		encoder:       encoder,
+		mutex:         sync.Mutex{},
+		silenceBuffer: make([]int16, 960*2),
+		silenceOpus:   make([]byte, 960*4),
 	}
 	player.paused.Store(false)
 	player.stopping.Store(false)
+	player.volume.Store(100) // default to 100% volume
 	return player, nil
 }
 
@@ -113,11 +112,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			return nil
 		default:
 			// Handle fade-out when pausing or stopping
-			if p.fadeOutRemaining > 0 {
+			if p.fadeOutRemaining.Load() > 0 {
 				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 				if err != nil {
 					if err == io.EOF || err == io.ErrUnexpectedEOF {
-						p.fadeOutRemaining = 0
+						p.fadeOutRemaining.Store(0)
 						if p.stopping.Load() {
 							p.logger.Debug("EOF during fade-out, stopping playback")
 							span.Status = sentry.SpanStatusCanceled
@@ -131,7 +130,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				}
 
 				// Apply fade-out multiplier (cubic fade for sharp curve)
-				t := float64(p.fadeOutRemaining) / 5.0
+				remaining := p.fadeOutRemaining.Load()
+				t := float64(remaining) / 5.0
 				fadeMultiplier := t * t * t
 				for i := range buffer {
 					sample := float64(buffer[i]) * fadeMultiplier
@@ -154,10 +154,10 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					}
 				}
 
-				p.fadeOutRemaining--
+				p.fadeOutRemaining.Add(-1)
 
 				// If we were stopping and fade-out is complete, exit
-				if p.stopping.Load() && p.fadeOutRemaining == 0 {
+				if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
 					p.logger.Debug("Fade-out complete, stopping playback")
 					span.Status = sentry.SpanStatusCanceled
 					return nil
@@ -168,9 +168,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 
 			// Check if we should start fade-out for stop
-			if p.stopping.Load() && p.fadeOutRemaining == 0 {
+			if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
 				p.logger.Debug("Stop requested, starting fade-out")
-				p.fadeOutRemaining = 5
+				p.fadeOutRemaining.Store(5)
 				continue
 			}
 
@@ -241,9 +241,10 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				firstPacket = false
 			}
 
-			if p.volume != 100 {
+			vol := int(p.volume.Load())
+			if vol != 100 {
 				for i := range buffer {
-					sample := float64(buffer[i]) * float64(p.volume) / 100.0
+					sample := float64(buffer[i]) * float64(vol) / 100.0
 					// clamp
 					if sample > 32767 {
 						sample = 32767
@@ -304,8 +305,8 @@ func safeSendOpus(vc *discordgo.VoiceConnection, data []byte, completed <-chan b
 func (p *Player) Pause(ctx context.Context) {
 	_ = ctx // ctx available for future Sentry tracing if needed
 	p.logger.Info("Pausing playback - starting fade-out")
-	if p.fadeOutRemaining == 0 {
-		p.fadeOutRemaining = 5 // 5 frames = 100ms fade-out
+	if p.fadeOutRemaining.Load() == 0 {
+		p.fadeOutRemaining.Store(5) // 5 frames = 100ms fade-out
 	}
 	// Position tracking automatically freezes when paused (checked in Play loop)
 	p.paused.Store(true)
@@ -317,7 +318,7 @@ func (p *Player) Pause(ctx context.Context) {
 func (p *Player) Resume(ctx context.Context) {
 	_ = ctx // ctx available for future Sentry tracing if needed
 	p.logger.Info("Resuming playback")
-	p.fadeOutRemaining = 0 // Cancel any ongoing fade-out
+	p.fadeOutRemaining.Store(0) // Cancel any ongoing fade-out
 	// Position tracking automatically resumes when unpaused (checked in Play loop)
 	p.paused.Store(false)
 	p.Notifications <- PlaybackNotification{
@@ -349,11 +350,11 @@ func (p *Player) SetVolume(volume int) {
 	if volume > 150 {
 		volume = 150
 	}
-	p.volume = volume
+	p.volume.Store(int32(volume))
 }
 
 func (p *Player) GetVolume() int {
-	return p.volume
+	return int(p.volume.Load())
 }
 
 func (p *Player) GetPosition() time.Duration {
