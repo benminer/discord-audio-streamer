@@ -15,8 +15,6 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"gopkg.in/hraban/opus.v2"
-
-	"beatbot/config"
 )
 
 type Player struct {
@@ -44,8 +42,7 @@ func NewPlayer() (*Player, error) {
 	}
 
 	encoder.SetComplexity(10)
-	encoder.SetBitrate(config.Config.Options.AudioBitrate)
-	encoder.SetDTX(true)
+	encoder.SetBitrateToMax()
 
 	playing := false
 
@@ -360,6 +357,18 @@ func (p *Player) SetVolume(volume int) {
 
 func (p *Player) GetVolume() int {
 	return p.volume
+}
+
+// SetEncoderBitrate updates the Opus encoder bitrate to match the Discord
+// voice channel's configured bitrate. Boosted servers support higher limits
+// (128k → 256k → 384k), so this should be called whenever the bot joins or
+// rejoins a channel. Pass 0 to revert to the encoder's maximum.
+func (p *Player) SetEncoderBitrate(bps int) {
+	if bps <= 0 {
+		p.encoder.SetBitrateToMax()
+		return
+	}
+	p.encoder.SetBitrate(bps)
 }
 
 func (p *Player) GetPosition() time.Duration {
