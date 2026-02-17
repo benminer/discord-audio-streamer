@@ -7,7 +7,6 @@ import (
 
 type ConfigStruct struct {
 	Discord    DiscordConfig
-	NGrok      NGrokConfig
 	Tunnel     TunnelConfig
 	Options    Options
 	Youtube    YoutubeConfig
@@ -21,13 +20,7 @@ type DiscordConfig struct {
 	PublicKey string
 }
 
-type NGrokConfig struct {
-	Domain    string
-	AuthToken string
-}
-
 type TunnelConfig struct {
-	Provider           string // "ngrok" or "cloudflare"
 	CloudflareTunnelURL string
 }
 
@@ -52,22 +45,11 @@ type Options struct {
 	EnforceVoiceChannel bool
 	Port                string
 	IdleTimeoutMinutes  int
-	AudioBitrate        int // Audio bitrate in bps (e.g., 96000 for 96 kbps)
-}
-
-func (ngrok *NGrokConfig) IsEnabled() bool {
-	return ngrok.Domain != "" && ngrok.AuthToken != ""
+	AudioBitrate        int 
 }
 
 func (t *TunnelConfig) IsCloudflare() bool {
-	return t.Provider == "cloudflare" && t.CloudflareTunnelURL != ""
-}
-
-func getEnvDefault(key, defaultVal string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	return defaultVal
+	return t.CloudflareTunnelURL != ""
 }
 
 func (options *Options) EnforceVoiceChannelEnabled() bool {
@@ -83,12 +65,7 @@ func NewConfig() {
 			AppID:     os.Getenv("DISCORD_APP_ID"),
 			PublicKey: os.Getenv("DISCORD_PUBLIC_KEY"),
 		},
-		NGrok: NGrokConfig{
-			Domain:    os.Getenv("NGROK_DOMAIN"),
-			AuthToken: os.Getenv("NGROK_AUTHTOKEN"),
-		},
 		Tunnel: TunnelConfig{
-			Provider:           getEnvDefault("TUNNEL_PROVIDER", "ngrok"),
 			CloudflareTunnelURL: os.Getenv("CLOUDFLARE_TUNNEL_URL"),
 		},
 		Options: Options{
@@ -138,7 +115,7 @@ func getPlaylistLimit() int {
 		return 10
 	}
 	if limit > 50 {
-		return 50 // Cap at 50 for API and performance reasons
+		return 50
 	}
 	return limit
 }
@@ -153,7 +130,7 @@ func getYouTubePlaylistLimit() int {
 		return 15
 	}
 	if limit > 50 {
-		return 50 // Cap at 50 (YouTube API max per page)
+		return 50
 	}
 	return limit
 }
@@ -161,19 +138,17 @@ func getYouTubePlaylistLimit() int {
 func getAudioBitrate() int {
 	bitrateStr := os.Getenv("AUDIO_BITRATE")
 	if bitrateStr == "" {
-		return 128000 // Default to 128 kbps - max for regular voice channels
+		return 128000
 	}
 	bitrate, err := strconv.Atoi(bitrateStr)
 	if err != nil || bitrate <= 0 {
 		return 128000
 	}
-	// Discord supports 8 kbps to 512 kbps for Opus
-	// Practical ranges: 8-128 kbps (voice), up to 384 kbps (stage/boost)
 	if bitrate < 8000 {
-		return 8000 // Minimum 8 kbps
+		return 8000
 	}
 	if bitrate > 512000 {
-		return 512000 // Maximum 512 kbps (Discord Opus limit)
+		return 512000
 	}
 	return bitrate
 }
