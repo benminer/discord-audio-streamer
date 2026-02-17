@@ -242,11 +242,14 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
-		Loader:         audio.NewLoader(),
-		Player:         player,
-		LastActivityAt: time.Now(),
-		idleCheckStop:  make(chan struct{}),
-		SongHistory:    NewSongHistory(20),
+		Loader:               audio.NewLoader(),
+		Player:               player,
+		LastActivityAt:       time.Now(),
+		idleCheckStop:        make(chan struct{}),
+		queueListenerStop:    make(chan struct{}),
+		playbackListenerStop: make(chan struct{}),
+		loadListenerStop:     make(chan struct{}),
+		SongHistory:          NewSongHistory(20),
 	}
 
 	session.listenForQueueEvents()
@@ -272,9 +275,21 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
-	// Stop the idle checker
+	// Stop the idle checker and all event listeners
 	select {
 	case p.idleCheckStop <- struct{}{}:
+	default:
+	}
+	select {
+	case p.queueListenerStop <- struct{}{}:
+	default:
+	}
+	select {
+	case p.playbackListenerStop <- struct{}{}:
+	default:
+	}
+	select {
+	case p.loadListenerStop <- struct{}{}:
 	default:
 	}
 
@@ -304,15 +319,23 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 
 	p.Queue.Listening = false
 	p.Queue.Items = nil
+	p.currentSongMutex.Lock()
 	p.CurrentSong = nil
+	p.currentSongMutex.Unlock()
 	p.currentItemMutex.Lock()
 	p.CurrentItem = nil
 	p.currentItemMutex.Unlock()
 	p.LastActivityAt = time.Now()
 
-	// Restart the idle checker
+	// Restart the idle checker and all event listeners with fresh stop channels
 	p.idleCheckStop = make(chan struct{})
+	p.queueListenerStop = make(chan struct{})
+	p.playbackListenerStop = make(chan struct{})
+	p.loadListenerStop = make(chan struct{})
 	p.startIdleChecker()
+	p.listenForQueueEvents()
+	p.listenForPlaybackEvents()
+	p.listenForLoadEvents()
 
 	go discord.SendFollowup(&discord.FollowUpRequest{
 		Token:   interaction.InteractionToken,
@@ -426,7 +449,9 @@ func (p *GuildPlayer) playNext() {
 		}
 	} else {
 		log.Tracef("no more songs in queue, stopping player")
+		p.currentSongMutex.Lock()
 		p.CurrentSong = nil
+		p.currentSongMutex.Unlock()
 	}
 }
 
@@ -493,7 +518,11 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 
 	shouldPlay := vc != nil &&
 		vcid != nil &&
-		p.CurrentSong == nil &&
+		func() bool {
+			p.currentSongMutex.RLock()
+			defer p.currentSongMutex.RUnlock()
+			return p.CurrentSong == nil
+		}() &&
 		!p.Player.IsPlaying()
 
 	// if the player is stopped, or not loading anything, play the next song in the queue
@@ -715,7 +744,10 @@ func (p *GuildPlayer) listenForLoadEvents() {
 				switch event.Event {
 				case audio.PlaybackLoaded:
 					if queueItem != nil && event.LoadResult != nil {
-						if queueIndex == 0 && p.CurrentSong == nil {
+						p.currentSongMutex.RLock()
+						currentSongNil := p.CurrentSong == nil
+						p.currentSongMutex.RUnlock()
+						if queueIndex == 0 && currentSongNil {
 							log.Tracef("loaded song is next up, playing")
 							ctx := queueItem.Context
 							if ctx == nil {
@@ -930,7 +962,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"guild_name": p.getGuildName(),
 						},
 					})
+					p.currentSongMutex.Lock()
 					p.CurrentSong = nil
+					p.currentSongMutex.Unlock()
 					p.speakOnVC(false)
 
 					// Stop now-playing updates
@@ -947,7 +981,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"video_id":   videoID,
 						},
 					})
+					p.currentSongMutex.Lock()
 					p.CurrentSong = nil
+					p.currentSongMutex.Unlock()
 					p.speakOnVC(false)
 
 					// Stop now-playing updates
@@ -996,7 +1032,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				case audio.PlaybackStarted:
 					if queueItem != nil {
 						log.Tracef("playback started for %s", queueItem.Video.Title)
+						p.currentSongMutex.Lock()
 						p.CurrentSong = &queueItem.Video.Title
+						p.currentSongMutex.Unlock()
 						p.currentItemMutex.Lock()
 						p.CurrentItem = queueItem
 						p.currentItemMutex.Unlock()
@@ -1044,7 +1082,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					// if there are more songs in the queue, load the next one
 					p.loadNext()
 				case audio.PlaybackError:
+					p.currentSongMutex.Lock()
 					p.CurrentSong = nil
+					p.currentSongMutex.Unlock()
 					p.currentItemMutex.Lock()
 					p.CurrentItem = nil
 					p.currentItemMutex.Unlock()
