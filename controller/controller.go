@@ -104,7 +104,7 @@ type GuildPlayer struct {
 	GuildID              string
 	CurrentSong          *string
 	Queue                *GuildQueue
-	VoiceChannelMutex    sync.Mutex
+	VoiceChannelMutex    sync.RWMutex
 	VoiceChannelID       *string
 	VoiceJoinedAt        *time.Time
 	VoiceConnection      *discordgo.VoiceConnection
@@ -120,9 +120,10 @@ type GuildPlayer struct {
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
 
-	CurrentItem *GuildQueueItem
-	LoopEnabled bool
-	loopMutex   sync.RWMutex
+	CurrentItem      *GuildQueueItem
+	currentItemMutex sync.RWMutex
+	LoopEnabled      bool
+	loopMutex        sync.RWMutex
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -281,6 +282,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	// Stop voice connection monitoring
 	p.stopVoiceConnectionMonitor()
 
+	p.VoiceChannelMutex.Lock()
 	// Disconnect from voice to ensure a clean rejoin on next play.
 	// Without this, the voice connection can go stale after reset,
 	// causing the next play command to hang.
@@ -293,12 +295,15 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 		p.VoiceConnection = nil
 	}
 	p.VoiceChannelID = nil
+	p.VoiceChannelMutex.Unlock()
 	p.reconnectAttempts = 0
 
 	p.Queue.Listening = false
 	p.Queue.Items = nil
 	p.CurrentSong = nil
+	p.currentItemMutex.Lock()
 	p.CurrentItem = nil
+	p.currentItemMutex.Unlock()
 	p.LastActivityAt = time.Now()
 
 	// Restart the idle checker
@@ -425,7 +430,15 @@ func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 	log.Debugf("playing: %s", data.Title)
 	p.LastActivityAt = time.Now()
 
-	if err := p.Player.Play(ctx, data, p.VoiceConnection); err != nil {
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if vc == nil {
+		log.Warn("No voice connection available for playback")
+		return
+	}
+
+	if err := p.Player.Play(ctx, data, vc); err != nil {
 		sentryhelper.CaptureException(ctx, err)
 		log.Errorf("Error starting stream: %v", err)
 	}
@@ -469,8 +482,13 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 	log.Tracef("got stream for %s", event.Item.Video.Title)
 	event.Item.Stream = stream
 
-	shouldPlay := p.VoiceConnection != nil &&
-		p.VoiceChannelID != nil &&
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	vcid := p.VoiceChannelID
+	p.VoiceChannelMutex.RUnlock()
+
+	shouldPlay := vc != nil &&
+		vcid != nil &&
 		p.CurrentSong == nil &&
 		!p.Player.IsPlaying()
 
@@ -548,6 +566,17 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	log.Tracef("joined voice channel: %s", voiceState.ChannelID)
 
 	return nil
+}
+
+// speakOnVC safely calls Speaking() on the current voice connection under RLock.
+// Safe to call from any goroutine; no-ops if the connection is nil.
+func (p *GuildPlayer) speakOnVC(speaking bool) {
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if vc != nil {
+		vc.Speaking(speaking)
+	}
 }
 
 // getGuildName looks up the guild name from Discord, falling back to ID if unavailable
@@ -836,7 +865,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						"guild_name": p.getGuildName(),
 					},
 				})
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				// Update now-playing card state
 				if p.nowPlayingCurrentItem != nil {
@@ -856,7 +885,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						"guild_name": p.getGuildName(),
 					},
 				})
-				p.VoiceConnection.Speaking(true)
+				p.speakOnVC(true)
 
 				// Update now-playing card state
 				if p.nowPlayingCurrentItem != nil {
@@ -877,7 +906,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					},
 				})
 				p.CurrentSong = nil
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				// Stop now-playing updates
 				p.stopNowPlayingUpdates()
@@ -894,18 +923,21 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					},
 				})
 				p.CurrentSong = nil
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				// Stop now-playing updates
 				p.stopNowPlayingUpdates()
 				p.clearNowPlayingCard()
 
 				// Loop current song if enabled
-				if p.IsLoopEnabled() && p.CurrentItem != nil {
-					log.Debugf("Loop enabled, requeuing current song: %s", p.CurrentItem.Video.Title)
+				p.currentItemMutex.RLock()
+				currentItemForLoop := p.CurrentItem
+				p.currentItemMutex.RUnlock()
+				if p.IsLoopEnabled() && currentItemForLoop != nil {
+					log.Debugf("Loop enabled, requeuing current song: %s", currentItemForLoop.Video.Title)
 					newItem := &GuildQueueItem{
-						Video:          p.CurrentItem.Video,
-						ProbedDuration: p.CurrentItem.ProbedDuration,
+						Video:          currentItemForLoop.Video,
+						ProbedDuration: currentItemForLoop.ProbedDuration,
 						AddedAt:        time.Now(),
 						LoadAttempts:   0,
 						MaxAttempts:    3,
@@ -926,7 +958,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						log.Warnf("Failed to notify loop requeue for guild %s: %s", p.GuildID, newItem.Video.Title)
 					}
 				}
+				p.currentItemMutex.Lock()
 				p.CurrentItem = nil
+				p.currentItemMutex.Unlock()
 
 				p.playNext()
 
@@ -938,7 +972,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				if queueItem != nil {
 					log.Tracef("playback started for %s", queueItem.Video.Title)
 					p.CurrentSong = &queueItem.Video.Title
+					p.currentItemMutex.Lock()
 					p.CurrentItem = queueItem
+					p.currentItemMutex.Unlock()
 					sentry.AddBreadcrumb(&sentry.Breadcrumb{
 						Category: "playback",
 						Message:  "Playback started: " + queueItem.Video.Title,
@@ -977,15 +1013,17 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						}
 					}
 				}
-				p.VoiceConnection.Speaking(true)
+				p.speakOnVC(true)
 				// once a song starts playback, we can pop it from the queue
 				p.popQueue()
 				// if there are more songs in the queue, load the next one
 				p.loadNext()
 			case audio.PlaybackError:
 				p.CurrentSong = nil
+				p.currentItemMutex.Lock()
 				p.CurrentItem = nil
-				p.VoiceConnection.Speaking(false)
+				p.currentItemMutex.Unlock()
+				p.speakOnVC(false)
 
 				err := event.Error
 
@@ -1449,10 +1487,13 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 			case <-p.voiceMonitorStop:
 				return
 			case <-ticker.C:
-				if p.VoiceConnection != nil {
+				p.VoiceChannelMutex.RLock()
+				vc := p.VoiceConnection
+				p.VoiceChannelMutex.RUnlock()
+				if vc != nil {
 					// Check if connection is in a failed state
-					if p.VoiceConnection.Status != discordgo.VoiceConnectionStatusReady {
-						log.Warnf("Voice connection not ready for guild %s, status: %v", p.GuildID, p.VoiceConnection.Status)
+					if vc.Status != discordgo.VoiceConnectionStatusReady {
+						log.Warnf("Voice connection not ready for guild %s, status: %v", p.GuildID, vc.Status)
 
 						// If we're currently playing, attempt recovery
 						if p.Player.IsPlaying() {
@@ -1485,25 +1526,38 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 	p.reconnectAttempts++
 	log.Infof("Voice reconnection attempt %d/%d for guild %s", p.reconnectAttempts, p.maxReconnectAttempts, p.GuildID)
 
-	// Save current state before attempting recovery
-	wasPlaying := p.Player.IsPlaying()
-	currentChannelID := p.VoiceChannelID
+	// Snapshot current item under its lock before touching anything else.
+	// We key off savedItem (not wasPlaying) because when the VC drops,
+	// safeSendOpus may have already caused Play() to exit — so IsPlaying()
+	// can return false even though a song was interrupted. CurrentItem
+	// persists through PlaybackStopped, making it the reliable signal.
+	p.currentItemMutex.RLock()
+	savedItem := p.CurrentItem
+	p.currentItemMutex.RUnlock()
 
-	if wasPlaying {
-		// Pause playback during recovery
-		ctx := context.Background()
-		p.Player.Pause(ctx)
-		log.Infof("Paused playback during voice recovery for guild %s", p.GuildID)
+	p.VoiceChannelMutex.RLock()
+	currentChannelID := p.VoiceChannelID
+	p.VoiceChannelMutex.RUnlock()
+
+	// Stop cleanly if still playing; may already be stopped if safeSendOpus
+	// failed mid-frame and Play() exited on its own. Either way, Stop() is
+	// lockless (just an atomic store) so it's always safe to call.
+	if p.Player.IsPlaying() {
+		p.Player.Stop()
+		log.Infof("Stopped playback for voice recovery in guild %s", p.GuildID)
 	}
 
-	// Disconnect current connection if it exists
+	// Disconnect the stale connection
+	p.VoiceChannelMutex.Lock()
 	if p.VoiceConnection != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if err := p.VoiceConnection.Disconnect(ctx); err != nil {
 			log.Errorf("Error disconnecting during recovery for guild %s: %v", p.GuildID, err)
 		}
 		cancel()
+		p.VoiceConnection = nil
 	}
+	p.VoiceChannelMutex.Unlock()
 
 	// Attempt to rejoin the voice channel
 	if currentChannelID != nil {
@@ -1521,18 +1575,36 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 			return
 		}
 
-		// Success! Update connection and resume
+		// Success — update the connection under write lock
+		p.VoiceChannelMutex.Lock()
 		p.VoiceConnection = vc
-		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
+		p.VoiceChannelMutex.Unlock()
 
-		// Reset reconnection attempts on success
+		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
 		p.reconnectAttempts = 0
 
-		// Resume playback if we were playing before
-		if wasPlaying {
-			ctx := context.Background()
-			p.Player.Resume(ctx)
-			log.Infof("Resumed playback after voice recovery for guild %s", p.GuildID)
+		// Re-queue the interrupted song at the front of the queue for a
+		// fresh load. We never replay savedItem.LoadResult — it's a one-shot
+		// pipe that Play() partially consumed; trying to reuse it hits EOF.
+		// Prepending a fresh item and calling playNext() is safe and clean.
+		if savedItem != nil {
+			freshItem := &GuildQueueItem{
+				Video:          savedItem.Video,
+				ProbedDuration: savedItem.ProbedDuration,
+				AddedAt:        time.Now(),
+				LoadAttempts:   0,
+				MaxAttempts:    3,
+				Context:        context.Background(),
+				IsRadioPick:    savedItem.IsRadioPick,
+				Interaction:    savedItem.Interaction,
+				LoadResult:     nil, // force fresh load — do not reuse consumed pipe
+				Stream:         nil,
+			}
+			p.Queue.Mutex.Lock()
+			p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
+			p.Queue.Mutex.Unlock()
+			log.Infof("Re-queued '%s' for fresh playback after voice recovery", savedItem.Video.Title)
+			p.playNext()
 		}
 
 		// Send notification to channel about recovery

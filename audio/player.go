@@ -24,7 +24,7 @@ type Player struct {
 	encoder           *opus.Encoder
 	paused            atomic.Bool
 	stopping          atomic.Bool
-	playing           *bool
+	playing           atomic.Bool
 	volume            int
 	fadeOutRemaining  int
 	mutex             sync.Mutex
@@ -44,8 +44,6 @@ func NewPlayer() (*Player, error) {
 	encoder.SetComplexity(10)
 	encoder.SetBitrateToMax()
 
-	playing := false
-
 	player := &Player{
 		completed:     make(chan bool),
 		Notifications: make(chan PlaybackNotification, 100),
@@ -53,7 +51,6 @@ func NewPlayer() (*Player, error) {
 			"module": "player",
 		}),
 		encoder:          encoder,
-		playing:          &playing,
 		volume:           100,
 		fadeOutRemaining: 0,
 		mutex:            sync.Mutex{},
@@ -80,12 +77,12 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			p.logger.Warnf("Recovered from panic during playback: %v", r)
 			sentry.CaptureMessage(fmt.Sprintf("Recovered from playback panic: %v", r))
 		}
-		*p.playing = false
+		p.playing.Store(false)
 		p.mutex.Unlock()
 		span.Finish()
 	}()
 
-	*p.playing = true
+	p.playing.Store(true)
 	p.stopping.Store(false) // Reset stopping flag for new song
 	// Initialize position tracking
 	p.playbackStartTime = time.Now()
@@ -334,7 +331,7 @@ func (p *Player) Stop() {
 }
 
 func (p *Player) IsPlaying() bool {
-	isPlaying := *p.playing
+	isPlaying := p.playing.Load()
 	p.logger.Tracef("Player is playing: %t", isPlaying)
 	return isPlaying
 }
@@ -360,7 +357,7 @@ func (p *Player) GetVolume() int {
 }
 
 func (p *Player) GetPosition() time.Duration {
-	if p.playing == nil || !*p.playing {
+	if !p.playing.Load() {
 		return 0
 	}
 

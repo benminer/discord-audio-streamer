@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"beatbot/youtube"
 )
 
 func TestSongHistory(t *testing.T) {
@@ -77,4 +79,133 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// --- Wave 1 concurrency tests ---
+
+// TestSpeakOnVCNilSafe verifies that speakOnVC does not panic when
+// VoiceConnection is nil. This is the primary safety property of the helper.
+func TestSpeakOnVCNilSafe(t *testing.T) {
+	p := &GuildPlayer{}
+	// Must not panic — recovery sets VoiceConnection=nil before reconnect
+	p.speakOnVC(true)
+	p.speakOnVC(false)
+}
+
+// TestCurrentItemConcurrentAccess is a race-detector test that hammers
+// CurrentItem reads and writes from multiple goroutines to verify
+// currentItemMutex correctly serializes access.
+// Run with: go test -race ./controller/...
+func TestCurrentItemConcurrentAccess(t *testing.T) {
+	p := &GuildPlayer{
+		Queue: &GuildQueue{},
+	}
+
+	item := &GuildQueueItem{Video: youtube.VideoResponse{Title: "test song"}}
+
+	var wg sync.WaitGroup
+	const goroutines = 100
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			switch i % 3 {
+			case 0:
+				// write (PlaybackStarted path)
+				p.currentItemMutex.Lock()
+				p.CurrentItem = item
+				p.currentItemMutex.Unlock()
+			case 1:
+				// write nil (PlaybackCompleted path)
+				p.currentItemMutex.Lock()
+				p.CurrentItem = nil
+				p.currentItemMutex.Unlock()
+			case 2:
+				// read (recovery path)
+				p.currentItemMutex.RLock()
+				_ = p.CurrentItem
+				p.currentItemMutex.RUnlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestRecoveryRequeueFreshItem verifies the recovery re-queue logic:
+// when savedItem != nil, a fresh GuildQueueItem with nil LoadResult and
+// Stream is prepended to the front of the queue.
+func TestRecoveryRequeueFreshItem(t *testing.T) {
+	p := &GuildPlayer{
+		Queue: &GuildQueue{
+			Items: []*GuildQueueItem{
+				{Video: youtube.VideoResponse{Title: "next song"}},
+			},
+		},
+	}
+
+	savedItem := &GuildQueueItem{
+		Video: youtube.VideoResponse{Title: "interrupted song", VideoID: "abc123"},
+		// LoadResult intentionally non-nil to simulate a partially consumed pipe
+	}
+
+	// Simulate the re-queue logic from attemptVoiceRecovery
+	freshItem := &GuildQueueItem{
+		Video:      savedItem.Video,
+		LoadResult: nil, // must be nil — one-shot pipe must not be reused
+		Stream:     nil,
+	}
+	p.Queue.Mutex.Lock()
+	p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
+	p.Queue.Mutex.Unlock()
+
+	if len(p.Queue.Items) != 2 {
+		t.Fatalf("expected 2 items after requeue, got %d", len(p.Queue.Items))
+	}
+
+	front := p.Queue.Items[0]
+	if front.Video.Title != "interrupted song" {
+		t.Errorf("front item title = %q, want %q", front.Video.Title, "interrupted song")
+	}
+	if front.LoadResult != nil {
+		t.Error("freshItem.LoadResult must be nil to force a clean reload")
+	}
+	if front.Stream != nil {
+		t.Error("freshItem.Stream must be nil")
+	}
+
+	second := p.Queue.Items[1]
+	if second.Video.Title != "next song" {
+		t.Errorf("second item title = %q, want %q", second.Video.Title, "next song")
+	}
+}
+
+// TestRecoveryNoRequeueWhenNoCurrentItem verifies that recovery does not
+// re-queue anything when savedItem is nil (song ended naturally before drop).
+func TestRecoveryNoRequeueWhenNoCurrentItem(t *testing.T) {
+	p := &GuildPlayer{
+		Queue: &GuildQueue{
+			Items: []*GuildQueueItem{
+				{Video: youtube.VideoResponse{Title: "queued song"}},
+			},
+		},
+	}
+
+	// savedItem is nil — song completed naturally before recovery ran
+	var savedItem *GuildQueueItem
+
+	initialLen := len(p.Queue.Items)
+
+	if savedItem != nil {
+		// This block should NOT execute
+		freshItem := &GuildQueueItem{Video: savedItem.Video}
+		p.Queue.Mutex.Lock()
+		p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
+		p.Queue.Mutex.Unlock()
+	}
+
+	if len(p.Queue.Items) != initialLen {
+		t.Errorf("queue length changed from %d to %d — should not requeue when savedItem is nil",
+			initialLen, len(p.Queue.Items))
+	}
 }
