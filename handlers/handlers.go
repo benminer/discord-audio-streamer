@@ -2198,6 +2198,54 @@ func (manager *Manager) handleMessageComponent(interaction *Interaction) Respons
 		return manager.handleSkip(ctx, transaction, interaction)
 	case "stop":
 		return manager.handlePause(ctx, interaction)
+	case "prev":
+		// Prev is currently disabled in the UI; no-op if somehow triggered
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "Previous track is not yet supported",
+				Flags:   64,
+			},
+		}
+	case "voldown":
+		player := manager.Controller.GetPlayer(guildID)
+		newVol := player.Player.GetVolume() - 10
+		if newVol < 0 {
+			newVol = 0
+		}
+		player.Player.SetVolume(newVol)
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: fmt.Sprintf("Volume: %d%%", newVol),
+				Flags:   64,
+			},
+		}
+	case "volup":
+		player := manager.Controller.GetPlayer(guildID)
+		newVol := player.Player.GetVolume() + 10
+		if newVol > 100 {
+			newVol = 100
+		}
+		player.Player.SetVolume(newVol)
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: fmt.Sprintf("Volume: %d%%", newVol),
+				Flags:   64,
+			},
+		}
+	case "queue":
+		ctx2, transaction := sentryhelper.StartCommandTransaction(
+			ctx,
+			"button_queue",
+			interaction.GuildID,
+			interaction.Member.User.ID,
+		)
+		defer transaction.Finish()
+		return manager.handleView(ctx2, transaction, interaction)
+	case "shuffle":
+		return manager.handleShuffle(interaction)
 	default:
 		log.Errorf("Unknown button action: %s", action)
 		return Response{
