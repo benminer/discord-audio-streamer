@@ -119,11 +119,11 @@ A simple bot implementation for playing audio in Discord voice channels using [y
     ```bash
     docker run -d --name discord-music-bot \
       --restart always \
-      --memory=&quot;1g&quot; \
-      --memory-reservation=&quot;512m&quot; \
-      --memory-swap=&quot;2g&quot; \
-      --cpus=&quot;2&quot; \
-      --cpu-shares=&quot;2048&quot; \
+      --memory="1g" \
+      --memory-reservation="512m" \
+      --memory-swap="2g" \
+      --cpus="2" \
+      --cpu-shares="2048" \
       -e DISCORD_APP_ID=$DISCORD_APP_ID \
       -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
       -e DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN \
@@ -168,11 +168,11 @@ Generates personality-driven responses for song announcements, help messages, an
 
 ## Development
 
-This project was created for personal use in a private Discord server. While you&#39;re welcome to use and modify it, please note it&#39;s not maintained as a product or service.
+This project was created for personal use in a private Discord server. While you're welcome to use and modify it, please note it's not maintained as a product or service.
 
 ## Acknowledgments
 
-- [DiscordGo](https://github.com/bwmarrin/discordgo) - Go package for Discord bots (uses [MohmmedAshraf&#39;s fork](https://github.com/MohmmedAshraf/discordgo) with voice encryption fixes)
+- [DiscordGo](https://github.com/bwmarrin/discordgo) - Go package for Discord bots (uses [MohmmedAshraf's fork](https://github.com/MohmmedAshraf/discordgo) with voice encryption fixes)
 - [Opus](https://gopkg.in/hraban/opus.v2) - Go bindings for the Opus audio codec
 
 ## License

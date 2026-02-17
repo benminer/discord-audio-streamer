@@ -5,28 +5,28 @@
 source .env
 
 should_rebuild=false
-if [ &quot;$1&quot; == &quot;rebuild&quot; ]; then
+if [ "$1" == "rebuild" ]; then
     should_rebuild=true
-    echo &quot;Rebuilding Docker image for ARM64...&quot;
+    echo "Rebuilding Docker image for ARM64..."
     docker build --platform linux/arm64 -t benminer/discord-audio-streamer:latest ./
 fi
 
 # --- Stop existing cloudflared tunnel ---
-if pgrep -f &quot;cloudflared tunnel run beatbot&quot; &gt; /dev/null; then
-    echo &quot;Stopping cloudflared beatbot tunnel...&quot;
-    pkill -f &quot;cloudflared tunnel run beatbot&quot;
+if pgrep -f "cloudflared tunnel run beatbot" > /dev/null; then
+    echo "Stopping cloudflared beatbot tunnel..."
+    pkill -f "cloudflared tunnel run beatbot"
     sleep 1
 fi
 
 # --- Remove existing container ---
-if docker ps -a --format '{{.Names}}' | grep -q &quot;^discord-audio-streamer$&quot;; then
-    echo &quot;Removing existing container...&quot;
+if docker ps -a --format '{{.Names}}' | grep -q "^discord-audio-streamer$"; then
+    echo "Removing existing container..."
     docker rm -f discord-audio-streamer
 fi
 
 # --- Start Docker container ---
 # Port 8080 always exposed so cloudflared can reach it
-echo &quot;Starting discord-audio-streamer container...&quot;
+echo "Starting discord-audio-streamer container..."
 docker run -d --name discord-audio-streamer \
   --restart always \
   -p 8080:8080 \
@@ -49,20 +49,20 @@ docker run -d --name discord-audio-streamer \
   benminer/discord-audio-streamer:latest
 
 # --- Wait for container to be ready ---
-echo &quot;Waiting for bot to be ready on :8080...&quot;
+echo "Waiting for bot to be ready on :8080..."
 for i in $(seq 1 15); do
-    if curl -s http://localhost:8080/health &gt; /dev/null 2&gt;&amp;1 || curl -s http://localhost:8080 &gt; /dev/null 2&gt;&amp;1; then
-        echo &quot;Bot is up!&quot;
+    if curl -s http://localhost:8080/health > /dev/null 2>&1 || curl -s http://localhost:8080 > /dev/null 2>&1; then
+        echo "Bot is up!"
         break
     fi
     sleep 2
 done
 
 # --- Start cloudflared tunnel ---
-echo &quot;Starting cloudflared beatbot tunnel...&quot;
-cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot &gt; ~/.openclaw/logs/cloudflared-beatbot.log 2&gt;&amp;1 &amp;
-echo &quot;Cloudflare tunnel started (PID: $!)&quot;
+echo "Starting cloudflared beatbot tunnel..."
+cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot > ~/.openclaw/logs/cloudflared-beatbot.log 2>&1 &
+echo "Cloudflare tunnel started (PID: $!)"
 
-echo &quot;&quot;
-echo &quot;=== Done ===&quot;
-echo &quot;URL: https://beatbot.bensserver.com&quot;
+echo ""
+echo "=== Done ==="
+echo "URL: https://beatbot.bensserver.com"
