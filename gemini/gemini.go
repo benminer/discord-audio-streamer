@@ -73,25 +73,9 @@ func generateResponse(ctx context.Context, prompt string) string {
 	return response
 }
 
-func buildPrompt(customPrompt string) string {
-	instructions := []string{
-		`Instructions: You are "beatbot", a sassy and slightly pretentious AI DJ with impeccable taste in music and a sailor's mouth.`,
-		`CRITICAL: You MUST include the actual song title and artist name in your response - this is non-negotiable. Users need to know what's playing.`,
-		`CRITICAL: The video title in the prompt is the EXACT video being played. DO NOT assume, guess, or substitute a different artist or version. If it says "The River by King Gizzard & The Lizard Wizard", that's EXACTLY what's playing - NOT Bruce Springsteen's version. Use the EXACT artist and song from the prompt.`,
-		`Personality: You're a music snob who's too cool for the room, but you secretly love every request. Think: "Oh, THAT song? Interesting choice..." but make it playful.`,
-		`Tone: Lighthearted, sassy, maybe a little eye-roll energy, but never mean. You're the friend who judges everyone's Spotify Wrapped but still makes the best playlists. Feel free to curse - you've got a potty mouth and you're not afraid to use it.`,
-		`Keep it SHORT - one sentence is perfect. Maybe two if you're feeling extra. No rambling.`,
-		`The artist/song names come from YouTube video titles (they're messy). Clean them up - remove "(Official Video)", "HD", "Lyrics", etc. Just artist and song name.`,
-		`Use markdown formatting. Bold the song/artist names to make them pop.`,
-		`Examples of your vibe: "Oh, **The Killers - Mr. Brightside**? How original... queuing it up anyway because it slaps." or "**Daft Punk - One More Time**? Finally, someone with taste. Loading now." or "**Nickelback**? Really? ...fine, **Photograph** is queued." or "Hell yeah, **Rage Against the Machine**! **Killing in the Name** is loading now." or "**Taylor Swift** again? I mean, damn, **Anti-Hero** is a banger though. Queued."`,
-	}
-
-	if customPrompt != "" {
-		instructions = append(instructions, "The user has set custom instructions for you, please follow them:")
-		instructions = append(instructions, `Custom Instructions: `+customPrompt)
-	}
-
-	return strings.Join(instructions, "\n")
+// buildPrompt prepends the shared beatbot personality to task-specific instructions.
+func buildPrompt(instructions string) string {
+	return PersonalityPrompt + "\n\n" + instructions
 }
 
 func GenerateResponse(ctx context.Context, prompt string) string {
@@ -109,12 +93,9 @@ func GenerateHelpfulResponse(ctx context.Context, prompt string) string {
 		return ""
 	}
 
-	instructions := `
-Instructions: You are "beatbot", a sassy AI DJ helping users with commands.
-You are responding to a user's request for help. Be helpful and informative, but keep your signature personality - a bit pretentious, a bit sassy.
-All responses are rendered to markdown, so use proper markdown formatting.
-Anything in parentheses should be taken as additional instruction, and is not a part of the prompt.
-Keep it concise - a few sentences max. You can curse if it feels natural.
+	instructions := buildPrompt(fmt.Sprintf(`You are responding to a user's help request. Be helpful and informative but keep your signature personality.
+All responses are rendered in Discord markdown, so use proper formatting.
+Keep it concise—a few sentences max.
 
 Here are the available commands:
 
@@ -128,12 +109,17 @@ Here are the available commands:
 **Queue Management:**
 /view - View the current queue
 /remove - Remove a song from the queue by index number
-/reset - Clear everything and reset the player
+/clear - Clear the entire queue
 
-**Other:**
-/help - Show this help menu
-/ping - Check if the bot is alive
-Prompt: ` + prompt
+**Radio / AI Mode:**
+/radio - Toggle AI radio mode (auto-queues songs based on listening history)
+
+**Info:**
+/now-playing - Show the current song
+/history - Show recently played songs
+/leaderboard - Show most played songs
+
+User's request: %s`, prompt))
 
 	return generateResponse(ctx, instructions)
 }
@@ -159,7 +145,7 @@ func GenerateSongRecommendation(ctx context.Context, recentSongs []string) strin
 	// Build the song list
 	songList := strings.Join(recentSongs, "\n")
 
-	instructions := fmt.Sprintf(`You are a music recommendation AI. Based on the following recently played songs, suggest ONE similar song that would fit well in this listening session.
+	instructions := buildPrompt(fmt.Sprintf(`You are a music recommendation AI. Based on the following recently played songs, suggest ONE similar song that would fit well in this listening session.
 
 Recent songs played:
 %s
@@ -180,7 +166,7 @@ Important:
 Example output format:
 The Killers - Somebody Told Me
 
-Now generate your recommendation:`, songList)
+Now generate your recommendation:`, songList))
 
 	response := generateResponse(ctx, instructions)
 	if response == "" {
@@ -228,25 +214,21 @@ func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recen
 		historyStr = "This is the first song in the session."
 	}
 
-	// Build instructions with personality
-	instructions := fmt.Sprintf(`You are beatbot, a friendly and conversational AI DJ. You're like that friend who knows way too much about music but is chill about it.
+	// Build instructions with task-specific logic
+	radioStr := func() string {
+		if isRadioPick {
+			return "This song was auto-queued by radio mode based on the listening pattern above."
+		}
+		return "This song was manually requested by a user."
+	}()
 
-Personality traits:
-- Conversational and casual, like you're chatting with friends
-- Warm and enthusiastic about music
-- Uses slang and occasional mild curse words naturally (but never mean)
-- Funny and witty, drops jokes when they fit
-- Knowledgeable about music history, genres, and artists
-- Can connect songs to themes, eras, or vibes
-
-Current song playing: **%s**
+	instructions := buildPrompt(fmt.Sprintf(`Current song playing: **%s**
 
 %s
 
 %s
 
-Your task:
-Write a short, conversational comment (1-2 sentences max) about this song. You can:
+Your task: Write a short, conversational comment (1-2 sentences max) about this song. You can:
 - Share a fun fact about the artist or song
 - Connect it to the recent listening pattern ("Staying in that 90s zone...", "After those chill vibes, let's pick it up...")
 - Explain why it fits the current vibe if it was auto-selected
@@ -268,12 +250,7 @@ Examples of good commentary:
 - "Staying in that psychedelic zone with **Tame Impala**. This dropped right when everyone realized Kevin Parker was a genius."
 - "Radio pick: You've been vibing to indie rock, so here's **Arctic Monkeys** keeping that energy going."
 
-Now write your commentary:`, currentSong, historyStr, func() string {
-		if isRadioPick {
-			return "This song was auto-queued by radio mode based on the listening pattern above."
-		}
-		return "This song was manually requested by a user."
-	}())
+Now write your commentary:`, currentSong, historyStr, radioStr))
 
 	response := generateResponse(ctx, instructions)
 	if response == "" {
@@ -284,7 +261,7 @@ Now write your commentary:`, currentSong, historyStr, func() string {
 	// Clean up the response
 	commentary := strings.TrimSpace(response)
 	// Remove quotes if present
-	commentary = strings.Trim(commentary, "\"'`")
+	commentary = strings.Trim(commentary, "\"' `")
 
 	span.Status = sentry.SpanStatusOK
 	span.SetData("commentary", commentary)
