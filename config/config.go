@@ -45,7 +45,7 @@ type Options struct {
 	EnforceVoiceChannel bool
 	Port                string
 	IdleTimeoutMinutes  int
-	AudioBitrate        int 
+	AudioBitrate        int // Audio bitrate in bps (e.g., 96000 for 96 kbps)
 }
 
 func (t *TunnelConfig) IsCloudflare() bool {
@@ -115,7 +115,7 @@ func getPlaylistLimit() int {
 		return 10
 	}
 	if limit > 50 {
-		return 50
+		return 50 // Cap at 50 for API and performance reasons
 	}
 	return limit
 }
@@ -130,7 +130,7 @@ func getYouTubePlaylistLimit() int {
 		return 15
 	}
 	if limit > 50 {
-		return 50
+		return 50 // Cap at 50 (YouTube API max per page)
 	}
 	return limit
 }
@@ -138,17 +138,19 @@ func getYouTubePlaylistLimit() int {
 func getAudioBitrate() int {
 	bitrateStr := os.Getenv("AUDIO_BITRATE")
 	if bitrateStr == "" {
-		return 128000
+		return 128000 // Default to 128 kbps - max for regular voice channels
 	}
 	bitrate, err := strconv.Atoi(bitrateStr)
 	if err != nil || bitrate <= 0 {
 		return 128000
 	}
+	// Discord supports 8 kbps to 512 kbps for Opus
+	// Practical ranges: 8-128 kbps (voice), up to 384 kbps (stage/boost)
 	if bitrate < 8000 {
-		return 8000
+		return 8000 // Minimum 8 kbps
 	}
 	if bitrate > 512000 {
-		return 512000
+		return 512000 // Maximum 512 kbps (Discord Opus limit)
 	}
 	return bitrate
 }
