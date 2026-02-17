@@ -120,6 +120,10 @@ type GuildPlayer struct {
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
 
+	CurrentItem           *GuildQueueItem
+	LoopEnabled           bool
+	loopMutex             sync.RWMutex
+
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
 	NowPlayingChannelID   *string
@@ -294,6 +298,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.Queue.Listening = false
 	p.Queue.Items = nil
 	p.CurrentSong = nil
+	p.CurrentItem = nil
 	p.LastActivityAt = time.Now()
 
 	// Restart the idle checker
@@ -895,6 +900,34 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				p.stopNowPlayingUpdates()
 				p.clearNowPlayingCard()
 
+				// Loop current song if enabled
+				if p.IsLoopEnabled() && p.CurrentItem != nil {
+					log.Debugf("Loop enabled, requeuing current song: %s", p.CurrentItem.Video.Title)
+					newItem := &GuildQueueItem{
+						Video:          p.CurrentItem.Video,
+						ProbedDuration: p.CurrentItem.ProbedDuration,
+						AddedAt:        time.Now(),
+						LoadAttempts:   0,
+						MaxAttempts:    3,
+						Context:        sentryhelper.DetachFromTransaction(context.Background()),
+						Commentary:     "",
+						IsRadioPick:    false,
+						Interaction:    nil,
+						LoadResult:     nil,
+						Stream:         nil,
+					}
+					p.Queue.Mutex.Lock()
+					p.Queue.Items = append([]*GuildQueueItem{newItem}, p.Queue.Items...)
+					p.Queue.Mutex.Unlock()
+					select {
+					case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: newItem}:
+						log.Debugf("Loop requeue notified for guild %s: %s", p.GuildID, newItem.Video.Title)
+					default:
+						log.Warnf("Failed to notify loop requeue for guild %s: %s", p.GuildID, newItem.Video.Title)
+					}
+				}
+				p.CurrentItem = nil
+
 				p.playNext()
 
 				// If radio is enabled and queue is empty, auto-queue a similar song
@@ -905,6 +938,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				if queueItem != nil {
 					log.Tracef("playback started for %s", queueItem.Video.Title)
 					p.CurrentSong = &queueItem.Video.Title
+					p.CurrentItem = queueItem
 					sentry.AddBreadcrumb(&sentry.Breadcrumb{
 						Category: "playback",
 						Message:  "Playback started: " + queueItem.Video.Title,
@@ -950,6 +984,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				p.loadNext()
 			case audio.PlaybackError:
 				p.CurrentSong = nil
+				p.CurrentItem = nil
 				p.VoiceConnection.Speaking(false)
 
 				err := event.Error
@@ -1059,6 +1094,19 @@ func (p *GuildPlayer) IsRadioEnabled() bool {
 	p.radioMutex.Lock()
 	defer p.radioMutex.Unlock()
 	return p.RadioEnabled
+}
+
+func (p *GuildPlayer) ToggleLoop() bool {
+	p.loopMutex.Lock()
+	defer p.loopMutex.Unlock()
+	p.LoopEnabled = !p.LoopEnabled
+	return p.LoopEnabled
+}
+
+func (p *GuildPlayer) IsLoopEnabled() bool {
+	p.loopMutex.RLock()
+	defer p.loopMutex.RUnlock()
+	return p.LoopEnabled
 }
 
 // ExtractArtist parses common YouTube music title formats to extract the artist name.

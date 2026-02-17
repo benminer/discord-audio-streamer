@@ -99,6 +99,16 @@ func (d *Database) migrate() error {
 			PRIMARY KEY (guild_id, user_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_cache_lookup ON user_cache(guild_id, user_id)`,
+		`CREATE TABLE IF NOT EXISTS user_favorites (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id TEXT NOT NULL,
+			guild_id TEXT NOT NULL,
+			video_id TEXT NOT NULL,
+			title TEXT NOT NULL,
+			url TEXT NOT NULL DEFAULT '',
+			added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_favorites_user_guild ON user_favorites(guild_id, user_id)`,
 	}
 
 	for _, m := range migrations {
@@ -279,4 +289,79 @@ func (d *Database) GetOrFetchUsername(guildID, userID string) string {
 	}
 
 	return "Unknown"
+}
+
+// UserFavoriteRecord represents a user's saved favorite song.
+type UserFavoriteRecord struct {
+	ID      int64
+	UserID  string
+	GuildID string
+	VideoID string
+	Title   string
+	URL     string
+	AddedAt time.Time
+}
+
+// AddFavorite saves a song to a user's favorites. Silently ignores duplicates.
+func (d *Database) AddFavorite(userID, guildID, videoID, title, url string) error {
+	_, err := d.db.Exec(
+		`INSERT OR IGNORE INTO user_favorites (user_id, guild_id, video_id, title, url) VALUES (?, ?, ?, ?, ?)`,
+		userID, guildID, videoID, title, url,
+	)
+	return err
+}
+
+// IsFavorite returns true if the user has already saved this song.
+func (d *Database) IsFavorite(userID, guildID, videoID string) bool {
+	var count int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM user_favorites WHERE user_id = ? AND guild_id = ? AND video_id = ?`,
+		userID, guildID, videoID,
+	).Scan(&count)
+	return err == nil && count > 0
+}
+
+// GetFavorites returns a user's saved favorites for a guild, newest first.
+func (d *Database) GetFavorites(userID, guildID string, limit int) ([]UserFavoriteRecord, error) {
+	rows, err := d.db.Query(
+		`SELECT id, user_id, guild_id, video_id, title, url, added_at
+		 FROM user_favorites
+		 WHERE user_id = ? AND guild_id = ?
+		 ORDER BY added_at DESC
+		 LIMIT ?`,
+		userID, guildID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []UserFavoriteRecord
+	for rows.Next() {
+		var r UserFavoriteRecord
+		var addedAt string
+		if err := rows.Scan(&r.ID, &r.UserID, &r.GuildID, &r.VideoID, &r.Title, &r.URL, &addedAt); err != nil {
+			return nil, err
+		}
+		r.AddedAt, _ = time.Parse("2006-01-02 15:04:05", addedAt)
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// RemoveFavoriteByIndex removes the Nth favorite (1-based) for a user in a guild.
+// Returns the title of the removed song, or empty string if not found.
+func (d *Database) RemoveFavoriteByIndex(userID, guildID string, index int) (string, error) {
+	var id int64
+	var title string
+	err := d.db.QueryRow(
+		`SELECT id, title FROM user_favorites WHERE user_id = ? AND guild_id = ? ORDER BY added_at DESC LIMIT 1 OFFSET ?`,
+		userID, guildID, index-1,
+	).Scan(&id, &title)
+	if err != nil {
+		return "", err
+	}
+
+	_, err = d.db.Exec(`DELETE FROM user_favorites WHERE id = ?`, id)
+	return title, err
 }

@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/bwmarrin/discordgo"
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 
@@ -24,6 +25,7 @@ import (
 	"beatbot/controller"
 	"beatbot/discord"
 	"beatbot/gemini"
+	"beatbot/lyrics"
 	"beatbot/sentryhelper"
 	"beatbot/spotify"
 	"beatbot/youtube"
@@ -1551,6 +1553,35 @@ func (manager *Manager) handleRadio(interaction *Interaction) Response {
 	}
 }
 
+func (manager *Manager) handleLoop(interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	newState := player.ToggleLoop()
+
+	var emoji, status string
+	if newState {
+		emoji = "🔂"
+		status = "**enabled**"
+	} else {
+		emoji = "➡️"
+		status = "**disabled**"
+	}
+
+	msg := fmt.Sprintf("%s Loop mode %s", emoji, status)
+	if player.CurrentSong != nil {
+		msg += fmt.Sprintf(" — the current song **%s** will repeat", *player.CurrentSong)
+	}
+	msg += "."
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: msg,
+			Flags:   64,
+		},
+	}
+}
+
 func formatRelativeTime(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -1631,6 +1662,218 @@ func (manager *Manager) handleHistory(interaction *Interaction) Response {
 	}
 
 	return Response{Type: 4, Data: ResponseData{Content: content}}
+}
+
+func (manager *Manager) handleRecommend(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in handleRecommend: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
+	if !config.Config.Gemini.Enabled {
+		manager.SendFollowup(ctx, interaction, "", "AI recommendations require Gemini to be enabled.", true)
+		return
+	}
+
+	db := manager.Controller.GetDB()
+	if db == nil {
+		manager.SendFollowup(ctx, interaction, "", "No database available. Play some songs first to build listening history!", true)
+		return
+	}
+
+	history, err := db.GetHistory(interaction.GuildID, 10)
+	if err != nil {
+		log.Errorf("Error fetching history for recommend: %v", err)
+		sentryhelper.CaptureException(ctx, err)
+		manager.SendFollowup(ctx, interaction, "", "Failed to fetch listening history.", true)
+		return
+	}
+
+	if len(history) < 3 {
+		manager.SendFollowup(ctx, interaction, "", "Need at least 3 songs in history to make a smart recommendation. Play some more first! 🎵", true)
+		return
+	}
+
+	var songTitles []string
+	for _, r := range history {
+		songTitles = append(songTitles, r.Title)
+	}
+
+	query := gemini.GenerateSongRecommendation(ctx, songTitles)
+	if query == "" {
+		manager.SendFollowup(ctx, interaction, "", "Couldn't generate a recommendation right now. Try again in a moment! 🤖", true)
+		return
+	}
+
+	log.Debugf("Recommend generated query: %s", query)
+
+	// Voice check like in other handlers
+	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
+	if err != nil {
+		log.Errorf("Error getting voice state: %v", err)
+		sentryhelper.CaptureException(ctx, err)
+		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
+		return
+	}
+
+	if voiceState == nil {
+		manager.SendFollowup(ctx, interaction, "user not in voice channel", "Join a voice channel first! 🎤", true)
+		return
+	}
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	shouldJoin := player.VoiceChannelID == nil ||
+		player.VoiceConnection == nil ||
+		(player.VoiceChannelID != nil &&
+			player.IsEmpty() && !player.Player.IsPlaying() &&
+			*player.VoiceChannelID != voiceState.ChannelID)
+
+	if shouldJoin {
+		err := player.JoinVoiceChannel(interaction.Member.User.ID)
+		if err != nil {
+			errStr := err.Error()
+			if errStr == "voice state not found" {
+				manager.SendFollowup(ctx, interaction, "", "You gotta join a voice channel first!", true)
+				return
+			}
+			sentryhelper.CaptureException(ctx, err)
+			manager.SendError(interaction, "Error joining voice channel: "+errStr, true)
+			return
+		}
+	}
+
+	// Search YouTube
+	videos := youtube.Query(ctx, query)
+	if len(videos) == 0 {
+		manager.SendFollowup(ctx, interaction, "", "No suitable tracks found for this recommendation. Try again soon! 🔍", true)
+		return
+	}
+
+	video := videos[0]
+	log.Debugf("Recommend selected video: %s (ID: %s)", video.Title, video.VideoID)
+
+	// Determine if first song
+	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
+
+	var backupMsg string
+	if firstSongQueued {
+		backupMsg = fmt.Sprintf("🎵 **Now spinning** your AI DJ pick: **%s**\\n\\n(First song - give it a sec to load!)", video.Title)
+	} else {
+		backupMsg = fmt.Sprintf("🎵 **Queued up** the AI DJ recommendation: **%s**\\n\\nGood vibes incoming! ✨", video.Title)
+	}
+
+	// Queue it
+	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+
+	// DJ personality response
+	aiPrompt := fmt.Sprintf(`User %s used /recommend.
+
+AI DJ queued **%s** based on recent listening history.
+
+Announce it like a cool DJ - excited, conversational, with music nerd vibe.`,
+		interaction.Member.User.Username, video.Title)
+
+	manager.SendFollowup(ctx, interaction, aiPrompt, backupMsg, false)
+}
+
+func (manager *Manager) handleFavorite(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+	if player.CurrentSong == nil || player.CurrentItem == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Nothing is currently playing.", Flags: 64}}
+	}
+
+	userID := interaction.Member.User.ID
+	song := player.CurrentItem
+
+	if db.IsFavorite(userID, interaction.GuildID, song.Video.VideoID) {
+		return Response{Type: 4, Data: ResponseData{
+			Content: fmt.Sprintf("**%s** is already in your favorites.", song.Video.Title),
+			Flags:   64,
+		}}
+	}
+
+	videoURL := "https://www.youtube.com/watch?v=" + song.Video.VideoID
+	if err := db.AddFavorite(userID, interaction.GuildID, song.Video.VideoID, song.Video.Title, videoURL); err != nil {
+		log.Errorf("Error adding favorite: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to save favorite. Try again.", Flags: 64}}
+	}
+
+	return Response{Type: 4, Data: ResponseData{
+		Content: fmt.Sprintf("❤️ Added **%s** to your favorites.", song.Video.Title),
+		Flags:   64,
+	}}
+}
+
+func (manager *Manager) handleFavorites(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	userID := interaction.Member.User.ID
+	records, err := db.GetFavorites(userID, interaction.GuildID, 25)
+	if err != nil {
+		log.Errorf("Error fetching favorites: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to fetch favorites.", Flags: 64}}
+	}
+
+	if len(records) == 0 {
+		return Response{Type: 4, Data: ResponseData{
+			Content: "You haven't saved any favorites yet. Use `/favorite` while a song is playing!",
+			Flags:   64,
+		}}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("❤️ **Your Favorites**\n\n")
+	for i, r := range records {
+		sb.WriteString(fmt.Sprintf("`%d.` [%s](%s)\n", i+1, r.Title, r.URL))
+	}
+
+	return Response{Type: 4, Data: ResponseData{Content: sb.String()}}
+}
+
+func (manager *Manager) handleUnfavorite(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	userID := interaction.Member.User.ID
+
+	var songNumber int
+	for _, opt := range interaction.Data.Options {
+		if opt.Name == "song_number" {
+			n, err := strconv.Atoi(opt.Value)
+			if err != nil || n < 1 {
+				return Response{Type: 4, Data: ResponseData{Content: "Invalid song number.", Flags: 64}}
+			}
+			songNumber = n
+			break
+		}
+	}
+	if songNumber == 0 {
+		return Response{Type: 4, Data: ResponseData{Content: "Please provide a song number from `/favorites`.", Flags: 64}}
+	}
+
+	title, err := db.RemoveFavoriteByIndex(userID, interaction.GuildID, songNumber)
+	if err != nil {
+		return Response{Type: 4, Data: ResponseData{Content: "That number isn't in your favorites list.", Flags: 64}}
+	}
+
+	return Response{Type: 4, Data: ResponseData{
+		Content: fmt.Sprintf("Removed **%s** from your favorites.", title),
+		Flags:   64,
+	}}
 }
 
 func (manager *Manager) handleLeaderboard(interaction *Interaction) Response {
@@ -1865,6 +2108,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleShuffle(interaction)
 	case "radio":
 		return manager.handleRadio(interaction)
+	case "loop":
+		return manager.handleLoop(interaction)
 	case "history":
 		return manager.handleHistory(interaction)
 	case "leaderboard":
@@ -1873,6 +2118,21 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		finishTransaction = false
 		go manager.handleTopSongs(ctx, transaction, interaction)
 		return Response{Type: 5}
+
+	case "lyrics":
+		finishTransaction = false
+		go manager.onLyrics(ctx, transaction, interaction)
+		return Response{Type: 5}
+	case "recommend":
+		finishTransaction = false
+		go manager.handleRecommend(ctx, transaction, interaction)
+		return Response{Type: 5}
+	case "favorite":
+		return manager.handleFavorite(interaction)
+	case "favorites":
+		return manager.handleFavorites(interaction)
+	case "unfavorite":
+		return manager.handleUnfavorite(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:
@@ -1965,4 +2225,79 @@ func (manager *Manager) VerifyDiscordRequest(signature, timestamp string, body [
 
 	message := []byte(timestamp + string(body))
 	return ed25519.Verify(pubKeyBytes, message, signatureBytes)
+}
+
+func (manager *Manager) onLyrics(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in onLyrics: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	if player.CurrentSong == nil {
+		manager.SendFollowup(ctx, interaction, "", "Nothing is currently playing.", true)
+		return
+	}
+
+	title := *player.CurrentSong
+
+	artist := controller.ExtractArtist(title)
+
+	query := artist + " " + title
+
+	lc := lyrics.New()
+
+	lyricsText, trackInfo, err := lc.Search(query)
+
+	if err != nil || lyricsText == "" {
+		manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("Couldn't find lyrics for **%s**.", title), false)
+		return
+	}
+
+	if len(lyricsText) > 3800 {
+		lyricsText = lyricsText[:3800]
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       "Lyrics: " + trackInfo,
+		Description: lyricsText,
+		Color:       0x7289DA,
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "Lyrics provided by lrclib.net",
+		},
+	}
+
+	manager.sendEmbedFollowup(interaction, embed, false)
+}
+
+func (manager *Manager) sendEmbedFollowup(interaction *Interaction, embed *discordgo.MessageEmbed, ephemeral bool) {
+	payload := map[string]interface{}{
+		"embeds": []interface{}{embed},
+	}
+
+	if ephemeral {
+		payload["flags"] = 64
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		log.Errorf("Error marshalling embed payload: %v", err)
+		return
+	}
+
+	resp, err := http.Post(
+		"https://discord.com/api/v10/webhooks/"+manager.AppID+"/"+interaction.Token,
+		"application/json",
+		bytes.NewBuffer(jsonPayload),
+	)
+	if err != nil {
+		log.Errorf("Error sending embed followup: %v", err)
+	}
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 }
