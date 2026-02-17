@@ -568,6 +568,17 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	return nil
 }
 
+// speakOnVC safely calls Speaking() on the current voice connection under RLock.
+// Safe to call from any goroutine; no-ops if the connection is nil.
+func (p *GuildPlayer) speakOnVC(speaking bool) {
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if vc != nil {
+		vc.Speaking(speaking)
+	}
+}
+
 // getGuildName looks up the guild name from Discord, falling back to ID if unavailable
 func (p *GuildPlayer) getGuildName() string {
 	if p.Discord == nil {
@@ -854,7 +865,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						"guild_name": p.getGuildName(),
 					},
 				})
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				// Update now-playing card state
 				if p.nowPlayingCurrentItem != nil {
@@ -874,7 +885,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						"guild_name": p.getGuildName(),
 					},
 				})
-				p.VoiceConnection.Speaking(true)
+				p.speakOnVC(true)
 
 				// Update now-playing card state
 				if p.nowPlayingCurrentItem != nil {
@@ -895,7 +906,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					},
 				})
 				p.CurrentSong = nil
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				// Stop now-playing updates
 				p.stopNowPlayingUpdates()
@@ -912,7 +923,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					},
 				})
 				p.CurrentSong = nil
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				// Stop now-playing updates
 				p.stopNowPlayingUpdates()
@@ -1002,7 +1013,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						}
 					}
 				}
-				p.VoiceConnection.Speaking(true)
+				p.speakOnVC(true)
 				// once a song starts playback, we can pop it from the queue
 				p.popQueue()
 				// if there are more songs in the queue, load the next one
@@ -1012,7 +1023,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 				p.currentItemMutex.Lock()
 				p.CurrentItem = nil
 				p.currentItemMutex.Unlock()
-				p.VoiceConnection.Speaking(false)
+				p.speakOnVC(false)
 
 				err := event.Error
 
@@ -1476,10 +1487,13 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 			case <-p.voiceMonitorStop:
 				return
 			case <-ticker.C:
-				if p.VoiceConnection != nil {
+				p.VoiceChannelMutex.RLock()
+				vc := p.VoiceConnection
+				p.VoiceChannelMutex.RUnlock()
+				if vc != nil {
 					// Check if connection is in a failed state
-					if p.VoiceConnection.Status != discordgo.VoiceConnectionStatusReady {
-						log.Warnf("Voice connection not ready for guild %s, status: %v", p.GuildID, p.VoiceConnection.Status)
+					if vc.Status != discordgo.VoiceConnectionStatusReady {
+						log.Warnf("Voice connection not ready for guild %s, status: %v", p.GuildID, vc.Status)
 
 						// If we're currently playing, attempt recovery
 						if p.Player.IsPlaying() {
