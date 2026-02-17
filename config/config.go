@@ -6,12 +6,12 @@ import (
 )
 
 type ConfigStruct struct {
-	Discord    DiscordConfig
-	Tunnel     TunnelConfig
-	Options    Options
-	Youtube    YoutubeConfig
-	Gemini     GeminiConfig
-	Spotify    SpotifyConfig
+	Discord DiscordConfig
+	Tunnel  TunnelConfig
+	Options Options
+	Youtube YoutubeConfig
+	Gemini  GeminiConfig
+	Spotify SpotifyConfig
 }
 
 type DiscordConfig struct {

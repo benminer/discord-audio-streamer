@@ -9,88 +9,88 @@ import (
 
 func TestParseButtonCustomID(t *testing.T) {
 	tests := []struct {
-		name     string
-		customID string
-		wantAction string
+		name        string
+		customID    string
+		wantAction  string
 		wantGuildID string
-		wantOK   bool
+		wantOK      bool
 	}{
 		{
-			name:     "valid play/pause",
-			customID: "np:playpause:123456789",
-			wantAction: "playpause",
+			name:        "valid play/pause",
+			customID:    "np:playpause:123456789",
+			wantAction:  "playpause",
 			wantGuildID: "123456789",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "valid skip",
-			customID: "np:skip:987654321",
-			wantAction: "skip",
+			name:        "valid skip",
+			customID:    "np:skip:987654321",
+			wantAction:  "skip",
 			wantGuildID: "987654321",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "valid stop",
-			customID: "np:stop:111222333",
-			wantAction: "stop",
+			name:        "valid stop",
+			customID:    "np:stop:111222333",
+			wantAction:  "stop",
 			wantGuildID: "111222333",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "valid volume down",
-			customID: "np:voldown:555666777",
-			wantAction: "voldown",
+			name:        "valid volume down",
+			customID:    "np:voldown:555666777",
+			wantAction:  "voldown",
 			wantGuildID: "555666777",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "valid volume up",
-			customID: "np:volup:888999000",
-			wantAction: "volup",
+			name:        "valid volume up",
+			customID:    "np:volup:888999000",
+			wantAction:  "volup",
 			wantGuildID: "888999000",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "valid queue",
-			customID: "np:queue:123123123",
-			wantAction: "queue",
+			name:        "valid queue",
+			customID:    "np:queue:123123123",
+			wantAction:  "queue",
 			wantGuildID: "123123123",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "valid shuffle",
-			customID: "np:shuffle:456456456",
-			wantAction: "shuffle",
+			name:        "valid shuffle",
+			customID:    "np:shuffle:456456456",
+			wantAction:  "shuffle",
 			wantGuildID: "456456456",
-			wantOK:   true,
+			wantOK:      true,
 		},
 		{
-			name:     "invalid prefix",
-			customID: "invalid:skip:123456789",
-			wantAction: "",
+			name:        "invalid prefix",
+			customID:    "invalid:skip:123456789",
+			wantAction:  "",
 			wantGuildID: "",
-			wantOK:   false,
+			wantOK:      false,
 		},
 		{
-			name:     "missing parts",
-			customID: "np:skip",
-			wantAction: "",
+			name:        "missing parts",
+			customID:    "np:skip",
+			wantAction:  "",
 			wantGuildID: "",
-			wantOK:   false,
+			wantOK:      false,
 		},
 		{
-			name:     "too many parts",
-			customID: "np:skip:123:456",
-			wantAction: "",
+			name:        "too many parts",
+			customID:    "np:skip:123:456",
+			wantAction:  "",
 			wantGuildID: "",
-			wantOK:   false,
+			wantOK:      false,
 		},
 		{
-			name:     "empty string",
-			customID: "",
-			wantAction: "",
+			name:        "empty string",
+			customID:    "",
+			wantAction:  "",
 			wantGuildID: "",
-			wantOK:   false,
+			wantOK:      false,
 		},
 	}
 

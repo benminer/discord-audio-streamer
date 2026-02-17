@@ -73,15 +73,15 @@ func run(ctx context.Context) error {
 		return err
 	}
 	router := gin.New()
-	
+
 	// Add recovery middleware
 	router.Use(gin.Recovery())
-	
+
 	// Add custom logger that skips /health endpoint
 	router.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		SkipPaths: []string{"/health"},
 	}))
-	
+
 	router.Use(sentrygin.New(sentrygin.Options{}))
 
 	router.GET("/health", func(c *gin.Context) {
