@@ -110,6 +110,11 @@
     "description": "Purges the queue"
   },
   {
+    "name": "clear",
+    "type": 1,
+    "description": "Clears the queue but keeps the current song playing"
+  },
+  {
     "name": "shuffle",
     "type": 1,
     "description": "Shuffles the current queue"

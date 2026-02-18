@@ -25,6 +25,7 @@ import (
 	"beatbot/controller"
 	"beatbot/discord"
 	"beatbot/gemini"
+	"beatbot/helpers"
 	"beatbot/lyrics"
 	"beatbot/sentryhelper"
 	"beatbot/spotify"
@@ -1359,6 +1360,51 @@ func (manager *Manager) handlePurge(ctx context.Context, interaction *Interactio
 	manager.SendFollowup(ctx, interaction, "Queue purged", "Queue purged", false)
 }
 
+// handleClear clears the queue but keeps the current song playing
+func (manager *Manager) handleClear(ctx context.Context, interaction *Interaction) Response {
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+
+	// Get queue length before clearing
+	queueLen := 0
+	player.Queue.Mutex.Lock()
+	queueLen = len(player.Queue.Items)
+	player.Queue.Mutex.Unlock()
+
+	if queueLen == 0 {
+		// Empty queue - show hint and return
+		hint := ShowHintIfApplicable(interaction.GuildID)
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "Nothing to clear!" + hint,
+			},
+		}
+	}
+
+	// Clear the queue (async, doesn't stop current track)
+	go player.Clear()
+
+	// Generate DJ response
+	djResponse := helpers.GenerateClearDJResponse(ctx, queueLen)
+
+	// Add hint with 15% chance
+	hint := ShowHintIfApplicable(interaction.GuildID)
+
+	log.WithFields(log.Fields{
+		"module":      "handlers",
+		"guild_id":    interaction.GuildID,
+		"cleared":     queueLen,
+		"user_id":     interaction.Member.User.ID,
+	}).Info("Queue cleared")
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: djResponse + hint,
+		},
+	}
+}
+
 func (manager *Manager) handleSkip(ctx context.Context, transaction *sentry.Span, interaction *Interaction) Response {
 	go manager.onSkip(ctx, transaction, interaction)
 	return Response{
@@ -1390,13 +1436,15 @@ func (manager *Manager) handleReset(ctx context.Context, transaction *sentry.Spa
 }
 
 func (manager *Manager) handleRemove(interaction *Interaction) Response {
+	ctx := context.Background()
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.IsEmpty() {
+		hint := ShowHintIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "the queue is empty",
+				Content: "the queue is empty" + hint,
 			},
 		}
 	}
@@ -1416,22 +1464,25 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 	}
 
 	removed_title := player.Remove(index)
-	msg := "Removed the song from the queue"
-	userName := interaction.Member.User.Username
+
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "remove", removed_title)
+	hint := ShowHintIfApplicable(interaction.GuildID)
 
 	if removed_title != "" {
-		msg = "@" + userName + " removed **" + removed_title + "** from the queue"
+		djResponse = "@" + interaction.Member.User.Username + " removed **" + removed_title + "** - " + djResponse
 	}
 
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: msg,
+			Content: djResponse + hint,
 		},
 	}
 }
 
 func (manager *Manager) handleVolume(interaction *Interaction) Response {
+	ctx := context.Background()
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	volume, err := strconv.Atoi(interaction.Data.Options[0].Value)
@@ -1446,10 +1497,14 @@ func (manager *Manager) handleVolume(interaction *Interaction) Response {
 
 	player.Player.SetVolume(volume)
 
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "volume", volume)
+	hint := ShowHintIfApplicable(interaction.GuildID)
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: "Volume set to " + interaction.Data.Options[0].Value,
+			Content: djResponse + hint,
 		},
 	}
 }
@@ -1460,20 +1515,25 @@ func (manager *Manager) handlePause(ctx context.Context, interaction *Interactio
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if !player.Player.IsPlaying() {
+		hint := ShowHintIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "nothing is playing",
+				Content: "nothing is playing" + hint,
 			},
 		}
 	}
 
 	go player.Player.Pause(ctx)
 
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "pause")
+	hint := ShowHintIfApplicable(interaction.GuildID)
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: "@" + userName + " paused the current song",
+			Content: "@" + userName + " paused - " + djResponse + hint,
 		},
 	}
 }
@@ -1484,79 +1544,101 @@ func (manager *Manager) handleResume(ctx context.Context, interaction *Interacti
 	player.LastActivityAt = time.Now()
 
 	if !player.Player.IsPlaying() {
+		hint := ShowHintIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "nothing is playing",
+				Content: "nothing is playing" + hint,
 			},
 		}
 	}
 
 	go player.Player.Resume(ctx)
 
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "resume")
+	hint := ShowHintIfApplicable(interaction.GuildID)
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: "@" + userName + " resumed the current song",
+			Content: "@" + userName + " - " + djResponse + hint,
 		},
 	}
 }
 
 func (manager *Manager) handleShuffle(interaction *Interaction) Response {
+	ctx := context.Background()
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	count := player.Shuffle()
 
 	if count == 0 {
+		hint := ShowHintIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "the queue is empty, nothing to shuffle",
+				Content: "the queue is empty, nothing to shuffle" + hint,
 			},
 		}
 	}
 
 	if count == 1 {
+		hint := ShowHintIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: "only one song in the queue, nothing to shuffle",
+				Content: "only one song in the queue, nothing to shuffle" + hint,
 			},
 		}
 	}
 
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "shuffle", count)
+	hint := ShowHintIfApplicable(interaction.GuildID)
+
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: "@" + interaction.Member.User.Username + " shuffled the queue (" + strconv.Itoa(count) + " songs)",
+			Content: djResponse + hint,
 		},
 	}
 }
 
 func (manager *Manager) handleRadio(interaction *Interaction) Response {
+	ctx := context.Background()
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	enabled := player.ToggleRadio()
 
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "radio", enabled)
+	hint := ShowHintIfApplicable(interaction.GuildID)
+
 	var msg string
 	if enabled {
-		msg = "📻 Radio mode **enabled** — I'll automatically queue similar songs when the queue runs out"
+		msg = "📻 Radio mode **enabled** — " + djResponse
 	} else {
-		msg = "📻 Radio mode **disabled**"
+		msg = "📻 Radio mode **disabled** — " + djResponse
 	}
 
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: msg,
+			Content: msg + hint,
 		},
 	}
 }
 
 func (manager *Manager) handleLoop(interaction *Interaction) Response {
+	ctx := context.Background()
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	newState := player.ToggleLoop()
+
+	// Generate DJ response
+	djResponse := helpers.GenerateDJResponse(ctx, "loop", newState)
+	hint := ShowHintIfApplicable(interaction.GuildID)
 
 	var emoji, status string
 	if newState {
@@ -1567,16 +1649,15 @@ func (manager *Manager) handleLoop(interaction *Interaction) Response {
 		status = "**disabled**"
 	}
 
-	msg := fmt.Sprintf("%s Loop mode %s", emoji, status)
-	if player.CurrentSong != nil {
-		msg += fmt.Sprintf(" — the current song **%s** will repeat", *player.CurrentSong)
+	msg := fmt.Sprintf("%s Loop mode %s — %s", emoji, status, djResponse)
+	if player.CurrentSong != nil && newState {
+		msg += fmt.Sprintf(" (current: **%s**)", *player.CurrentSong)
 	}
-	msg += "."
 
 	return Response{
 		Type: 4,
 		Data: ResponseData{
-			Content: msg,
+			Content: msg + hint,
 			Flags:   64,
 		},
 	}
@@ -2114,6 +2195,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleView(ctx, transaction, interaction)
 	case "remove":
 		return manager.handleRemove(interaction)
+	case "clear":
+		return manager.handleClear(ctx, interaction)
 	case "skip":
 		finishTransaction = false // goroutine will finish
 		return manager.handleSkip(ctx, transaction, interaction)
