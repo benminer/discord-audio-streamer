@@ -11,15 +11,17 @@ import (
 
 // Hints provides random tips to users after successful command execution
 type Hints struct {
-	cooldowns    map[string]time.Time // guildID -> last hint time
-	cooldownMu   sync.RWMutex
-	cooldownDur  time.Duration
-	hintChance   float32
-	hints        []string
+	cooldowns   map[string]time.Time // guildID -> last hint time
+	cooldownMu  sync.RWMutex
+	cooldownDur time.Duration
+	hintChance  float32
+	hints       []string
 }
 
 // NewHints creates a new Hints manager with guild-specific cooldowns
 func NewHints() *Hints {
+	// Seed random for hints (only once per process)
+	rand.Seed(time.Now().UnixNano())
 	return &Hints{
 		cooldowns:   make(map[string]time.Time),
 		cooldownDur: 5 * time.Minute,
@@ -92,21 +94,9 @@ func (h *Hints) GetCooldownRemaining(guildID string) time.Duration {
 	return remaining
 }
 
-// HintGlobal is a package-level hints instance for use across command handlers
-var HintGlobal *Hints
-
-func init() {
-	// Seed random for hints
-	rand.Seed(time.Now().UnixNano())
-	HintGlobal = NewHints()
-}
-
-// ShowHintIfApplicable checks the global hints instance and returns a hint if appropriate
-func ShowHintIfApplicable(guildID string) string {
-	if HintGlobal == nil {
-		return ""
-	}
-	hint, show := HintGlobal.ShouldShowHint(guildID)
+// ShowIfApplicable checks if a hint should be shown and returns it with formatting
+func (h *Hints) ShowIfApplicable(guildID string) string {
+	hint, show := h.ShouldShowHint(guildID)
 	if show {
 		return fmt.Sprintf("\n\n💡 %s", hint)
 	}

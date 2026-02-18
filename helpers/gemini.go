@@ -6,42 +6,36 @@ import (
 	"strings"
 
 	"beatbot/config"
+	"beatbot/gemini"
 
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/genai"
 )
 
-// DJPersonality is the system prompt for the DJ
-const DJPersonality = `You are "DJ Spin" — beatbot's witty DJ personality. You're brief, dynamic, and know your music. 
-You respond to queue actions with short, clever messages that match the moment.
-Keep it to 1-2 sentences max. Be specific about what happened. Use some music knowledge when you can.
-Never be generic. Never say "As an AI..." or apologize for being an AI.
-Use minimal markdown — bold only when it adds value.`
-
 // DJFallbacks are static responses when Gemini is unavailable
 var DJFallbacks = map[string]string{
-	"clear":    "Queue wiped. Clean slate.",
-	"skip":     "On to the next one.",
-	"remove":   "That track is gone.",
-	"shuffle":  "Shuffled. Fate decides now.",
-	"play":     "Adding to the queue.",
-	"queue":    "Queued up.",
-	"pause":    "Paused.",
-	"resume":   "Back to the music.",
-	"volume":   "Volume adjusted.",
-	"radio":     "Radio mode toggled.",
-	"loop":      "Loop mode toggled.",
-	"history":   "Here's what we've been vibing to.",
+	"clear":       "Queue wiped. Clean slate.",
+	"skip":        "On to the next one.",
+	"remove":      "That track is gone.",
+	"shuffle":     "Shuffled. Fate decides now.",
+	"play":        "Adding to the queue.",
+	"queue":       "Queued up.",
+	"pause":       "Paused.",
+	"resume":      "Back to the music.",
+	"volume":      "Volume adjusted.",
+	"radio":       "Radio mode toggled.",
+	"loop":        "Loop mode toggled.",
+	"history":     "Here's what we've been vibing to.",
 	"leaderboard": "Top tracks incoming.",
-	"favorites": "Your saved tracks.",
-	"favorite": "Saved to favorites.",
-	"unfavorite": "Removed from favorites.",
-	"recommend": "Let me find you something good.",
-	"reset":    "Starting fresh.",
-	"view":     "Queue incoming.",
-	"lyrics":   "Words on the screen.",
-	"stop":     "Stopped.",
+	"favorites":   "Your saved tracks.",
+	"favorite":    "Saved to favorites.",
+	"unfavorite":  "Removed from favorites.",
+	"recommend":   "Let me find you something good.",
+	"reset":       "Starting fresh.",
+	"view":        "Queue incoming.",
+	"lyrics":      "Words on the screen.",
+	"stop":        "Stopped.",
 }
 
 // GenerateDJResponse generates a witty DJ-style response for a command action
@@ -217,7 +211,7 @@ func generateDJ(ctx context.Context, prompt string) string {
 		return ""
 	}
 
-	fullPrompt := DJPersonality + "\n\n" + prompt
+	fullPrompt := gemini.PersonalityPrompt + "\n\n" + prompt
 
 	parts := []*genai.Part{
 		{Text: fullPrompt},

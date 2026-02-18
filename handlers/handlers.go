@@ -111,6 +111,7 @@ type Manager struct {
 	PublicKey  string
 	BotToken   string
 	Controller *controller.Controller
+	Hints      *Hints
 }
 
 func NewManager(appID string, controller *controller.Controller) *Manager {
@@ -127,6 +128,7 @@ func NewManager(appID string, controller *controller.Controller) *Manager {
 		PublicKey:  publicKey,
 		BotToken:   botToken,
 		Controller: controller,
+		Hints:      NewHints(),
 	}
 }
 
@@ -1372,7 +1374,7 @@ func (manager *Manager) handleClear(ctx context.Context, interaction *Interactio
 
 	if queueLen == 0 {
 		// Empty queue - show hint and return
-		hint := ShowHintIfApplicable(interaction.GuildID)
+		hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -1388,13 +1390,13 @@ func (manager *Manager) handleClear(ctx context.Context, interaction *Interactio
 	djResponse := helpers.GenerateClearDJResponse(ctx, queueLen)
 
 	// Add hint with 15% chance
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	log.WithFields(log.Fields{
-		"module":      "handlers",
-		"guild_id":    interaction.GuildID,
-		"cleared":     queueLen,
-		"user_id":     interaction.Member.User.ID,
+		"module":   "handlers",
+		"guild_id": interaction.GuildID,
+		"cleared":  queueLen,
+		"user_id":  interaction.Member.User.ID,
 	}).Info("Queue cleared")
 
 	return Response{
@@ -1440,7 +1442,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.IsEmpty() {
-		hint := ShowHintIfApplicable(interaction.GuildID)
+		hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -1467,7 +1469,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "remove", removed_title)
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	if removed_title != "" {
 		djResponse = "@" + interaction.Member.User.Username + " removed **" + removed_title + "** - " + djResponse
@@ -1499,7 +1501,7 @@ func (manager *Manager) handleVolume(interaction *Interaction) Response {
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "volume", volume)
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
 		Type: 4,
@@ -1515,7 +1517,7 @@ func (manager *Manager) handlePause(ctx context.Context, interaction *Interactio
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if !player.Player.IsPlaying() {
-		hint := ShowHintIfApplicable(interaction.GuildID)
+		hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -1528,7 +1530,7 @@ func (manager *Manager) handlePause(ctx context.Context, interaction *Interactio
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "pause")
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
 		Type: 4,
@@ -1544,7 +1546,7 @@ func (manager *Manager) handleResume(ctx context.Context, interaction *Interacti
 	player.LastActivityAt = time.Now()
 
 	if !player.Player.IsPlaying() {
-		hint := ShowHintIfApplicable(interaction.GuildID)
+		hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -1557,7 +1559,7 @@ func (manager *Manager) handleResume(ctx context.Context, interaction *Interacti
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "resume")
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
 		Type: 4,
@@ -1574,7 +1576,7 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 	count := player.Shuffle()
 
 	if count == 0 {
-		hint := ShowHintIfApplicable(interaction.GuildID)
+		hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -1584,7 +1586,7 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 	}
 
 	if count == 1 {
-		hint := ShowHintIfApplicable(interaction.GuildID)
+		hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 		return Response{
 			Type: 4,
 			Data: ResponseData{
@@ -1595,7 +1597,7 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "shuffle", count)
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
 		Type: 4,
@@ -1613,7 +1615,7 @@ func (manager *Manager) handleRadio(interaction *Interaction) Response {
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "radio", enabled)
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	var msg string
 	if enabled {
@@ -1638,7 +1640,7 @@ func (manager *Manager) handleLoop(interaction *Interaction) Response {
 
 	// Generate DJ response
 	djResponse := helpers.GenerateDJResponse(ctx, "loop", newState)
-	hint := ShowHintIfApplicable(interaction.GuildID)
+	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	var emoji, status string
 	if newState {

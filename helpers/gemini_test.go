@@ -39,7 +39,7 @@ func TestDJFallbacks(t *testing.T) {
 
 func TestGetFallback(t *testing.T) {
 	tests := []struct {
-		command    string
+		command     string
 		expectKnown bool // whether we expect a known fallback
 	}{
 		{"clear", true},
@@ -90,17 +90,5 @@ func TestBuildDJPrompt(t *testing.T) {
 		if len(prompt) < tt.wantLen {
 			t.Errorf("Prompt too short for %s: got %d, want at least %d", tt.command, len(prompt), tt.wantLen)
 		}
-	}
-}
-
-func TestDJPersonality(t *testing.T) {
-	// Verify personality is defined
-	if len(DJPersonality) == 0 {
-		t.Error("DJPersonality should not be empty")
-	}
-
-	// Verify it contains key traits
-	if len(DJPersonality) < 100 {
-		t.Errorf("DJPersonality seems too short: %d chars", len(DJPersonality))
 	}
 }
