@@ -125,7 +125,7 @@ func (d *Database) RecordPlay(guildID, videoID, title, url, userID, username str
 	_, err := d.db.Exec(
 		`INSERT INTO song_history (guild_id, video_id, title, url, requested_by_user_id, requested_by_username, played_at, duration_seconds)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		guildID, videoID, title, url, userID, username, time.Now().UTC(), durationSeconds,
+		guildID, videoID, title, url, userID, username, time.Now().UTC().Format(time.RFC3339Nano), durationSeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to record play: %w", err)
@@ -192,20 +192,28 @@ func (d *Database) GetMostPlayed(guildID string, limit int) ([]MostPlayedRecord,
 			return nil, fmt.Errorf("failed to scan most played row: %w", err)
 		}
 
-		// Parse SQLite datetime string to time.Time
-		// SQLite stores timestamps in various formats depending on how they were inserted
-		lastPlayed, err := time.Parse("2006-01-02 15:04:05", lastPlayedStr)
-		if err != nil {
-			// Try RFC3339 format as fallback
-			lastPlayed, err = time.Parse(time.RFC3339, lastPlayedStr)
-			if err != nil {
-				// Try RFC3339Nano format (used by time.Now().UTC())
-				lastPlayed, err = time.Parse(time.RFC3339Nano, lastPlayedStr)
-				if err != nil {
-					log.Warnf("failed to parse last_played timestamp '%s': %v", lastPlayedStr, err)
-					lastPlayed = time.Time{} // Use zero time if parsing fails
-				}
+		// Parse SQLite datetime string to time.Time.
+		// Stored format depends on how the record was inserted:
+		//   - Old records: Go's time.String() format "2006-01-02 15:04:05.999999999 -0700 MST"
+		//   - New records: RFC3339Nano "2006-01-02T15:04:05.999999999Z07:00"
+		formats := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999 -0700 MST", // Go time.String() — used by old records
+			"2006-01-02 15:04:05",
+		}
+		var lastPlayed time.Time
+		parsed := false
+		for _, fmt := range formats {
+			if t, err := time.Parse(fmt, lastPlayedStr); err == nil {
+				lastPlayed = t
+				parsed = true
+				break
 			}
+		}
+		if !parsed {
+			log.Warnf("failed to parse last_played timestamp '%s' with all known formats", lastPlayedStr)
+			lastPlayed = time.Now() // Fall back to now rather than year 1
 		}
 		r.LastPlayed = lastPlayed
 
