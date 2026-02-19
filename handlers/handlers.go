@@ -1386,8 +1386,10 @@ func (manager *Manager) handleClear(ctx context.Context, interaction *Interactio
 	// Clear the queue (async, doesn't stop current track)
 	go player.Clear()
 
-	// Generate DJ response
-	djResponse := helpers.GenerateClearDJResponse(ctx, queueLen)
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateClearDJResponse(djCtx, queueLen)
 
 	// Add hint with 15% chance
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
@@ -1437,8 +1439,7 @@ func (manager *Manager) handleReset(ctx context.Context, transaction *sentry.Spa
 	}
 }
 
-func (manager *Manager) handleRemove(interaction *Interaction) Response {
-	ctx := context.Background()
+func (manager *Manager) handleRemove(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	if player.IsEmpty() {
@@ -1467,8 +1468,10 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 
 	removed_title := player.Remove(index)
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "remove", removed_title)
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "remove", removed_title)
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	if removed_title != "" {
@@ -1483,8 +1486,7 @@ func (manager *Manager) handleRemove(interaction *Interaction) Response {
 	}
 }
 
-func (manager *Manager) handleVolume(interaction *Interaction) Response {
-	ctx := context.Background()
+func (manager *Manager) handleVolume(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	volume, err := strconv.Atoi(interaction.Data.Options[0].Value)
@@ -1499,8 +1501,10 @@ func (manager *Manager) handleVolume(interaction *Interaction) Response {
 
 	player.Player.SetVolume(volume)
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "volume", volume)
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "volume", volume)
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
@@ -1528,8 +1532,10 @@ func (manager *Manager) handlePause(ctx context.Context, interaction *Interactio
 
 	go player.Player.Pause(ctx)
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "pause")
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "pause")
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
@@ -1557,8 +1563,10 @@ func (manager *Manager) handleResume(ctx context.Context, interaction *Interacti
 
 	go player.Player.Resume(ctx)
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "resume")
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "resume")
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
@@ -1569,8 +1577,7 @@ func (manager *Manager) handleResume(ctx context.Context, interaction *Interacti
 	}
 }
 
-func (manager *Manager) handleShuffle(interaction *Interaction) Response {
-	ctx := context.Background()
+func (manager *Manager) handleShuffle(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	count := player.Shuffle()
@@ -1595,8 +1602,10 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 		}
 	}
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "shuffle", count)
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "shuffle", count)
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	return Response{
@@ -1607,14 +1616,15 @@ func (manager *Manager) handleShuffle(interaction *Interaction) Response {
 	}
 }
 
-func (manager *Manager) handleRadio(interaction *Interaction) Response {
-	ctx := context.Background()
+func (manager *Manager) handleRadio(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	enabled := player.ToggleRadio()
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "radio", enabled)
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "radio", enabled)
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	var msg string
@@ -1632,14 +1642,15 @@ func (manager *Manager) handleRadio(interaction *Interaction) Response {
 	}
 }
 
-func (manager *Manager) handleLoop(interaction *Interaction) Response {
-	ctx := context.Background()
+func (manager *Manager) handleLoop(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
 	newState := player.ToggleLoop()
 
-	// Generate DJ response
-	djResponse := helpers.GenerateDJResponse(ctx, "loop", newState)
+	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
+	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer djCancel()
+	djResponse := helpers.GenerateDJResponse(djCtx, "loop", newState)
 	hint := manager.Hints.ShowIfApplicable(interaction.GuildID)
 
 	var emoji, status string
@@ -2196,7 +2207,7 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		finishTransaction = false // goroutine will finish
 		return manager.handleView(ctx, transaction, interaction)
 	case "remove":
-		return manager.handleRemove(interaction)
+		return manager.handleRemove(ctx, interaction)
 	case "clear":
 		return manager.handleClear(ctx, interaction)
 	case "skip":
@@ -2205,18 +2216,18 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 	case "pause", "stop":
 		return manager.handlePause(ctx, interaction)
 	case "volume":
-		return manager.handleVolume(interaction)
+		return manager.handleVolume(ctx, interaction)
 	case "resume":
 		return manager.handleResume(ctx, interaction)
 	case "reset":
 		finishTransaction = false // goroutine will finish
 		return manager.handleReset(ctx, transaction, interaction)
 	case "shuffle":
-		return manager.handleShuffle(interaction)
+		return manager.handleShuffle(ctx, interaction)
 	case "radio":
-		return manager.handleRadio(interaction)
+		return manager.handleRadio(ctx, interaction)
 	case "loop":
-		return manager.handleLoop(interaction)
+		return manager.handleLoop(ctx, interaction)
 	case "history":
 		return manager.handleHistory(interaction)
 	case "leaderboard":
