@@ -253,6 +253,7 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 		}
 
 		video := videos[0]
+		fallbacks := fallbackSlice(videos, 2)
 		log.Debugf("Found YouTube match: %s (ID: %s)", video.Title, video.VideoID)
 
 		firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
@@ -266,7 +267,7 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 
 		manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
 
-		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, fallbacks)
 		return
 	}
 
@@ -322,6 +323,7 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 	videoID := youtube.ParseYoutubeUrl(query)
 
 	var video youtube.VideoResponse
+	var fallbacks []youtube.VideoResponse
 
 	// user passed in a youtube url
 	if videoID != "" {
@@ -333,6 +335,7 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 		}
 
 		video = videoResponse
+		// No fallbacks for direct URL requests — the user asked for a specific video
 	} else {
 		videos := youtube.Query(ctx, query)
 
@@ -342,6 +345,7 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 		}
 
 		video = videos[0]
+		fallbacks = fallbackSlice(videos, 2)
 	}
 
 	var followUpMessage string
@@ -354,7 +358,20 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 	}
 
 	manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
-	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, fallbacks)
+}
+
+// fallbackSlice returns up to n items from videos[1:], safe for any slice length.
+// Used to build the FallbackVideos list for age-restriction retry logic.
+func fallbackSlice(videos []youtube.VideoResponse, n int) []youtube.VideoResponse {
+	if len(videos) <= 1 {
+		return nil
+	}
+	rest := videos[1:]
+	if len(rest) > n {
+		rest = rest[:n]
+	}
+	return rest
 }
 
 // searchResult holds the result of a single YouTube search for collection processing
@@ -549,7 +566,7 @@ func (manager *Manager) handleSpotifyCollection(ctx context.Context, interaction
 	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
 
 	for _, video := range videosToQueue {
-		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
 	}
 
 	// Add breadcrumb for queued songs
@@ -766,6 +783,7 @@ func (manager *Manager) handleAppleMusicTrack(ctx context.Context, interaction *
 	}
 
 	video := videos[0]
+	fallbacks := fallbackSlice(videos, 2)
 	log.Debugf("Found YouTube match: %s (ID: %s)", video.Title, video.VideoID)
 
 	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
@@ -779,7 +797,7 @@ func (manager *Manager) handleAppleMusicTrack(ctx context.Context, interaction *
 
 	manager.SendFollowup(ctx, interaction, followUpMessage, followUpMessage, false)
 
-	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, fallbacks)
 }
 
 // handleAppleMusicAlbum processes an Apple Music album
@@ -1015,7 +1033,7 @@ func (manager *Manager) handleAppleMusicCollection(ctx context.Context, interact
 	manager.SendFollowup(ctx, interaction, "", summaryMsg, false)
 
 	for _, video := range foundVideos {
-		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
 	}
 
 	log.Infof("Queued %d tracks from Apple Music %s '%s' for user %s",
@@ -1114,7 +1132,7 @@ func (manager *Manager) handleYouTubePlaylist(ctx context.Context, interaction *
 	firstSongQueued := player.IsEmpty() && !player.Player.IsPlaying() && player.CurrentSong == nil
 
 	for _, video := range videosToQueue {
-		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+		player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
 	}
 
 	// Add Sentry breadcrumb for queued songs
@@ -1883,7 +1901,7 @@ func (manager *Manager) handleRecommend(ctx context.Context, transaction *sentry
 	}
 
 	// Queue it
-	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID)
+	player.Add(ctx, video, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
 
 	// DJ personality response
 	aiPrompt := fmt.Sprintf(`User %s used /recommend.

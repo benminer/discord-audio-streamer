@@ -133,6 +133,40 @@ User's request: %s`, prompt))
 	return generateResponse(ctx, instructions)
 }
 
+// GenerateAgeRestrictedResponse returns a snarky DJ response for when a video
+// is blocked due to age restrictions. directRequest indicates whether the user
+// specifically asked for that video by URL (vs. a search result that happened to
+// be gated). Falls back to a hardcoded string if Gemini is disabled.
+func GenerateAgeRestrictedResponse(ctx context.Context, directRequest bool) string {
+	var fallback string
+	if directRequest {
+		fallback = "That video is age-restricted and can't be played — YouTube won't let me near it. Try a different link?"
+	} else {
+		fallback = `YouTube blocked this from loading because it's "restricted" — sorry! Try something else.`
+	}
+
+	if !config.Config.Gemini.Enabled {
+		return fallback
+	}
+
+	var instructions string
+	if directRequest {
+		instructions = `A user requested a specific YouTube video by URL and YouTube rejected it because it's age-restricted.
+Tell them the video is age-restricted and can't be played, and suggest they try a different link.
+Keep it short (one sentence), stay in character as a snarky DJ, and don't be preachy about it.`
+	} else {
+		instructions = `A user requested a song and YouTube blocked the result because it's "age-restricted".
+Tell them YouTube blocked it and suggest they try requesting something else.
+Keep it short (one sentence), stay in character as a snarky DJ, and don't lecture them.`
+	}
+
+	response := generateResponse(ctx, buildPrompt(instructions))
+	if response == "" {
+		return fallback
+	}
+	return strings.TrimSpace(response)
+}
+
 // GenerateSongRecommendation analyzes recent listening history and generates a search query
 // for finding a similar song. Returns an empty string if Gemini is disabled or on error.
 func GenerateSongRecommendation(ctx context.Context, recentSongs []string) string {
