@@ -151,13 +151,9 @@ func GenerateAgeRestrictedResponse(ctx context.Context, directRequest bool) stri
 
 	var instructions string
 	if directRequest {
-		instructions = `A user requested a specific YouTube video by URL and YouTube rejected it because it's age-restricted.
-Tell them the video is age-restricted and can't be played, and suggest they try a different link.
-Keep it short (one sentence), stay in character as a snarky DJ, and don't be preachy about it.`
+		instructions = `A user requested a specific YouTube video by URL and YouTube won't play it because it's age-restricted. Tell them in one sentence.`
 	} else {
-		instructions = `A user requested a song and YouTube blocked the result because it's "age-restricted".
-Tell them YouTube blocked it and suggest they try requesting something else.
-Keep it short (one sentence), stay in character as a snarky DJ, and don't lecture them.`
+		instructions = `A user requested a song and YouTube blocked it because it's "restricted". Tell them in one sentence and suggest they try something else.`
 	}
 
 	response := generateResponse(ctx, buildPrompt(instructions))
