@@ -2,6 +2,7 @@ package youtube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -18,6 +19,11 @@ import (
 	"google.golang.org/api/option"
 	ytapi "google.golang.org/api/youtube/v3"
 )
+
+// ErrAgeRestricted is returned by GetVideoStream when yt-dlp reports that a
+// video requires age verification. The caller should handle this separately
+// from generic yt-dlp errors (e.g. no Sentry capture, user-friendly message).
+var ErrAgeRestricted = errors.New("age restricted")
 
 type VideoResponse struct {
 	Title    string        `json:"title"`
@@ -324,6 +330,11 @@ func GetVideoStream(ctx context.Context, videoResponse VideoResponse) (*YoutubeS
 
 			if i == 2 {
 				span.Status = sentry.SpanStatusInternalError
+				// Age-restricted videos are expected failures — return a typed sentinel
+				// so callers can show a user-friendly message without Sentry noise.
+				if strings.Contains(string(output), "Sign in to confirm your age") {
+					return nil, ErrAgeRestricted
+				}
 				sentry.CaptureException(fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output)))
 				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output))
 			}

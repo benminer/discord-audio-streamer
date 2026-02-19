@@ -152,9 +152,10 @@ type GuildQueueItem struct {
 	Interaction    *GuildQueueItemInteraction
 	LoadAttempts   int
 	MaxAttempts    int
-	Context        context.Context // Sentry context for tracing
-	Commentary     string          // AI-generated commentary for this song
-	IsRadioPick    bool            // Whether this song was auto-queued by radio mode
+	Context        context.Context         // Sentry context for tracing
+	Commentary     string                  // AI-generated commentary for this song
+	IsRadioPick    bool                    // Whether this song was auto-queued by radio mode
+	FallbackVideos []youtube.VideoResponse // Alternate candidates to try if primary is age-restricted (search results only)
 }
 
 type GuildQueue struct {
@@ -497,6 +498,41 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 
 	stream, err := youtube.GetVideoStream(ctx, event.Item.Video)
 	if err != nil {
+		if errors.Is(err, youtube.ErrAgeRestricted) {
+			// Try fallback search results before giving up (search-result path only;
+			// direct URL requests have no fallbacks so FallbackVideos will be nil).
+			for i, fallback := range event.Item.FallbackVideos {
+				log.Infof("Primary video age-restricted, trying fallback %d/%d: %s (%s)",
+					i+1, len(event.Item.FallbackVideos), fallback.Title, fallback.VideoID)
+				fallbackStream, fallbackErr := youtube.GetVideoStream(ctx, fallback)
+				if fallbackErr == nil {
+					// Fallback worked — swap in the new video silently and continue
+					log.Infof("Fallback succeeded: %s (%s)", fallback.Title, fallback.VideoID)
+					event.Item.Video = fallback
+					stream = fallbackStream
+					goto streamReady
+				}
+				if !errors.Is(fallbackErr, youtube.ErrAgeRestricted) {
+					// Non-age-gate failure on a fallback — stop trying, fall through to error message
+					log.Warnf("Fallback %d failed with non-age-gate error: %s", i+1, fallbackErr)
+					break
+				}
+				log.Warnf("Fallback %d also age-restricted: %s", i+1, fallback.Title)
+			}
+
+			// All options exhausted — send a user-friendly Gemini message
+			directRequest := len(event.Item.FallbackVideos) == 0
+			msg := gemini.GenerateAgeRestrictedResponse(ctx, directRequest)
+			go discord.UpdateMessage(&discord.FollowUpRequest{
+				Token:   event.Item.Interaction.InteractionToken,
+				AppID:   event.Item.Interaction.AppID,
+				UserID:  event.Item.Interaction.UserID,
+				Content: msg,
+				Flags:   64,
+			})
+			return
+		}
+
 		log.Errorf("Error getting video stream: %s", err)
 		sentryhelper.CaptureException(ctx, err)
 		go discord.UpdateMessage(&discord.FollowUpRequest{
@@ -508,6 +544,7 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 		})
 		return
 	}
+streamReady:
 	log.Tracef("got stream for %s", event.Item.Video.Title)
 	event.Item.Stream = stream
 
@@ -1421,10 +1458,10 @@ func (p *GuildPlayer) queueRadioSong() {
 
 	// Use a synthetic interaction for radio-queued items
 	// We use empty interaction token/appID since there's no user interaction
-	p.Add(ctx, *picked, "", "", "", true)
+	p.Add(ctx, *picked, "", "", "", nil, true)
 }
 
-func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, userID string, interactionToken string, appID string, isRadioPick ...bool) {
+func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, userID string, interactionToken string, appID string, fallbackVideos []youtube.VideoResponse, isRadioPick ...bool) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
 
@@ -1444,8 +1481,9 @@ func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, user
 			InteractionToken: interactionToken,
 			AppID:            appID,
 		},
-		LoadAttempts: 0,
-		MaxAttempts:  3, // Circuit breaker: max 3 attempts per item
+		LoadAttempts:   0,
+		MaxAttempts:    3, // Circuit breaker: max 3 attempts per item
+		FallbackVideos: fallbackVideos,
 		// Detach from original transaction since load/playback happens later.
 		// The hub is preserved for breadcrumb isolation.
 		Context:     sentryhelper.DetachFromTransaction(ctx),
