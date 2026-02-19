@@ -3,14 +3,9 @@ package helpers
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"beatbot/config"
 	"beatbot/gemini"
-
-	sentry "github.com/getsentry/sentry-go"
-	log "github.com/sirupsen/logrus"
-	"google.golang.org/genai"
 )
 
 // DJFallbacks are static responses when Gemini is unavailable
@@ -48,8 +43,8 @@ func GenerateDJResponse(ctx context.Context, command string, args ...interface{}
 	// Build the prompt based on command
 	prompt := buildDJPrompt(command, args)
 
-	// Generate the response
-	response := generateDJ(ctx, prompt)
+	// Generate the response — personality is injected by gemini.GenerateRaw
+	response := gemini.GenerateRaw(ctx, prompt)
 	if response == "" {
 		return getFallback(command)
 	}
@@ -191,61 +186,6 @@ func buildDJPrompt(command string, args []interface{}) string {
 	default:
 		return "Write a brief DJ response. Keep it casual. One sentence."
 	}
-}
-
-func generateDJ(ctx context.Context, prompt string) string {
-	// Start span for DJ generation
-	span := sentry.StartSpan(ctx, "helpers.dj_response")
-	span.Description = "Generate DJ response"
-	span.SetTag("model", "gemini-2.0-flash")
-	defer span.Finish()
-
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  config.Config.Gemini.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		log.Errorf("failed to create Gemini client: %v", err)
-		sentry.CaptureException(err)
-		span.Status = sentry.SpanStatusInternalError
-		return ""
-	}
-
-	fullPrompt := gemini.PersonalityPrompt + "\n\n" + prompt
-
-	parts := []*genai.Part{
-		{Text: fullPrompt},
-	}
-	content := []*genai.Content{{Parts: parts}}
-
-	resp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
-	if err != nil {
-		log.Errorf("failed to generate DJ response: %v", err)
-		sentry.CaptureException(err)
-		span.Status = sentry.SpanStatusInternalError
-		return ""
-	}
-
-	var sb strings.Builder
-	for _, cand := range resp.Candidates {
-		if cand.Content != nil {
-			for _, part := range cand.Content.Parts {
-				if part.Text != "" {
-					sb.WriteString(part.Text)
-				}
-			}
-		}
-	}
-
-	response := strings.TrimSpace(sb.String())
-	span.Status = sentry.SpanStatusOK
-
-	log.WithFields(log.Fields{
-		"module": "helpers.gemini",
-		"prompt": prompt,
-	}).Debug("Generated DJ response")
-
-	return response
 }
 
 // GenerateClearDJResponse generates a DJ response specifically for the /clear command

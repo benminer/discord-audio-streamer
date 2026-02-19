@@ -78,6 +78,15 @@ func buildPrompt(instructions string) string {
 	return PersonalityPrompt + "\n\n" + instructions
 }
 
+// GenerateRaw prepends the shared personality and generates a response for the given prompt.
+// Use this when you need Gemini generation from outside the gemini package.
+func GenerateRaw(ctx context.Context, prompt string) string {
+	if !config.Config.Gemini.Enabled {
+		return ""
+	}
+	return generateResponse(ctx, buildPrompt(prompt))
+}
+
 func GenerateResponse(ctx context.Context, prompt string) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
