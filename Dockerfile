@@ -8,7 +8,18 @@ RUN apt-get update && apt-get install -y \
     libopusfile-dev \
     libopus-dev \
     pkg-config \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install libdave (Discord DAVE E2EE) prebuilt binary for Linux ARM64
+RUN curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-ARM64-boringssl.zip -o /tmp/libdave.zip \
+    && mkdir -p /tmp/libdave \
+    && unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include \
+    && unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib \
+    && rm -f /tmp/libdave.zip \
+    && ldconfig \
+    && mkdir -p /usr/local/lib/pkgconfig \
+    && printf 'prefix=/usr/local\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib\nincludedir=${prefix}/include\n\nName: dave\nDescription: Discord DAVE E2EE\nVersion: 1.1.1\nLibs: -L${libdir} -ldave\nCflags: -I${includedir}\n' > /usr/local/lib/pkgconfig/dave.pc
 
 # Copy go mod files first for better caching
 COPY go.mod go.sum ./
@@ -22,7 +33,7 @@ ARG TARGETPLATFORM
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o discord-bot
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -44,6 +55,10 @@ WORKDIR /app
 COPY --from=builder /app/discord-bot .
 COPY --from=builder /app/commands.json .
 COPY --from=builder /app/entrypoint.sh .
+
+# Copy libdave shared library from builder stage
+COPY --from=builder /usr/local/lib/libdave.so /usr/local/lib/libdave.so
+RUN ldconfig
 
 # Data dir
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
