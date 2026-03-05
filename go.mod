@@ -83,6 +83,7 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-// Use MohmmedAshraf's fork with voice encryption fix + audio glitch fixes
-// Includes PR #1593 (encryption) + increased buffer size (2->100) to prevent stuttering
-replace github.com/bwmarrin/discordgo => github.com/MohmmedAshraf/discordgo v0.0.0-20251023120605-ec69b4c5a86d
+// Use MohmmedAshraf's fork with DAVE/E2EE voice encryption (aead_aes256_gcm_rtpsize)
+// Updated 2026-03-05 to fix Discord 4017 voice rejection (DAVE protocol enforcement March 2, 2026)
+// Includes Dec 29 2025 commit with full transport encryption migration xsalsa20_poly1305 -> aead_aes256_gcm_rtpsize
+replace github.com/bwmarrin/discordgo => github.com/MohmmedAshraf/discordgo v0.0.0-20251229161010-9f6aa8159fc6
