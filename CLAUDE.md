@@ -43,7 +43,7 @@
 - Optimized flags: no OGG preference, direct bestaudio
 
 **`discord/voice.go`** - Voice connection helpers
-- Uses local fork of MohmmedAshraf's discordgo with DAVE E2EE + transport encryption
+- Uses benminer/discordgo fork (remote module) with DAVE E2EE + transport encryption
 - No context params on voice methods, uses `Ready` bool for connection status
 
 **`discord/dave.go`** - DAVE E2EE adapter
@@ -118,12 +118,12 @@
 ## Discord Voice Setup
 
 ### The Fork Situation
-**Using**: Local fork of MohmmedAshraf's discordgo at `./discordgo-dave/`
+**Using**: Fork of MohmmedAshraf's discordgo at `github.com/benminer/discordgo`
 
 **Why a local fork?**
 - Base discordgo uses deprecated `xsalsa20_poly1305` encryption (error 4016)
 - MohmmedAshraf's fork added `aead_aes256_gcm_rtpsize` transport encryption + 100-packet buffers
-- Our local fork adds DAVE E2EE (MLS handshake opcodes 21-31) required since March 2, 2026
+- benminer/discordgo fork adds DAVE E2EE (MLS handshake opcodes 21-31) required since March 2, 2026
 
 **DAVE E2EE (Discord Audio/Video Encryption):**
 - Discord enforced DAVE protocol March 2, 2026 (error 4017 without it)
@@ -225,7 +225,7 @@ Should be clean with atomic.Bool usage.
 
 1. **FFmpeg memory buffering** - Streaming caused reliability issues
 2. **Fade-out curve/duration** - Tuned to avoid artifacts
-3. **Fork choice** - MohmmedAshraf's has specific fixes we need
+3. **Fork choice** - benminer/discordgo fork has DAVE E2EE + transport encryption fixes we need
 4. **OpusSend buffer size** - 100 is in the fork, don't change in our code
 5. **Audio encoder settings** - Complexity 10, max bitrate works well
 
