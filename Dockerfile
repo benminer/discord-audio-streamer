@@ -1,19 +1,32 @@
-# Build stage
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
+# Build stage — use Ubuntu 24.04 for glibc 2.38+ (required by libdave)
+FROM ubuntu:24.04 AS builder
 
-WORKDIR /app
+ARG TARGETARCH
 
-# Install build dependencies
+# Install Go toolchain + build dependencies
+# golang:bookworm has glibc 2.36 which is too old for libdave's symbols
 RUN apt-get update && apt-get install -y \
+    curl \
+    gcc \
+    g++ \
     libopusfile-dev \
     libopus-dev \
     pkg-config \
     unzip \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && GO_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
+    && curl -fsSL "https://go.dev/dl/go1.25.0.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
 
-# Install libdave (Discord DAVE E2EE) prebuilt binary for Linux ARM64
-RUN curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-ARM64-boringssl.zip -o /tmp/libdave.zip \
-    && mkdir -p /tmp/libdave \
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+WORKDIR /app
+
+# Install libdave (Discord DAVE E2EE) prebuilt binary
+# Map Docker TARGETARCH (amd64/arm64) to libdave release asset names (X64/ARM64)
+RUN LIBDAVE_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "ARM64" || echo "X64") \
+    && curl -fsSL "https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-${LIBDAVE_ARCH}-boringssl.zip" -o /tmp/libdave.zip \
     && unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include \
     && unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib \
     && rm -f /tmp/libdave.zip \
@@ -28,14 +41,16 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Build with optimizations for ARM64: strip debug info and symbols
-ARG TARGETPLATFORM
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o discord-bot
+# Build with optimizations: strip debug info and symbols
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -ldflags="-w -s" -o discord-bot
 
 # Runtime stage
 FROM ubuntu:24.04
 
+ARG TARGETARCH
+
 # Install runtime dependencies
+# Map TARGETARCH to yt-dlp binary name (arm64 -> yt-dlp_linux_aarch64, amd64 -> yt-dlp_linux)
 RUN apt-get update && apt-get install -y \
     libopusfile0 \
     libopus0 \
@@ -43,11 +58,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64 -o /usr/local/bin/yt-dlp \
+    && YTDLP_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "_aarch64" || echo "") \
+    && curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux${YTDLP_SUFFIX}" -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp
 
-# Create non-root user
-RUN useradd -m -u 1000 -s /bin/bash appuser
+# Create non-root user (use UID 1001 since ubuntu:24.04 already has UID 1000)
+RUN useradd -m -u 1001 -s /bin/bash appuser
 
 WORKDIR /app
 
