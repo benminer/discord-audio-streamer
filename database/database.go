@@ -238,6 +238,59 @@ func (d *Database) GetMostPlayed(guildID string, limit int) ([]MostPlayedRecord,
 	return records, rows.Err()
 }
 
+// GetGlobalMostPlayed returns the most played songs across all guilds.
+func (d *Database) GetGlobalMostPlayed(limit int) ([]MostPlayedRecord, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	rows, err := d.db.Query(
+		`SELECT video_id, title, url, COUNT(*) as play_count, MAX(played_at) as last_played
+		 FROM song_history
+		 GROUP BY video_id
+		 ORDER BY play_count DESC, last_played DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query global most played: %w", err)
+	}
+	defer rows.Close()
+
+	var records []MostPlayedRecord
+	for rows.Next() {
+		var r MostPlayedRecord
+		var lastPlayedStr string
+		if err := rows.Scan(&r.VideoID, &r.Title, &r.URL, &r.PlayCount, &lastPlayedStr); err != nil {
+			return nil, fmt.Errorf("failed to scan global most played row: %w", err)
+		}
+
+		formats := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999 -0700 MST",
+			"2006-01-02 15:04:05",
+		}
+		var lastPlayed time.Time
+		parsed := false
+		for _, fmt := range formats {
+			if t, err := time.Parse(fmt, lastPlayedStr); err == nil {
+				lastPlayed = t
+				parsed = true
+				break
+			}
+		}
+		if !parsed {
+			log.Warnf("failed to parse last_played timestamp '%s' with all known formats", lastPlayedStr)
+			lastPlayed = time.Now()
+		}
+		r.LastPlayed = lastPlayed
+
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
 // SetSession sets the Discord session for username lookups.
 func (d *Database) SetSession(session *discordgo.Session) {
 	d.session = session

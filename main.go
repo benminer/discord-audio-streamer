@@ -100,6 +100,43 @@ func run(ctx context.Context) error {
 		})
 	})
 
+	router.GET("/api/stats", func(c *gin.Context) {
+		sessions := controller.GetActiveSessions()
+		var topSongs []database.MostPlayedRecord
+		if db != nil {
+			records, err := db.GetGlobalMostPlayed(10)
+			if err != nil {
+				log.Warnf("Failed to get global most played: %v", err)
+			} else {
+				topSongs = records
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"sessions": sessions,
+			"topSongs": topSongs,
+		})
+	})
+
+	router.GET("/", func(c *gin.Context) {
+		content, err := os.ReadFile("web/index.html")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Error loading page")
+			return
+		}
+		c.Header("Content-Type", "text/html")
+		c.String(http.StatusOK, string(content))
+	})
+
+	router.GET("/styles.css", func(c *gin.Context) {
+		content, err := os.ReadFile("web/styles.css")
+		if err != nil {
+			c.String(http.StatusNotFound, "Not found")
+			return
+		}
+		c.Header("Content-Type", "text/css")
+		c.String(http.StatusOK, string(content))
+	})
+
 	router.GET("/privacy", func(c *gin.Context) {
 		content, err := os.ReadFile("./files/privacy.txt")
 		if err != nil {

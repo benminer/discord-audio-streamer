@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BeatBot | Your Discord Music Companion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body hx-ext="json-enc">
+    <div class="scanlines"></div>
+    <div class="noise"></div>
+    
+    <header class="hero">
+        <div class="hero-content">
+            <div class="logo-container">
+                <h1 class="glitch" data-text="BEATBOT">BEATBOT</h1>
+                <span class="version">v2.0</span>
+            </div>
+            <p class="tagline">Your silver-sonic companion for Discord</p>
+            <div class="hero-stats">
+                <div class="stat-pill">
+                    <span class="stat-value" id="session-count">-</span>
+                    <span class="stat-label">servers jamming</span>
+                </div>
+            </div>
+            <div class="cta">
+                <a href="https://discord.com/oauth2/authorize" class="btn-primary">
+                    <span class="btn-text">Add to Discord</span>
+                    <span class="btn-glow"></span>
+                </a>
+            </div>
+        </div>
+        <div class="hero-glow"></div>
+    </header>
+
+    <main>
+        <section class="features">
+            <h2 class="section-title"><span class="title-accent">//</span> Capabilities</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">▶</div>
+                    <h3>YouTube</h3>
+                    <p>Play any video or playlist directly from YouTube. Search, paste links, or queue whole playlists.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">♫</div>
+                    <h3>Spotify</h3>
+                    <p>Drop a Spotify track or playlist URL and BeatBot finds the YouTube equivalent automatically.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">♪</div>
+                    <h3>Apple Music</h3>
+                    <p>Same deal — paste any Apple Music link and get straight to listening.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⊕</div>
+                    <h3>Radio Mode</h3>
+                    <p>Queue one song, hit radio, and let AI pick similar tracks based on what you've been playing.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">◈</div>
+                    <h3>AI DJ</h3>
+                    <p>Sassy commentary on what's playing. Announcements, help responses, and personality on demand.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">★</div>
+                    <h3>Favorites</h3>
+                    <p>Save songs you love, pull them up instantly whenever. Your personal library in any server.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="live-section">
+            <h2 class="section-title"><span class="title-accent">◉</span> Live Now</h2>
+            <div class="live-container">
+                <div class="live-grid" id="active-sessions">
+                    <div class="placeholder-message">Loading...</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="bangers-section">
+            <h2 class="section-title"><span class="title-accent">◆</span> All-Time Bangers</h2>
+            <div class="bangers-container">
+                <table class="bangers-table">
+                    <thead>
+                        <tr>
+                            <th class="rank-col">#</th>
+                            <th class="title-col">Track</th>
+                            <th class="plays-col">Plays</th>
+                        </tr>
+                    </thead>
+                    <tbody id="top-songs-body">
+                        <tr class="placeholder-row">
+                            <td colspan="3">Loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p class="footer-brand">BEATBOT</p>
+            <p class="footer-links">
+                <a href="/privacy">Privacy</a> · 
+                <a href="/terms-of-service">Terms</a>
+            </p>
+            <p class="footer-copy">© 2024 — Running on pure voltage</p>
+        </div>
+    </footer>
+
+    <script>
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        function updateStats() {
+            fetch('/api/stats')
+                .then(r => r.json())
+                .then(data => {
+                    // Update session count in hero
+                    document.getElementById('session-count').textContent = data.sessions ? data.sessions.length : 0;
+                    
+                    // Update active sessions
+                    const sessionsContainer = document.getElementById('active-sessions');
+                    if (data.sessions && data.sessions.length > 0) {
+                        sessionsContainer.innerHTML = data.sessions.map(s => `
+                            <div class="server-card">
+                                <div class="server-avatar">${s.GuildName.charAt(0).toUpperCase()}</div>
+                                <div class="server-info">
+                                    <span class="server-name">${escapeHtml(s.GuildName)}</span>
+                                    <span class="server-status">▶ Now Playing</span>
+                                </div>
+                                <div class="pulse-dot"></div>
+                            </div>
+                        `).join('');
+                    } else {
+                        sessionsContainer.innerHTML = '<div class="placeholder-message">No servers are jamming right now</div>';
+                    }
+                    
+                    // Update top songs
+                    const songsBody = document.getElementById('top-songs-body');
+                    if (data.top_songs && data.top_songs.length > 0) {
+                        songsBody.innerHTML = data.top_songs.map((song, i) => `
+                            <tr>
+                                <td class="rank-col">${i + 1}</td>
+                                <td class="title-col">
+                                    <a href="${song.URL}" target="_blank" class="song-link">${escapeHtml(song.Title)}</a>
+                                </td>
+                                <td class="plays-col">${song.PlayCount}</td>
+                            </tr>
+                        `).join('');
+                    } else {
+                        songsBody.innerHTML = '<tr class="placeholder-row"><td colspan="3">No plays recorded yet</td></tr>';
+                    }
+                })
+                .catch(err => {
+                    console.error('Failed to fetch stats:', err);
+                });
+        }
+
+        // Initial load
+        updateStats();
+
+        // Refresh every 30 seconds
+        setInterval(updateStats, 30000);
+    </script>
+</body>
+</html>
