@@ -28,23 +28,12 @@ fi
 # Port 8080 always exposed so cloudflared can reach it
 echo "Starting discord-audio-streamer container..."
 
-# DAVE binary overrides (mount patched binary + libdave if present)
-DAVE_MOUNT_ARGS=""
-DAVE_BINARY="$(cd "$(dirname "$0")" && pwd)/dave-binary/discord-bot-dave"
-DAVE_LIBDAVE="$(cd "$(dirname "$0")" && pwd)/dave-binary/libdave-patched.so"
-if [ "${DAVE_MODE:-}" = "1" ] && [ -f "$DAVE_BINARY" ] && [ -f "$DAVE_LIBDAVE" ]; then
-    chmod 755 "$DAVE_BINARY"
-    echo "DAVE voice patch: mounting patched binary + libdave"
-    DAVE_MOUNT_ARGS="-v ${DAVE_BINARY}:/app/discord-bot:ro -v ${DAVE_LIBDAVE}:/usr/lib/libdave.so:ro"
-fi
-
 docker run -d --name discord-audio-streamer \
   --restart always \
   -p 8080:8080 \
   --cpus=8 \
   --memory=16g \
   --memory-swap=24g \
-  $DAVE_MOUNT_ARGS \
   -v discord-audio-streamer-data:/app/data \
   -e DISCORD_APP_ID=$DISCORD_APP_ID \
   -e DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY \
