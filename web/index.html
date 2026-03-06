@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BeatBot | Your Discord Music Companion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Chakra+Petch:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body hx-ext="json-enc">
+    <div class="scanlines"></div>
+    <div class="noise"></div>
+
+    <!-- ── Hero ──────────────────────────────────────────────── -->
+    <header class="hero">
+        <div class="hero-content">
+            <div class="logo-container">
+                <h1 class="glitch" data-text="BEATBOT">BEATBOT</h1>
+                <span class="version">v2.0</span>
+            </div>
+            <p class="tagline">Your silver-sonic companion for Discord</p>
+            <div class="hero-stats">
+                <div class="stat-pill">
+                    <span class="stat-value" id="session-count">-</span>
+                    <span class="stat-label">servers jamming</span>
+                </div>
+            </div>
+            <div class="cta">
+                <a href="https://discord.com/oauth2/authorize?client_id=1340419184248488086" class="btn-primary">
+                    <span class="btn-text">Add to Discord</span>
+                    <span class="btn-glow"></span>
+                </a>
+            </div>
+        </div>
+        <div class="hero-glow"></div>
+    </header>
+
+    <!-- ── Install Section ───────────────────────────────────── -->
+    <section class="install-section">
+        <div class="install-inner">
+            <h2 class="section-title"><span class="title-accent">//</span> Get Started</h2>
+            <div class="install-steps">
+
+                <div class="step-card">
+                    <span class="step-number">01</span>
+                    <h3>Add to Server</h3>
+                    <p>Click the button below to authorize BeatBot. Pick your server and grant the requested permissions.</p>
+                </div>
+
+                <div class="step-card">
+                    <span class="step-number">02</span>
+                    <h3>Join a Voice Channel</h3>
+                    <p>Hop into any voice channel in your server. BeatBot will follow you in when you queue a song.</p>
+                </div>
+
+                <div class="step-card">
+                    <span class="step-number">03</span>
+                    <h3>Drop a Track</h3>
+                    <p>YouTube, Spotify, Apple Music links — or just search by name. BeatBot handles the rest.</p>
+                    <span class="step-cmd">/play &lt;song or URL&gt;</span>
+                </div>
+
+            </div>
+            <div class="install-cta">
+                <a href="https://discord.com/oauth2/authorize?client_id=1340419184248488086" class="btn-primary">
+                    <span class="btn-text">Add BeatBot Free</span>
+                    <span class="btn-glow"></span>
+                </a>
+                <p class="install-sub">// free · no account required · works instantly · <a href="https://github.com/benminer/discord-audio-streamer" target="_blank" rel="noopener" class="install-oss-link">open source</a></p>
+            </div>
+        </div>
+    </section>
+
+    <main>
+        <!-- ── Capabilities ───────────────────────────────────── -->
+        <section class="features">
+            <h2 class="section-title"><span class="title-accent">//</span> Capabilities</h2>
+            <div class="features-grid">
+
+                <!-- YouTube -->
+                <div class="feature-card" data-accent="youtube">
+                    <div class="feature-icon-wrap">
+                        <!-- YouTube logo -->
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                        </svg>
+                    </div>
+                    <h3>YouTube</h3>
+                    <p>Play any video or playlist directly from YouTube. Search, paste links, or queue whole playlists.</p>
+                </div>
+
+                <!-- Spotify -->
+                <div class="feature-card" data-accent="spotify">
+                    <div class="feature-icon-wrap">
+                        <!-- Spotify logo -->
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+                        </svg>
+                    </div>
+                    <h3>Spotify</h3>
+                    <p>Drop a Spotify track or playlist URL and BeatBot finds the YouTube equivalent automatically.</p>
+                </div>
+
+                <!-- Apple Music -->
+                <div class="feature-card" data-accent="apple">
+                    <div class="feature-icon-wrap">
+                        <!-- Apple logo -->
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.54 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>
+                        </svg>
+                    </div>
+                    <h3>Apple Music</h3>
+                    <p>Same deal — paste any Apple Music link and get straight to listening without switching apps.</p>
+                </div>
+
+                <!-- Radio Mode -->
+                <div class="feature-card" data-accent="radio">
+                    <div class="feature-icon-wrap">
+                        <!-- Radio wave / broadcast icon -->
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 2a10 10 0 0 0-7.07 17.07l1.41-1.41A8 8 0 1 1 20 12a7.95 7.95 0 0 1-1.52 4.66l1.41 1.41A10 10 0 0 0 12 2zm0 4a6 6 0 0 0-4.24 10.24l1.42-1.42A4 4 0 1 1 16 12a3.96 3.96 0 0 1-.82 2.41l1.41 1.41A6 6 0 0 0 12 6zm0 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/>
+                        </svg>
+                    </div>
+                    <h3>Radio Mode</h3>
+                    <p>Queue one song, hit radio, and let AI pick similar tracks based on what you've been playing.</p>
+                </div>
+
+                <!-- AI DJ -->
+                <div class="feature-card" data-accent="ai">
+                    <div class="feature-icon-wrap">
+                        <!-- Microphone / AI DJ icon -->
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm0 2a2 2 0 0 0-2 2v6a2 2 0 0 0 4 0V5a2 2 0 0 0-2-2zm-7 8a1 1 0 0 1 1 1 6 6 0 0 0 12 0 1 1 0 0 1 2 0 8 8 0 0 1-7 7.938V22h3a1 1 0 0 1 0 2H8a1 1 0 0 1 0-2h3v-2.062A8 8 0 0 1 4 12a1 1 0 0 1 1-1z"/>
+                        </svg>
+                    </div>
+                    <h3>AI DJ</h3>
+                    <p>Dry wit, sharp observations, zero hype. BeatBot knows music deeply and sounds like it — every announcement, every response.</p>
+                </div>
+
+                <!-- Favorites -->
+                <div class="feature-card" data-accent="favorites">
+                    <div class="feature-icon-wrap">
+                        <!-- Star icon -->
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                        </svg>
+                    </div>
+                    <h3>Favorites</h3>
+                    <p>Save songs you love, pull them up instantly whenever. Your personal library in any server.</p>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- ── Live Now ───────────────────────────────────────── -->
+        <section class="live-section">
+            <h2 class="section-title"><span class="title-accent">◉</span> Live Now</h2>
+            <div class="live-container">
+                <div class="live-grid" id="active-sessions">
+                    <div class="placeholder-message">// loading...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── All-Time Bangers ───────────────────────────────── -->
+        <section class="bangers-section">
+            <h2 class="section-title"><span class="title-accent">◆</span> All-Time Bangers</h2>
+            <div class="bangers-container">
+                <table class="bangers-table">
+                    <thead>
+                        <tr>
+                            <th class="rank-col">#</th>
+                            <th class="title-col">Track</th>
+                            <th class="plays-col">Plays</th>
+                        </tr>
+                    </thead>
+                    <tbody id="top-songs-body">
+                        <tr class="placeholder-row">
+                            <td colspan="3">// loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p class="footer-brand">BEATBOT</p>
+            <p class="footer-links">
+                <a href="https://github.com/benminer/discord-audio-streamer" target="_blank" rel="noopener" class="footer-github">
+                    <svg class="github-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+                    </svg>
+                    Open Source on GitHub
+                </a>
+                <span class="footer-sep">&middot;</span>
+                <a href="/privacy">Privacy</a>
+                <span class="footer-sep">&middot;</span>
+                <a href="/terms-of-service">Terms</a>
+            </p>
+            <p class="footer-copy">© 2026 — Running on pure voltage</p>
+        </div>
+    </footer>
+
+    <script>
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        function updateStats() {
+            fetch('/api/stats')
+                .then(r => r.json())
+                .then(data => {
+                    // Session count in hero
+                    document.getElementById('session-count').textContent =
+                        data.sessions ? data.sessions.length : 0;
+
+                    // Active sessions grid
+                    const sessionsContainer = document.getElementById('active-sessions');
+                    if (data.sessions && data.sessions.length > 0) {
+                        sessionsContainer.innerHTML = data.sessions.map(s => `
+                            <div class="server-card">
+                                <div class="server-avatar">${escapeHtml(s.GuildName.charAt(0).toUpperCase())}</div>
+                                <div class="server-info">
+                                    <span class="server-name">${escapeHtml(s.GuildName)}</span>
+                                    <span class="server-status">▶ NOW PLAYING</span>
+                                </div>
+                                <div class="pulse-dot"></div>
+                            </div>
+                        `).join('');
+                    } else {
+                        sessionsContainer.innerHTML =
+                            '<div class="placeholder-message">// no servers jamming right now</div>';
+                    }
+
+                    // Top songs table — with rank attrs and play-count bars
+                    const songsBody = document.getElementById('top-songs-body');
+                    if (data.top_songs && data.top_songs.length > 0) {
+                        const maxPlays = data.top_songs[0].PlayCount || 1;
+                        songsBody.innerHTML = data.top_songs.map((song, i) => {
+                            const rank = i + 1;
+                            const pct  = Math.round((song.PlayCount / maxPlays) * 100);
+                            return `
+                                <tr data-rank="${rank}">
+                                    <td class="rank-col">${rank}</td>
+                                    <td class="title-col">
+                                        <a href="${escapeHtml(song.URL)}" target="_blank" rel="noopener" class="song-link">${escapeHtml(song.Title)}</a>
+                                    </td>
+                                    <td class="plays-col">
+                                        <div class="plays-bar-wrap">
+                                            <div class="plays-bar">
+                                                <div class="plays-bar-fill" style="width:${pct}%"></div>
+                                            </div>
+                                            ${song.PlayCount}
+                                        </div>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('');
+                    } else {
+                        songsBody.innerHTML =
+                            '<tr class="placeholder-row"><td colspan="3">// no plays recorded yet</td></tr>';
+                    }
+                })
+                .catch(err => {
+                    console.error('Failed to fetch stats:', err);
+                });
+        }
+
+        updateStats();
+        setInterval(updateStats, 30000);
+    </script>
+</body>
+</html>

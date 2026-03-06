@@ -217,6 +217,31 @@ func NewController(db *database.Database) (*Controller, error) {
 	}, nil
 }
 
+type ActiveSession struct {
+	GuildID   string
+	GuildName string
+}
+
+func (c *Controller) GetActiveSessions() []ActiveSession {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var sessions []ActiveSession
+	for _, player := range c.sessions {
+		player.VoiceChannelMutex.RLock()
+		hasVC := player.VoiceConnection != nil
+		player.VoiceChannelMutex.RUnlock()
+
+		if hasVC {
+			sessions = append(sessions, ActiveSession{
+				GuildID:   player.GuildID,
+				GuildName: player.getGuildName(),
+			})
+		}
+	}
+	return sessions
+}
+
 func (c *Controller) GetDB() *database.Database {
 	return c.db
 }
