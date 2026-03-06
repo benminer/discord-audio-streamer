@@ -51,7 +51,7 @@ jobs:
           ${{ runner.os }}-go-
     - name: Install native dependencies
       run: |
-        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip
+        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip ffmpeg
         curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip -o /tmp/libdave.zip
         sudo unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include
         sudo unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib
@@ -82,7 +82,7 @@ jobs:
           ${{ runner.os }}-go-
     - name: Install native dependencies
       run: |
-        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip
+        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip ffmpeg
         curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip -o /tmp/libdave.zip
         sudo unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include
         sudo unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib
@@ -113,7 +113,7 @@ jobs:
           ${{ runner.os }}-go-
     - name: Install native dependencies
       run: |
-        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip
+        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip ffmpeg
         curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip -o /tmp/libdave.zip
         sudo unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include
         sudo unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib
