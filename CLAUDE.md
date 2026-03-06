@@ -43,8 +43,12 @@
 - Optimized flags: no OGG preference, direct bestaudio
 
 **`discord/voice.go`** - Voice connection helpers
-- Uses MohmmedAshraf's fork with encryption fixes + buffer size tweaks
-- Context-based timeouts, Status field instead of Ready boolean
+- Uses benminer/discordgo fork (remote module) with DAVE E2EE + transport encryption
+- No context params on voice methods, uses `Ready` bool for connection status
+
+**`discord/dave.go`** - DAVE E2EE adapter
+- Bridges `godave` types (UserID, ChannelID, Codec) to discordgo's primitive-type `DaveSession` interface
+- Creates DAVE sessions via `golibdave` (CGO bindings to Discord's `libdave` C library)
 
 **`spotify/client.go`** - Spotify URL parsing
 - OAuth2 client credentials authentication
@@ -114,29 +118,26 @@
 ## Discord Voice Setup
 
 ### The Fork Situation
-**Using**: `github.com/MohmmedAshraf/discordgo` (branch: `shotcaller-voice-encryption-fix-updated`)
+**Using**: Fork of MohmmedAshraf's discordgo at `github.com/benminer/discordgo`
 
-**Why not base discordgo?**
-- Base library uses deprecated `xsalsa20_poly1305` encryption
-- Discord rejects with error 4016 (Unknown encryption mode)
-- Need modern modes: `aead_aes256_gcm_rtpsize`, `aead_xchacha20_poly1305_rtpsize`
+**Why a local fork?**
+- Base discordgo uses deprecated `xsalsa20_poly1305` encryption (error 4016)
+- MohmmedAshraf's fork added `aead_aes256_gcm_rtpsize` transport encryption + 100-packet buffers
+- benminer/discordgo fork adds DAVE E2EE (MLS handshake opcodes 21-31) required since March 2, 2026
 
-**Why not ozraru's fork (PR #1593)?**
-- Has encryption fix BUT small OpusSend/OpusRecv buffers (2 packets)
-- Small buffers = dropped packets = audio stuttering
-- MohmmedAshraf's fork = encryption fix + 100-packet buffers
+**DAVE E2EE (Discord Audio/Video Encryption):**
+- Discord enforced DAVE protocol March 2, 2026 (error 4017 without it)
+- Uses `disgoorg/godave` + `golibdave` (CGO bindings to `discord/libdave` C library)
+- Architecture: discordgo defines `DaveSession` interface, `discord/dave.go` bridges to godave
+- Two-layer encryption: DAVE E2EE (Opus frames) then transport (AES-256-GCM RTP)
+- Fresh DaveSession created per voice connection (MLS state is per-connection)
+- Requires `libdave.so`/`libdave.dylib` installed with pkg-config metadata
 
-**API Differences from base discordgo:**
+**API (fork matches base discordgo signatures):**
 ```go
-// Base:
 vc.ChannelVoiceJoin(guildId, channelId, false, true)
 vc.Disconnect()
 vc.Ready  // boolean
-
-// Fork:
-vc.ChannelVoiceJoin(ctx, guildId, channelId, false, true)
-vc.Disconnect(ctx)
-vc.Status == discordgo.VoiceConnectionStatusReady  // enum
 ```
 
 ## Common Issues & Solutions
@@ -224,7 +225,7 @@ Should be clean with atomic.Bool usage.
 
 1. **FFmpeg memory buffering** - Streaming caused reliability issues
 2. **Fade-out curve/duration** - Tuned to avoid artifacts
-3. **Fork choice** - MohmmedAshraf's has specific fixes we need
+3. **Fork choice** - benminer/discordgo fork has DAVE E2EE + transport encryption fixes we need
 4. **OpusSend buffer size** - 100 is in the fork, don't change in our code
 5. **Audio encoder settings** - Complexity 10, max bitrate works well
 

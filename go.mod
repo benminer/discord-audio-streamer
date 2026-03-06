@@ -6,6 +6,8 @@ require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/antonfisher/nested-logrus-formatter v1.3.1
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/disgoorg/godave v0.1.0
+	github.com/disgoorg/godave/golibdave v0.1.0
 	github.com/getsentry/sentry-go v0.36.2
 	github.com/getsentry/sentry-go/gin v0.36.2
 	github.com/gin-gonic/gin v1.11.0
@@ -29,6 +31,7 @@ require (
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/disgoorg/godave/libdave v0.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
@@ -83,6 +86,7 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-// Use MohmmedAshraf's fork with voice encryption fix + audio glitch fixes
-// Includes PR #1593 (encryption) + increased buffer size (2->100) to prevent stuttering
-replace github.com/bwmarrin/discordgo => github.com/MohmmedAshraf/discordgo v0.0.0-20251023120605-ec69b4c5a86d
+// Fork of MohmmedAshraf's discordgo with DAVE/E2EE voice encryption support.
+// Based on Dec 29 2025 commit (aead_aes256_gcm_rtpsize transport encryption).
+// Patched to add DAVE MLS handshake opcodes (21-31) for Discord's March 2, 2026 E2EE enforcement.
+replace github.com/bwmarrin/discordgo => github.com/benminer/discordgo v0.0.0-20260306012736-d80e0ea776a5

@@ -5,6 +5,8 @@ import (
 
 	"beatbot/config"
 
+	logrus "github.com/sirupsen/logrus"
+
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -15,11 +17,11 @@ func NewSession() (*discordgo.Session, error) {
 		return nil, err
 	}
 	session.Identify.Intents = discordgo.IntentsGuildVoiceStates
-	// could use this in the future to track user voice states
-	// for now, just hitting the api is fine
-	// session.AddHandler(func(s *discordgo.Session, event *discordgo.VoiceStateUpdate) {
-	// 	log.Printf("Voice state update: %v", event)
-	// })
+
+	// Enable DAVE E2EE for voice connections
+	session.DaveSessionCreate = NewDaveSessionCreate()
+	logrus.Info("DAVE E2EE voice encryption enabled")
+
 	session.Open()
 	return session, nil
 }

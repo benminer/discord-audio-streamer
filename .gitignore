@@ -6,3 +6,4 @@ gcloud-deploy.sh
 beatbot
 data/*
 data/
+dave-binary/

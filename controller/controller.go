@@ -307,9 +307,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	// Without this, the voice connection can go stale after reset,
 	// causing the next play command to hang.
 	if p.VoiceConnection != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := p.VoiceConnection.Disconnect(ctx); err != nil {
+		if err := p.VoiceConnection.Disconnect(); err != nil {
 			log.Errorf("Error disconnecting from voice during reset: %v", err)
 		}
 		p.VoiceConnection = nil
@@ -1207,11 +1205,9 @@ func (p *GuildPlayer) startIdleChecker() {
 					p.stopVoiceConnectionMonitor()
 
 					if p.VoiceConnection != nil {
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						if err := p.VoiceConnection.Disconnect(ctx); err != nil {
+						if err := p.VoiceConnection.Disconnect(); err != nil {
 							log.Errorf("Error disconnecting from voice: %v", err)
 						}
-						cancel()
 						p.VoiceConnection = nil
 					}
 
@@ -1620,8 +1616,8 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 				p.VoiceChannelMutex.RUnlock()
 				if vc != nil {
 					// Check if connection is in a failed state
-					if vc.Status != discordgo.VoiceConnectionStatusReady {
-						log.Warnf("Voice connection not ready for guild %s, status: %v", p.GuildID, vc.Status)
+					if !vc.Ready {
+						log.Warnf("Voice connection not ready for guild %s", p.GuildID)
 
 						// If we're currently playing, attempt recovery
 						if p.Player.IsPlaying() {
@@ -1678,11 +1674,9 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 	// Disconnect the stale connection
 	p.VoiceChannelMutex.Lock()
 	if p.VoiceConnection != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if err := p.VoiceConnection.Disconnect(ctx); err != nil {
+		if err := p.VoiceConnection.Disconnect(); err != nil {
 			log.Errorf("Error disconnecting during recovery for guild %s: %v", p.GuildID, err)
 		}
-		cancel()
 		p.VoiceConnection = nil
 	}
 	p.VoiceChannelMutex.Unlock()
