@@ -1739,6 +1739,9 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 				Interaction:    savedItem.Interaction,
 				LoadResult:     nil, // force fresh load — do not reuse consumed pipe
 				Stream:         nil,
+				// Required: playNext() calls WaitForStreamURL() which checks this
+				// to avoid a nil-pointer dereference when Stream is nil.
+				streamReady: make(chan struct{}),
 			}
 			p.Queue.Mutex.Lock()
 			p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
