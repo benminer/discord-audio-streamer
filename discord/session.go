@@ -18,6 +18,11 @@ func NewSession() (*discordgo.Session, error) {
 	}
 	session.Identify.Intents = discordgo.IntentsGuildVoiceStates
 
+	// Enable verbose discordgo logging for DAVE debugging
+	// TODO: Revert to LogError (0) once DAVE silent audio is resolved
+	session.LogLevel = discordgo.LogDebug
+	logrus.Info("discordgo log level set to LogDebug for DAVE debugging")
+
 	// Enable DAVE E2EE for voice connections
 	session.DaveSessionCreate = NewDaveSessionCreate()
 	logrus.Info("DAVE E2EE voice encryption enabled")

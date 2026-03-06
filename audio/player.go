@@ -87,6 +87,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	p.playbackStartTime = time.Now()
 	p.playbackPosition.Store(0)
 	firstPacket := true
+	var framesSent uint64
 	buffer := make([]int16, 960*2)
 	opusBuffer := make([]byte, 960*4)
 
@@ -282,6 +283,14 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					VideoID: &data.VideoID,
 				}
 				return nil
+			}
+			framesSent++
+			if framesSent == 1 {
+				p.logger.Infof("First opus frame sent to OpusSend (%d bytes, vc.Ready=%v)", encoded, voiceChannel.Ready)
+			} else if framesSent == 50 { // 1 second of audio
+				p.logger.Infof("50 opus frames sent to OpusSend (1 second of audio flowing)")
+			} else if framesSent%2500 == 0 { // every ~50 seconds
+				p.logger.Debugf("Opus frames sent: %d (vc.Ready=%v)", framesSent, voiceChannel.Ready)
 			}
 		}
 	}
