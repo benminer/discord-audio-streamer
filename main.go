@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,12 @@ import (
 	"beatbot/pages"
 	"beatbot/youtube"
 )
+
+//go:embed web/index.html
+var indexHTML []byte
+
+//go:embed web/styles.css
+var stylesCSS []byte
 
 func main() {
 	log.SetFormatter(&nested.Formatter{
@@ -118,23 +125,13 @@ func run(ctx context.Context) error {
 	})
 
 	router.GET("/", func(c *gin.Context) {
-		content, err := os.ReadFile("web/index.html")
-		if err != nil {
-			c.String(http.StatusInternalServerError, "Error loading page")
-			return
-		}
 		c.Header("Content-Type", "text/html")
-		c.String(http.StatusOK, string(content))
+		c.String(http.StatusOK, string(indexHTML))
 	})
 
 	router.GET("/styles.css", func(c *gin.Context) {
-		content, err := os.ReadFile("web/styles.css")
-		if err != nil {
-			c.String(http.StatusNotFound, "Not found")
-			return
-		}
 		c.Header("Content-Type", "text/css")
-		c.String(http.StatusOK, string(content))
+		c.String(http.StatusOK, string(stylesCSS))
 	})
 
 	router.GET("/privacy", func(c *gin.Context) {
