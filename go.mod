@@ -89,4 +89,5 @@ require (
 // Fork of MohmmedAshraf's discordgo with DAVE/E2EE voice encryption support.
 // Based on Dec 29 2025 commit (aead_aes256_gcm_rtpsize transport encryption).
 // Patched to add DAVE MLS handshake opcodes (21-31) for Discord's March 2, 2026 E2EE enforcement.
-replace github.com/bwmarrin/discordgo => github.com/benminer/discordgo v0.0.0-20260306012736-d80e0ea776a5
+// Fixed: SetChannelID now called before MLS init to fix silent audio (2cf9f44).
+replace github.com/bwmarrin/discordgo => github.com/benminer/discordgo v0.0.0-20260306054103-2cf9f441f18b
