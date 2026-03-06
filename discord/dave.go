@@ -115,19 +115,45 @@ type daveCallbacksAdapter struct {
 }
 
 func (a *daveCallbacksAdapter) SendMLSKeyPackage(mlsKeyPackage []byte) error {
-	return a.callbacks.SendMLSKeyPackage(mlsKeyPackage)
+	daveLogger.Infof("SendMLSKeyPackage: %d bytes (sending opcode 26 to Discord)", len(mlsKeyPackage))
+	err := a.callbacks.SendMLSKeyPackage(mlsKeyPackage)
+	if err != nil {
+		daveLogger.Errorf("SendMLSKeyPackage FAILED: %v", err)
+	} else {
+		daveLogger.Infof("SendMLSKeyPackage: sent successfully")
+	}
+	return err
 }
 
 func (a *daveCallbacksAdapter) SendMLSCommitWelcome(mlsCommitWelcome []byte) error {
-	return a.callbacks.SendMLSCommitWelcome(mlsCommitWelcome)
+	daveLogger.Infof("SendMLSCommitWelcome: %d bytes (sending opcode 28 to Discord)", len(mlsCommitWelcome))
+	err := a.callbacks.SendMLSCommitWelcome(mlsCommitWelcome)
+	if err != nil {
+		daveLogger.Errorf("SendMLSCommitWelcome FAILED: %v", err)
+	} else {
+		daveLogger.Infof("SendMLSCommitWelcome: sent successfully")
+	}
+	return err
 }
 
 func (a *daveCallbacksAdapter) SendReadyForTransition(transitionID uint16) error {
-	return a.callbacks.SendReadyForTransition(transitionID)
+	daveLogger.Infof("SendReadyForTransition: transitionID=%d (sending opcode 23 to Discord)", transitionID)
+	err := a.callbacks.SendReadyForTransition(transitionID)
+	if err != nil {
+		daveLogger.Errorf("SendReadyForTransition FAILED: %v", err)
+	} else {
+		daveLogger.Infof("SendReadyForTransition: sent successfully")
+	}
+	return err
 }
 
 func (a *daveCallbacksAdapter) SendInvalidCommitWelcome(transitionID uint16) error {
-	return a.callbacks.SendInvalidCommitWelcome(transitionID)
+	daveLogger.Warnf("SendInvalidCommitWelcome: transitionID=%d (sending opcode 31 to Discord)", transitionID)
+	err := a.callbacks.SendInvalidCommitWelcome(transitionID)
+	if err != nil {
+		daveLogger.Errorf("SendInvalidCommitWelcome FAILED: %v", err)
+	}
+	return err
 }
 
 // NewDaveSessionCreate returns a DaveSessionCreateFunc that creates real DAVE sessions
