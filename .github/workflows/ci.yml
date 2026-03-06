@@ -50,7 +50,14 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
     - name: Install native dependencies
-      run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
+      run: |
+        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip
+        curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip -o /tmp/libdave.zip
+        sudo unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include
+        sudo unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib
+        sudo ldconfig
+        sudo mkdir -p /usr/local/lib/pkgconfig
+        printf 'prefix=/usr/local\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib\nincludedir=${prefix}/include\n\nName: dave\nDescription: Discord DAVE E2EE\nVersion: 1.1.1\nLibs: -L${libdir} -ldave\nCflags: -I${includedir}\n' | sudo tee /usr/local/lib/pkgconfig/dave.pc > /dev/null
     - name: Check go.mod tidy
       run: |
         go mod tidy
@@ -74,7 +81,14 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
     - name: Install native dependencies
-      run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
+      run: |
+        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip
+        curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip -o /tmp/libdave.zip
+        sudo unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include
+        sudo unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib
+        sudo ldconfig
+        sudo mkdir -p /usr/local/lib/pkgconfig
+        printf 'prefix=/usr/local\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib\nincludedir=${prefix}/include\n\nName: dave\nDescription: Discord DAVE E2EE\nVersion: 1.1.1\nLibs: -L${libdir} -ldave\nCflags: -I${includedir}\n' | sudo tee /usr/local/lib/pkgconfig/dave.pc > /dev/null
     - name: Check go.mod tidy
       run: |
         go mod tidy
@@ -98,7 +112,14 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
     - name: Install native dependencies
-      run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
+      run: |
+        sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev unzip
+        curl -fsSL https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip -o /tmp/libdave.zip
+        sudo unzip -j /tmp/libdave.zip "include/dave/dave.h" -d /usr/local/include
+        sudo unzip -j /tmp/libdave.zip "lib/libdave.so" -d /usr/local/lib
+        sudo ldconfig
+        sudo mkdir -p /usr/local/lib/pkgconfig
+        printf 'prefix=/usr/local\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib\nincludedir=${prefix}/include\n\nName: dave\nDescription: Discord DAVE E2EE\nVersion: 1.1.1\nLibs: -L${libdir} -ldave\nCflags: -I${includedir}\n' | sudo tee /usr/local/lib/pkgconfig/dave.pc > /dev/null
     - name: Check go.mod tidy
       run: |
         go mod tidy
