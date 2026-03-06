@@ -19,7 +19,6 @@ import (
 
 type Player struct {
 	Notifications     chan PlaybackNotification
-	completed         chan bool
 	logger            *log.Entry
 	encoder           *opus.Encoder
 	paused            atomic.Bool
@@ -45,7 +44,6 @@ func NewPlayer() (*Player, error) {
 	encoder.SetBitrateToMax()
 
 	player := &Player{
-		completed:     make(chan bool),
 		Notifications: make(chan PlaybackNotification, 100),
 		logger: log.WithFields(log.Fields{
 			"module": "player",
@@ -99,207 +97,192 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	p.logger.Debug("Starting audio stream")
 
 	for {
-		select {
-		case _, ok := <-p.completed:
-			if !ok {
-				p.logger.Trace("Playback stopped by channel close")
-				span.Status = sentry.SpanStatusCanceled
-				return nil
-			} else {
-				p.logger.Trace("Playback stopped by done signal")
-			}
-			span.Status = sentry.SpanStatusCanceled
-			return nil
-		default:
-			// Handle fade-out when pausing or stopping
-			if p.fadeOutRemaining.Load() > 0 {
-				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
-				if err != nil {
-					if err == io.EOF || err == io.ErrUnexpectedEOF {
-						p.fadeOutRemaining.Store(0)
-						if p.stopping.Load() {
-							p.logger.Debug("EOF during fade-out, stopping playback")
-							span.Status = sentry.SpanStatusCanceled
-							return nil
-						}
-						continue
-					}
-					p.logger.Warnf("Error reading during fade-out: %v", err)
-					sentry.CaptureException(err)
-					continue
-				}
-
-				// Apply fade-out multiplier (cubic fade for sharp curve)
-				remaining := p.fadeOutRemaining.Load()
-				t := float64(remaining) / 5.0
-				fadeMultiplier := t * t * t
-				for i := range buffer {
-					sample := float64(buffer[i]) * fadeMultiplier
-					if sample > 32767 {
-						sample = 32767
-					} else if sample < -32768 {
-						sample = -32768
-					}
-					buffer[i] = int16(sample)
-				}
-
-				// Encode and send
-				encoded, err := p.encoder.Encode(buffer, opusBuffer)
-				if err != nil {
-					p.logger.Warnf("Error encoding during fade-out: %v", err)
-					sentry.CaptureException(err)
-				} else {
-					if !safeSendOpus(voiceChannel, opusBuffer[:encoded], p.completed) {
+		// Handle fade-out when pausing or stopping
+		if p.fadeOutRemaining.Load() > 0 {
+			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+			if err != nil {
+				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					p.fadeOutRemaining.Store(0)
+					if p.stopping.Load() {
+						p.logger.Debug("EOF during fade-out, stopping playback")
+						span.Status = sentry.SpanStatusCanceled
 						return nil
 					}
-				}
-
-				p.fadeOutRemaining.Add(-1)
-
-				// If we were stopping and fade-out is complete, exit
-				if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
-					p.logger.Debug("Fade-out complete, stopping playback")
-					span.Status = sentry.SpanStatusCanceled
-					return nil
-				}
-
-				time.Sleep(20 * time.Millisecond)
-				continue
-			}
-
-			// Check if we should start fade-out for stop
-			if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
-				p.logger.Debug("Stop requested, starting fade-out")
-				p.fadeOutRemaining.Store(5)
-				continue
-			}
-
-			if p.paused.Load() {
-				// If a stop was requested while paused, unblock so the stopping
-				// check below can run its fade-out and exit cleanly.
-				if p.stopping.Load() {
-					p.logger.Debug("Stop requested while paused, exiting pause loop")
-					p.paused.Store(false)
 					continue
 				}
-
-				// Drain buffer to prevent stale data buildup
-				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
-				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-					p.logger.Warnf("Error draining buffer during pause: %v", err)
-					sentry.CaptureException(err)
-				}
-
-				// Send silence frame to maintain stream continuity
-				encoded, err := p.encoder.Encode(p.silenceBuffer, p.silenceOpus)
-				if err != nil {
-					p.logger.Warnf("Error encoding silence during pause: %v", err)
-					sentry.CaptureException(err)
-				} else {
-					safeSendOpus(voiceChannel, p.silenceOpus[:encoded], p.completed)
-				}
-
-				time.Sleep(20 * time.Millisecond) // ~50 frames per second
+				p.logger.Warnf("Error reading during fade-out: %v", err)
+				sentry.CaptureException(err)
 				continue
 			}
 
-			var attempts int
-			for attempts < 3 {
-				err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
-				if err == io.EOF || err == io.ErrUnexpectedEOF {
-					p.logger.Trace("Reached end of audio stream")
-					span.Status = sentry.SpanStatusOK
-					p.Notifications <- PlaybackNotification{
-						Event:   PlaybackCompleted,
-						VideoID: &data.VideoID,
-					}
-					return nil
+			// Apply fade-out multiplier (cubic fade for sharp curve)
+			remaining := p.fadeOutRemaining.Load()
+			t := float64(remaining) / 5.0
+			fadeMultiplier := t * t * t
+			for i := range buffer {
+				sample := float64(buffer[i]) * fadeMultiplier
+				if sample > 32767 {
+					sample = 32767
+				} else if sample < -32768 {
+					sample = -32768
 				}
-				if err != nil {
-					attempts++
-					p.logger.Warnf("Error reading from buffer (attempt %d/3): %v", attempts, err)
-					sentry.CaptureException(err)
-					if attempts == 3 {
-						span.Status = sentry.SpanStatusInternalError
-						p.Notifications <- PlaybackNotification{
-							Event:   PlaybackError,
-							VideoID: &data.VideoID,
-							Error:   &err,
-						}
-						return err
-					}
-					continue
-				}
-				break
+				buffer[i] = int16(sample)
 			}
 
-			if firstPacket {
-				p.Notifications <- PlaybackNotification{
-					Event:   PlaybackStarted,
-					VideoID: &data.VideoID,
-				}
-				firstPacket = false
-			}
-
-			vol := int(p.volume.Load())
-			if vol != 100 {
-				for i := range buffer {
-					sample := float64(buffer[i]) * float64(vol) / 100.0
-					// clamp
-					if sample > 32767 {
-						sample = 32767
-					} else if sample < -32768 {
-						sample = -32768
-					}
-					buffer[i] = int16(sample)
-				}
-			}
-
+			// Encode and send
 			encoded, err := p.encoder.Encode(buffer, opusBuffer)
 			if err != nil {
-				p.logger.Warnf("Error encoding to opus: %v", err)
+				p.logger.Warnf("Error encoding during fade-out: %v", err)
 				sentry.CaptureException(err)
-				p.Notifications <- PlaybackNotification{
-					Event:   PlaybackError,
-					VideoID: &data.VideoID,
-					Error:   &err,
+			} else {
+				if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
+					return nil
 				}
+			}
+
+			p.fadeOutRemaining.Add(-1)
+
+			// If we were stopping and fade-out is complete, exit
+			if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
+				p.logger.Debug("Fade-out complete, stopping playback")
+				span.Status = sentry.SpanStatusCanceled
+				return nil
+			}
+
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+
+		// Check if we should start fade-out for stop
+		if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
+			p.logger.Debug("Stop requested, starting fade-out")
+			p.fadeOutRemaining.Store(5)
+			continue
+		}
+
+		if p.paused.Load() {
+			// If a stop was requested while paused, unblock so the stopping
+			// check below can run its fade-out and exit cleanly.
+			if p.stopping.Load() {
+				p.logger.Debug("Stop requested while paused, exiting pause loop")
+				p.paused.Store(false)
 				continue
 			}
 
-			// Update position tracking BEFORE sending (each opus frame is 20ms)
-			// This ensures position stays accurate even if send fails
-			if !p.paused.Load() && !p.stopping.Load() {
-				currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
-				p.playbackPosition.Store(currentPos)
+			// Drain buffer to prevent stale data buildup
+			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+			if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+				p.logger.Warnf("Error draining buffer during pause: %v", err)
+				sentry.CaptureException(err)
 			}
 
-			if !safeSendOpus(voiceChannel, opusBuffer[:encoded], p.completed) {
-				p.logger.Debug("Playback stopped - voice channel closed or completed")
-				span.Status = sentry.SpanStatusCanceled
+			// Send silence frame to maintain stream continuity
+			encoded, err := p.encoder.Encode(p.silenceBuffer, p.silenceOpus)
+			if err != nil {
+				p.logger.Warnf("Error encoding silence during pause: %v", err)
+				sentry.CaptureException(err)
+			} else {
+				safeSendOpus(voiceChannel, p.silenceOpus[:encoded])
+			}
+
+			time.Sleep(20 * time.Millisecond) // ~50 frames per second
+			continue
+		}
+
+		var attempts int
+		for attempts < 3 {
+			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				p.logger.Trace("Reached end of audio stream")
+				span.Status = sentry.SpanStatusOK
 				p.Notifications <- PlaybackNotification{
-					Event:   PlaybackStopped,
+					Event:   PlaybackCompleted,
 					VideoID: &data.VideoID,
 				}
 				return nil
 			}
+			if err != nil {
+				attempts++
+				p.logger.Warnf("Error reading from buffer (attempt %d/3): %v", attempts, err)
+				sentry.CaptureException(err)
+				if attempts == 3 {
+					span.Status = sentry.SpanStatusInternalError
+					p.Notifications <- PlaybackNotification{
+						Event:   PlaybackError,
+						VideoID: &data.VideoID,
+						Error:   &err,
+					}
+					return err
+				}
+				continue
+			}
+			break
+		}
+
+		if firstPacket {
+			p.Notifications <- PlaybackNotification{
+				Event:   PlaybackStarted,
+				VideoID: &data.VideoID,
+			}
+			firstPacket = false
+		}
+
+		vol := int(p.volume.Load())
+		if vol != 100 {
+			for i := range buffer {
+				sample := float64(buffer[i]) * float64(vol) / 100.0
+				// clamp
+				if sample > 32767 {
+					sample = 32767
+				} else if sample < -32768 {
+					sample = -32768
+				}
+				buffer[i] = int16(sample)
+			}
+		}
+
+		encoded, err := p.encoder.Encode(buffer, opusBuffer)
+		if err != nil {
+			p.logger.Warnf("Error encoding to opus: %v", err)
+			sentry.CaptureException(err)
+			p.Notifications <- PlaybackNotification{
+				Event:   PlaybackError,
+				VideoID: &data.VideoID,
+				Error:   &err,
+			}
+			continue
+		}
+
+		// Update position tracking BEFORE sending (each opus frame is 20ms)
+		// This ensures position stays accurate even if send fails
+		if !p.paused.Load() && !p.stopping.Load() {
+			currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
+			p.playbackPosition.Store(currentPos)
+		}
+
+		if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
+			p.logger.Debug("Playback stopped - voice channel closed or completed")
+			span.Status = sentry.SpanStatusCanceled
+			p.Notifications <- PlaybackNotification{
+				Event:   PlaybackStopped,
+				VideoID: &data.VideoID,
+			}
+			return nil
 		}
 	}
 }
 
-// safeSendOpus sends opus data to the voice connection, returning false if the channel is closed.
-func safeSendOpus(vc *discordgo.VoiceConnection, data []byte, completed <-chan bool) (sent bool) {
+// safeSendOpus sends opus data to the voice connection.
+// Returns false if the OpusSend channel is closed (voice disconnected),
+// which is recovered from the panic that a send on a closed channel causes.
+func safeSendOpus(vc *discordgo.VoiceConnection, data []byte) (sent bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			sent = false
 		}
 	}()
-	select {
-	case vc.OpusSend <- data:
-		return true
-	case <-completed:
-		return false
-	}
+	vc.OpusSend <- data
+	return true
 }
 
 func (p *Player) Pause(ctx context.Context) {

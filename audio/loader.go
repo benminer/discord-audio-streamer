@@ -38,8 +38,11 @@ type LoadResult struct {
 func NewLoader() *Loader {
 	return &Loader{
 		Notifications: make(chan PlaybackNotification, 100),
-		canceled:      make(chan bool),
-		completed:     make(chan bool),
+		// Buffered(1): allows Cancel() to send without blocking even if Load()
+		// hasn't reached its select yet. We drain any stale signal at the start
+		// of each Load() call so it can't cancel the wrong invocation.
+		canceled:  make(chan bool, 1),
+		completed: make(chan bool),
 		logger: log.WithFields(log.Fields{
 			"module": "audio-loader",
 		}),
@@ -64,6 +67,15 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 		}
 		span.Finish()
 	}()
+
+	// Drain any stale cancel signal left over from a previous Cancel() call
+	// that arrived before a prior Load() reached its select. Without this,
+	// a cancel meant for the previous load would abort this new one.
+	select {
+	case <-l.canceled:
+		l.logger.Debugf("drained stale cancel signal before loading %s", job.VideoID)
+	default:
+	}
 
 	l.Notifications <- PlaybackNotification{
 		Event:   PlaybackLoading,
@@ -242,9 +254,12 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 }
 
 func (l *Loader) Cancel() {
-	// Non-blocking send: signals an active Load() to abort without blocking
-	// if no load is in progress. Buffered(1) was wrong — a stale signal would
-	// sit in the buffer and incorrectly cancel the next Load() call.
+	// Non-blocking send to the buffered(1) canceled channel. If Load() is
+	// already in its select, it picks this up immediately. If Load() hasn't
+	// reached the select yet (FFmpeg is still starting), the signal sits in
+	// the buffer until the select fires. Load() drains any stale signal at
+	// the start of each invocation to prevent a cancel from one call leaking
+	// into the next.
 	select {
 	case l.canceled <- true:
 	default:

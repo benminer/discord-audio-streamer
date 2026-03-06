@@ -55,10 +55,22 @@ func New() (*Database, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// SQLite is file-level locked: a single connection serializes all writes
+	// and avoids SQLITE_BUSY errors from concurrent goroutines. WAL mode still
+	// allows concurrent readers even with one writer connection.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	// Enable WAL mode for better concurrent read performance
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set WAL mode: %w", err)
+	}
+
+	// Retry on write contention for up to 5 seconds instead of failing immediately.
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 
 	d := &Database{db: db}
@@ -109,6 +121,10 @@ func (d *Database) migrate() error {
 			added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_favorites_user_guild ON user_favorites(guild_id, user_id)`,
+		// Enforce uniqueness at the DB level so duplicate favorites can never be
+		// inserted even under concurrent load. INSERT OR IGNORE in AddFavorite
+		// relies on this constraint for idempotency.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_favorites_unique ON user_favorites(user_id, guild_id, video_id)`,
 	}
 
 	for _, m := range migrations {
@@ -351,7 +367,25 @@ func (d *Database) GetFavorites(userID, guildID string, limit int) ([]UserFavori
 		if err := rows.Scan(&r.ID, &r.UserID, &r.GuildID, &r.VideoID, &r.Title, &r.URL, &addedAt); err != nil {
 			return nil, err
 		}
-		r.AddedAt, _ = time.Parse("2006-01-02 15:04:05", addedAt)
+		// user_favorites.added_at uses DEFAULT CURRENT_TIMESTAMP (SQLite format)
+		// for most rows, but older rows may be RFC3339Nano if inserted explicitly.
+		// Try formats in order; fall back to time.Now() so the field is never zero.
+		parsed := false
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05",
+		} {
+			if t, parseErr := time.Parse(layout, addedAt); parseErr == nil {
+				r.AddedAt = t
+				parsed = true
+				break
+			}
+		}
+		if !parsed {
+			log.Warnf("could not parse user_favorites.added_at value %q; using current time", addedAt)
+			r.AddedAt = time.Now()
+		}
 		records = append(records, r)
 	}
 	return records, rows.Err()
@@ -359,10 +393,18 @@ func (d *Database) GetFavorites(userID, guildID string, limit int) ([]UserFavori
 
 // RemoveFavoriteByIndex removes the Nth favorite (1-based) for a user in a guild.
 // Returns the title of the removed song, or empty string if not found.
+// The SELECT and DELETE are wrapped in a transaction to prevent a TOCTOU race
+// where a concurrent modification changes the row between the two queries.
 func (d *Database) RemoveFavoriteByIndex(userID, guildID string, index int) (string, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck — superseded by explicit Commit below
+
 	var id int64
 	var title string
-	err := d.db.QueryRow(
+	err = tx.QueryRow(
 		`SELECT id, title FROM user_favorites WHERE user_id = ? AND guild_id = ? ORDER BY added_at DESC LIMIT 1 OFFSET ?`,
 		userID, guildID, index-1,
 	).Scan(&id, &title)
@@ -370,6 +412,9 @@ func (d *Database) RemoveFavoriteByIndex(userID, guildID string, index int) (str
 		return "", err
 	}
 
-	_, err = d.db.Exec(`DELETE FROM user_favorites WHERE id = ?`, id)
-	return title, err
+	if _, err = tx.Exec(`DELETE FROM user_favorites WHERE id = ?`, id); err != nil {
+		return "", fmt.Errorf("failed to delete favorite: %w", err)
+	}
+
+	return title, tx.Commit()
 }

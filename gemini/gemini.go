@@ -12,19 +12,37 @@ import (
 	"google.golang.org/genai"
 )
 
-func printResponse(resp *genai.GenerateContentResponse) {
-	for _, cand := range resp.Candidates {
-		if cand.Content != nil {
-			for _, part := range cand.Content.Parts {
-				fmt.Println(part)
-			}
-		}
+// defaultClient is the package-level Gemini client, initialized once by Init().
+// Creating a new HTTP client + TLS session on every call was wasteful.
+var defaultClient *genai.Client
+
+// Init initializes the shared Gemini client. Must be called once at startup
+// (after config is loaded) before any Gemini functions are used. Safe to call
+// when Gemini is disabled — it becomes a no-op.
+func Init() error {
+	if !config.Config.Gemini.Enabled {
+		return nil
 	}
-	fmt.Println("---")
+	// Use a background context for client creation — the client itself is
+	// long-lived and should not be tied to any single request context.
+	c, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  config.Config.Gemini.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create Gemini client: %w", err)
+	}
+	defaultClient = c
+	log.Info("Gemini client initialized")
+	return nil
 }
 
 func generateResponse(ctx context.Context, prompt string) string {
 	if !config.Config.Gemini.Enabled {
+		return ""
+	}
+	if defaultClient == nil {
+		log.Warn("generateResponse called before Gemini client was initialized")
 		return ""
 	}
 
@@ -34,23 +52,12 @@ func generateResponse(ctx context.Context, prompt string) string {
 	span.SetTag("model", "gemini-2.0-flash")
 	defer span.Finish()
 
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  config.Config.Gemini.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		log.Errorf("failed to create client: %v", err)
-		sentry.CaptureException(err)
-		span.Status = sentry.SpanStatusInternalError
-		return ""
-	}
-
 	parts := []*genai.Part{
 		{Text: prompt},
 	}
 	content := []*genai.Content{{Parts: parts}}
 
-	resp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
+	resp, err := defaultClient.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
 	if err != nil {
 		log.Errorf("failed to generate content: %v", err)
 		sentry.CaptureException(err)
