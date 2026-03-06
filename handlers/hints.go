@@ -9,6 +9,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Note: rand.Seed is intentionally not called here. Since Go 1.20, the global
+// rand source is automatically seeded with a random value — explicit seeding
+// is deprecated and unnecessary.
+
 // Hints provides random tips to users after successful command execution
 type Hints struct {
 	cooldowns   map[string]time.Time // guildID -> last hint time
@@ -20,8 +24,6 @@ type Hints struct {
 
 // NewHints creates a new Hints manager with guild-specific cooldowns
 func NewHints() *Hints {
-	// Seed random for hints (only once per process)
-	rand.Seed(time.Now().UnixNano())
 	return &Hints{
 		cooldowns:   make(map[string]time.Time),
 		cooldownDur: 5 * time.Minute,

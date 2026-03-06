@@ -66,12 +66,22 @@ func run(ctx context.Context) error {
 		defer db.Close()
 	}
 
+	// Initialize the Gemini client once at startup (no-op when disabled).
+	if err := gemini.Init(); err != nil {
+		log.Warnf("Failed to initialize Gemini client (AI features disabled): %v", err)
+	}
+
 	controller, err := controller.NewController(db)
 	if err != nil {
 		sentry.CaptureException(err)
 		log.Fatalf("Error creating controller: %v", err)
 		return err
 	}
+
+	// Manager is stateless (holds only config strings + shared controller pointer).
+	// Construct once and reuse across requests instead of allocating per-request.
+	manager := handlers.NewManager(os.Getenv("DISCORD_APP_ID"), controller)
+
 	router := gin.New()
 
 	// Add recovery middleware
@@ -192,8 +202,6 @@ func run(ctx context.Context) error {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
 			return
 		}
-
-		manager := handlers.NewManager(os.Getenv("DISCORD_APP_ID"), controller)
 
 		if !manager.VerifyDiscordRequest(signature, timestamp, bodyBytes) {
 			sentry.CaptureMessage("Invalid request signature")

@@ -116,6 +116,7 @@ type GuildPlayer struct {
 	Player               *audio.Player
 	LastActivityAt       time.Time
 	LastTextChannelID    string
+	lastTextChannelMu    sync.RWMutex // protects LastTextChannelID
 	idleCheckStop        chan struct{}
 	queueListenerStop    chan struct{}
 	playbackListenerStop chan struct{}
@@ -135,6 +136,11 @@ type GuildPlayer struct {
 	nowPlayingMutex       sync.Mutex
 	nowPlayingUpdateStop  chan struct{}
 	nowPlayingCurrentItem *GuildQueueItem
+
+	// Player-scoped context: cancelled by Reset() to stop all ad-hoc goroutines
+	// (e.g. voice recovery retries) that don't have a dedicated stop channel.
+	playerCtx    context.Context
+	playerCancel context.CancelFunc
 }
 
 type GuildQueueItemInteraction struct {
@@ -146,6 +152,7 @@ type GuildQueueItemInteraction struct {
 type GuildQueueItem struct {
 	Video          youtube.VideoResponse
 	Stream         *youtube.YoutubeStream
+	streamReady    chan struct{} // closed by handleAdd when Stream is set; replaces the busy-poll
 	LoadResult     *audio.LoadResult
 	ProbedDuration time.Duration
 	AddedAt        time.Time
@@ -171,7 +178,7 @@ type Controller struct {
 	discord  *discordgo.Session
 	spotify  *spotifyclient.Client
 	db       *database.Database
-	mutex    sync.Mutex
+	mu       sync.RWMutex // protects sessions map
 }
 
 func NewController(db *database.Database) (*Controller, error) {
@@ -215,15 +222,21 @@ func (c *Controller) GetDB() *database.Database {
 }
 
 func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
-	if session, ok := c.sessions[guildID]; ok {
-		return session
+	// Fast path: read lock allows concurrent lookups without contention.
+	c.mu.RLock()
+	if existing, ok := c.sessions[guildID]; ok {
+		c.mu.RUnlock()
+		return existing
 	}
+	c.mu.RUnlock()
 
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	// Slow path: need to create a new player. Upgrade to write lock and
+	// double-check in case another goroutine created it between the two locks.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	if session, ok := c.sessions[guildID]; ok {
-		return session
+	if existing, ok := c.sessions[guildID]; ok {
+		return existing
 	}
 
 	player, err := audio.NewPlayer()
@@ -233,6 +246,8 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		sentry.CaptureException(err)
 		return nil
 	}
+
+	playerCtx, playerCancel := context.WithCancel(context.Background())
 
 	session := &GuildPlayer{
 		// inject the global discord session to the player
@@ -251,6 +266,8 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		playbackListenerStop: make(chan struct{}),
 		loadListenerStop:     make(chan struct{}),
 		SongHistory:          NewSongHistory(20),
+		playerCtx:            playerCtx,
+		playerCancel:         playerCancel,
 	}
 
 	session.listenForQueueEvents()
@@ -262,21 +279,31 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	return session
 }
 
+// WaitForStreamURL blocks until the stream URL is ready or a 30-second timeout
+// elapses. Returns true if the stream is ready, false on timeout.
+// handleAdd signals readiness by closing item.streamReady.
 func (item *GuildQueueItem) WaitForStreamURL() bool {
-	for range [300]int{} {
-		if item.Stream != nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+	if item.streamReady == nil {
+		// Fallback: item was created without a ready channel (shouldn't happen in
+		// normal flow, but be defensive).
+		return item.Stream != nil
 	}
-	return item.Stream != nil
+	select {
+	case <-item.streamReady:
+		return item.Stream != nil
+	case <-time.After(30 * time.Second):
+		return false
+	}
 }
 
 func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInteraction) {
-	p.Queue.Mutex.Lock()
-	defer p.Queue.Mutex.Unlock()
+	// Cancel the player-scoped context first. This unblocks any in-flight
+	// goroutines (e.g. voice recovery retries sleeping on a timer) that
+	// select on playerCtx.Done(). Replace with a fresh context immediately.
+	p.playerCancel()
+	p.playerCtx, p.playerCancel = context.WithCancel(context.Background())
 
-	// Stop the idle checker and all event listeners
+	// Stop all event listener goroutines via their stop channels.
 	select {
 	case p.idleCheckStop <- struct{}{}:
 	default:
@@ -294,12 +321,10 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	default:
 	}
 
-	// wait for the playback to stop
+	// Flush audio and voice connection before touching queue state.
 	if p.Player != nil {
 		p.Player.Stop()
 	}
-
-	// Stop voice connection monitoring
 	p.stopVoiceConnectionMonitor()
 
 	p.VoiceChannelMutex.Lock()
@@ -316,17 +341,24 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.VoiceChannelMutex.Unlock()
 	p.reconnectAttempts = 0
 
+	// Reset queue and song state under their respective locks.
+	// Keep the Queue.Mutex scope tight — only cover the state mutation.
+	p.Queue.Mutex.Lock()
 	p.Queue.Listening = false
 	p.Queue.Items = nil
+	p.Queue.Mutex.Unlock()
+
 	p.currentSongMutex.Lock()
 	p.CurrentSong = nil
 	p.currentSongMutex.Unlock()
+
 	p.currentItemMutex.Lock()
 	p.CurrentItem = nil
 	p.currentItemMutex.Unlock()
+
 	p.LastActivityAt = time.Now()
 
-	// Restart the idle checker and all event listeners with fresh stop channels
+	// Restart all event listeners with fresh stop channels.
 	p.idleCheckStop = make(chan struct{})
 	p.queueListenerStop = make(chan struct{})
 	p.playbackListenerStop = make(chan struct{})
@@ -336,6 +368,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.listenForPlaybackEvents()
 	p.listenForLoadEvents()
 
+	// Fire the user-facing Discord followup outside any lock.
 	go discord.SendFollowup(&discord.FollowUpRequest{
 		Token:   interaction.InteractionToken,
 		AppID:   interaction.AppID,
@@ -413,7 +446,7 @@ func (p *GuildPlayer) playNext() {
 			ctx = context.Background()
 		}
 
-		// Wait up to 30 seconds for stream to be ready
+		// Wait up to 30 seconds for the stream URL to be ready (set by handleAdd).
 		if next.Stream == nil {
 			log.Debugf("waiting for stream to be ready for %s", next.Video.Title)
 
@@ -425,12 +458,7 @@ func (p *GuildPlayer) playNext() {
 				GenerateContent: false,
 			})
 
-			for range [300]int{} {
-				if next.Stream != nil {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
+			next.WaitForStreamURL()
 		}
 
 		if next.LoadResult == nil {
@@ -545,6 +573,10 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 streamReady:
 	log.Tracef("got stream for %s", event.Item.Video.Title)
 	event.Item.Stream = stream
+	// Signal any goroutine waiting in WaitForStreamURL.
+	if event.Item.streamReady != nil {
+		close(event.Item.streamReady)
+	}
 
 	p.VoiceChannelMutex.RLock()
 	vc := p.VoiceConnection
@@ -733,7 +765,11 @@ func (p *GuildPlayer) listenForQueueEvents() {
 				log.Tracef("Queue event: %s", event.Type)
 				switch event.Type {
 				case EventAdd:
-					p.handleAdd(event)
+					// Dispatch to a worker goroutine so yt-dlp (~1-2s) doesn't block
+					// the queue listener from processing Skip/Clear events during
+					// playlist loading. Each handleAdd call is independent — it
+					// operates on its own event.Item and closes item.streamReady when done.
+					go p.handleAdd(event)
 				case EventSkip:
 					log.Printf("Skipping to next song in queue")
 					sentry.AddBreadcrumb(&sentry.Breadcrumb{
@@ -1182,7 +1218,7 @@ func (p *GuildPlayer) startIdleChecker() {
 				if idleDuration >= idleTimeout {
 					log.Infof("Guild %s has been idle for %v, disconnecting", p.GuildID, idleDuration)
 
-					if p.LastTextChannelID != "" {
+					if textCh := p.GetLastTextChannelID(); textCh != "" {
 						prompt := fmt.Sprintf("The bot has been idle in the voice channel for %d minutes with no activity, so it's disconnecting now", config.Config.Options.IdleTimeoutMinutes)
 						// Use background context since this is from the idle checker goroutine
 						message := gemini.GenerateResponse(context.Background(), prompt)
@@ -1191,7 +1227,7 @@ func (p *GuildPlayer) startIdleChecker() {
 							message = fmt.Sprintf("Been sitting here idle for %d minutes with nothing to do. I'm out - let me know when you actually want to hear something.", config.Config.Options.IdleTimeoutMinutes)
 						}
 
-						_, err := p.Discord.ChannelMessageSend(p.LastTextChannelID, message)
+						_, err := p.Discord.ChannelMessageSend(textCh, message)
 						if err != nil {
 							log.Errorf("Failed to send idle disconnect message: %v", err)
 						}
@@ -1253,35 +1289,9 @@ func (p *GuildPlayer) IsLoopEnabled() bool {
 
 // ExtractArtist parses common YouTube music title formats to extract the artist name.
 // Returns the artist if found, or the full title as fallback.
+// Delegates to discord.ExtractArtistFromTitle — single source of truth.
 func ExtractArtist(title string) string {
-	// Remove common suffixes like (Official Video), [Official Music Video], (Lyrics), etc.
-	cleaned := title
-	for _, suffix := range []string{
-		"(Official Video)", "(Official Music Video)", "(Official Audio)",
-		"(Lyrics)", "(Lyric Video)", "(Audio)", "(Visualizer)",
-		"[Official Video]", "[Official Music Video]", "[Official Audio]",
-		"[Lyrics]", "[Lyric Video]", "[Audio]",
-	} {
-		cleaned = strings.Replace(cleaned, suffix, "", 1)
-	}
-	cleaned = strings.TrimSpace(cleaned)
-
-	// Try to split on " - " to get "Artist - Title"
-	parts := strings.SplitN(cleaned, " - ", 2)
-	if len(parts) == 2 {
-		artist := strings.TrimSpace(parts[0])
-		// Remove "ft.", "feat." etc from artist for cleaner search
-		for _, feat := range []string{" ft.", " feat.", " ft ", " feat ", " featuring "} {
-			if idx := strings.Index(strings.ToLower(artist), feat); idx != -1 {
-				artist = strings.TrimSpace(artist[:idx])
-			}
-		}
-		if artist != "" {
-			return artist
-		}
-	}
-
-	return cleaned
+	return discord.ExtractArtistFromTitle(title)
 }
 
 // isRecentTitle returns true if the candidate title fuzzy-matches any entry in recentTitles.
@@ -1445,9 +1455,9 @@ func (p *GuildPlayer) queueRadioSong() {
 	})
 
 	// Send announcement to the text channel
-	if p.LastTextChannelID != "" && p.Discord != nil {
+	if textCh := p.GetLastTextChannelID(); textCh != "" && p.Discord != nil {
 		msg := "📻 **Radio:** queued **" + picked.Title + "**"
-		if _, err := p.Discord.ChannelMessageSend(p.LastTextChannelID, msg); err != nil {
+		if _, err := p.Discord.ChannelMessageSend(textCh, msg); err != nil {
 			logger.Errorf("Failed to send radio announcement: %v", err)
 		}
 	}
@@ -1470,8 +1480,9 @@ func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, user
 	}
 
 	item := &GuildQueueItem{
-		Video:   video,
-		AddedAt: time.Now(),
+		Video:       video,
+		AddedAt:     time.Now(),
+		streamReady: make(chan struct{}), // closed by handleAdd when Stream URL is ready
 		Interaction: &GuildQueueItemInteraction{
 			UserID:           userID,
 			InteractionToken: interactionToken,
@@ -1689,9 +1700,16 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 		if err != nil {
 			log.Errorf("Failed to rejoin voice channel for guild %s: %v", p.GuildID, err)
 
-			// Schedule retry after delay
+			// Schedule retry after delay, but honour the player-scoped context so
+			// Reset() can cancel this goroutine before it fires.
+			delay := time.Duration(p.reconnectAttempts*2) * time.Second
 			go func() {
-				time.Sleep(time.Duration(p.reconnectAttempts*2) * time.Second)
+				select {
+				case <-p.playerCtx.Done():
+					log.Debugf("Voice recovery retry cancelled for guild %s (player reset)", p.GuildID)
+					return
+				case <-time.After(delay):
+				}
 				p.attemptVoiceRecovery()
 			}()
 			return
@@ -1721,6 +1739,9 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 				Interaction:    savedItem.Interaction,
 				LoadResult:     nil, // force fresh load — do not reuse consumed pipe
 				Stream:         nil,
+				// Required: playNext() calls WaitForStreamURL() which checks this
+				// to avoid a nil-pointer dereference when Stream is nil.
+				streamReady: make(chan struct{}),
 			}
 			p.Queue.Mutex.Lock()
 			p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
@@ -1730,7 +1751,7 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 		}
 
 		// Send notification to channel about recovery
-		if p.LastTextChannelID != "" {
+		if p.GetLastTextChannelID() != "" {
 			go p.sendRecoveryMessage("🔄 Voice connection restored! Playback resumed.")
 		}
 	}
@@ -1745,12 +1766,14 @@ func (p *GuildPlayer) handleVoiceRecoveryFailure() {
 		p.Player.Stop()
 	}
 
+	p.VoiceChannelMutex.Lock()
 	p.VoiceConnection = nil
 	p.VoiceChannelID = nil
+	p.VoiceChannelMutex.Unlock()
 	p.reconnectAttempts = 0
 
 	// Send notification to channel about failure
-	if p.LastTextChannelID != "" {
+	if p.GetLastTextChannelID() != "" {
 		go p.sendRecoveryMessage("❌ Voice connection lost and recovery failed. Use a play command to reconnect.")
 	}
 
@@ -1759,17 +1782,19 @@ func (p *GuildPlayer) handleVoiceRecoveryFailure() {
 
 // sendRecoveryMessage sends a message to the last active text channel
 func (p *GuildPlayer) sendRecoveryMessage(message string) {
-	if p.Discord != nil && p.LastTextChannelID != "" {
-		_, err := p.Discord.ChannelMessageSend(p.LastTextChannelID, message)
+	textCh := p.GetLastTextChannelID()
+	if p.Discord != nil && textCh != "" {
+		_, err := p.Discord.ChannelMessageSend(textCh, message)
 		if err != nil {
-			log.Errorf("Failed to send recovery message to channel %s: %v", p.LastTextChannelID, err)
+			log.Errorf("Failed to send recovery message to channel %s: %v", textCh, err)
 		}
 	}
 }
 
 // sendNowPlayingCard creates and sends a now-playing embed
 func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
-	if p.LastTextChannelID == "" {
+	textCh := p.GetLastTextChannelID()
+	if textCh == "" {
 		log.Debug("No text channel to send now-playing card")
 		return
 	}
@@ -1803,7 +1828,7 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	embed := discord.BuildNowPlayingEmbed(metadata)
 
 	// Send message
-	message, err := discord.SendChannelMessage(p.LastTextChannelID, "", embed, nil)
+	message, err := discord.SendChannelMessage(textCh, "", embed, nil)
 	if err != nil {
 		log.Errorf("Failed to send now-playing card: %v", err)
 		sentry.CaptureException(err)
@@ -1812,7 +1837,7 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 
 	// Store message ID and current item for updates
 	p.NowPlayingMessageID = &message.ID
-	p.NowPlayingChannelID = &p.LastTextChannelID
+	p.NowPlayingChannelID = &textCh
 	p.nowPlayingCurrentItem = queueItem
 
 	log.Debugf("Sent now-playing card: %s", message.ID)
