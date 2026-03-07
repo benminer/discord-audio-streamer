@@ -119,8 +119,8 @@ func run(ctx context.Context) error {
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"sessions": sessions,
-			"topSongs": topSongs,
+			"sessions":  sessions,
+			"top_songs": topSongs,
 		})
 	})
 
