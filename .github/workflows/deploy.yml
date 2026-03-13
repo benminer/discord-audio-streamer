@@ -1,17 +1,17 @@
-name: Deploy
+name: Build and Deploy
 
 on:
-  #   push:
-  #     branches: [ main ]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     environment: prod
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -20,17 +20,26 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/discord-music-bot:latest
-          build-args: |
-            DISCORD_BOT_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}
-            DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}
-            DISCORD_PUBLIC_KEY=${{ secrets.DISCORD_PUBLIC_KEY }}
-            YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}
-            PORT=8080
-            ENFORCE_VOICE_CHANNEL=true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/discord-music-bot:latest
+            ${{ secrets.DOCKER_HUB_USERNAME }}/discord-music-bot:${{ github.sha }}
 
-# TODO: add deployment to GCP Cloud Run
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
