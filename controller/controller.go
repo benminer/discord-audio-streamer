@@ -1856,7 +1856,11 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	message, err := discord.SendChannelMessage(textCh, "", embed, nil)
 	if err != nil {
 		log.Errorf("Failed to send now-playing card: %v", err)
-		sentry.CaptureException(err)
+		if discord.IsMissingPermissions(err) {
+			discord.SendPermissionErrorFallback(textCh)
+		} else {
+			sentry.CaptureException(err)
+		}
 		return
 	}
 
@@ -2000,6 +2004,10 @@ func (p *GuildPlayer) startNowPlayingUpdates(queueItem *GuildQueueItem) {
 			case <-ticker.C:
 				if err := p.updateNowPlayingCard(queueItem); err != nil {
 					log.Warnf("Failed to update now-playing card: %v", err)
+					if discord.IsMissingPermissions(err) {
+						log.Warn("Stopping now-playing updates due to missing permissions")
+						return
+					}
 				}
 			case <-p.nowPlayingUpdateStop:
 				log.Debug("Stopping now-playing updates")
