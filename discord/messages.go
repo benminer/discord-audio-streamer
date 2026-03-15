@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-
 	"beatbot/config"
 	"beatbot/gemini"
 
@@ -15,6 +15,37 @@ import (
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 )
+
+// ErrMissingPermissions is returned when Discord responds with 403/code 50013
+type ErrMissingPermissions struct {
+	OriginalError error
+}
+
+func (e *ErrMissingPermissions) Error() string {
+	return e.OriginalError.Error()
+}
+
+func (e *ErrMissingPermissions) Unwrap() error {
+	return e.OriginalError
+}
+
+// IsMissingPermissions checks if an error is a Discord 50013 Missing Permissions error
+func IsMissingPermissions(err error) bool {
+	if err == nil {
+		return false
+	}
+	var permErr *ErrMissingPermissions
+	return errors.As(err, &permErr)
+}
+
+// classifyError wraps the error as ErrMissingPermissions if the response body contains code 50013
+func classifyError(baseErr error, responseBody []byte) error {
+	var discordErr DiscordErrorResponse
+	if json.Unmarshal(responseBody, &discordErr) == nil && discordErr.Code == 50013 {
+		return &ErrMissingPermissions{OriginalError: baseErr}
+	}
+	return baseErr
+}
 
 type FollowUpRequest struct {
 	Token           string
@@ -146,9 +177,9 @@ func SendChannelMessage(channelID, content string, embed *discordgo.MessageEmbed
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		err := fmt.Errorf("failed to send message: %s - %s", resp.Status, string(body))
-		log.Error(err)
-		return nil, err
+		baseErr := fmt.Errorf("failed to send message: %s - %s", resp.Status, string(body))
+		log.Error(baseErr)
+		return nil, classifyError(baseErr, body)
 	}
 
 	var message discordgo.Message
@@ -204,10 +235,29 @@ func EditChannelMessage(channelID, messageID string, content string, embed *disc
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		err := fmt.Errorf("failed to edit message: %s - %s", resp.Status, string(body))
-		log.Error(err)
-		return err
+		baseErr := fmt.Errorf("failed to edit message: %s - %s", resp.Status, string(body))
+		log.Error(baseErr)
+		return classifyError(baseErr, body)
 	}
 
 	return nil
+}
+
+// BotInviteURL returns the OAuth2 authorize URL for reinstalling the bot with updated permissions
+func BotInviteURL() string {
+	return fmt.Sprintf("https://discord.com/oauth2/authorize?client_id=%s", config.Config.Discord.AppID)
+}
+
+// SendPermissionErrorFallback sends a plain-text message explaining the bot needs to be
+// reinstalled with updated permissions. If this message also fails, it just logs the error.
+func SendPermissionErrorFallback(channelID string) {
+	msg := fmt.Sprintf(
+		"⚠️ I couldn't send the now-playing card because I'm missing permissions in this channel.\n"+
+			"A server admin needs to reinstall the bot to grant updated permissions:\n%s",
+		BotInviteURL(),
+	)
+	_, err := SendChannelMessage(channelID, msg, nil, nil)
+	if err != nil {
+		log.Warnf("Failed to send permission error fallback message: %v", err)
+	}
 }
