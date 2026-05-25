@@ -182,7 +182,14 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				p.logger.Warnf("Error encoding silence during pause: %v", err)
 				sentry.CaptureException(err)
 			} else {
-				safeSendOpus(voiceChannel, p.silenceOpus[:encoded])
+				if !safeSendOpus(voiceChannel, p.silenceOpus[:encoded]) {
+					p.logger.Debug("Pause loop exiting - voice connection lost")
+					p.Notifications <- PlaybackNotification{
+						Event:   PlaybackStopped,
+						VideoID: &data.VideoID,
+					}
+					return nil
+				}
 			}
 
 			time.Sleep(20 * time.Millisecond) // ~50 frames per second
