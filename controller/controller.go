@@ -1778,7 +1778,12 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 			p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
 			p.Queue.Mutex.Unlock()
 			log.Infof("Re-queued '%s' for fresh playback after voice recovery", savedItem.Video.Title)
-			p.playNext()
+			select {
+			case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: freshItem}:
+				log.Debugf("Recovery requeue notified for guild %s: %s", p.GuildID, freshItem.Video.Title)
+			default:
+				log.Warnf("Queue notifications channel full during recovery for guild %s", p.GuildID)
+			}
 		}
 
 		// Send notification to channel about recovery

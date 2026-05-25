@@ -136,13 +136,15 @@ func TestCurrentItemConcurrentAccess(t *testing.T) {
 
 // TestRecoveryRequeueFreshItem verifies the recovery re-queue logic:
 // when savedItem != nil, a fresh GuildQueueItem with nil LoadResult and
-// Stream is prepended to the front of the queue.
+// Stream is prepended to the front of the queue, and an EventAdd notification
+// is sent through the queue's notifications channel (same as AddToQueue).
 func TestRecoveryRequeueFreshItem(t *testing.T) {
 	p := &GuildPlayer{
 		Queue: &GuildQueue{
 			Items: []*GuildQueueItem{
 				{Video: youtube.VideoResponse{Title: "next song"}},
 			},
+			notifications: make(chan QueueEvent, 100),
 		},
 	}
 
@@ -153,14 +155,23 @@ func TestRecoveryRequeueFreshItem(t *testing.T) {
 
 	// Simulate the re-queue logic from attemptVoiceRecovery
 	freshItem := &GuildQueueItem{
-		Video:      savedItem.Video,
-		LoadResult: nil, // must be nil — one-shot pipe must not be reused
-		Stream:     nil,
+		Video:       savedItem.Video,
+		LoadResult:  nil,
+		Stream:      nil,
+		streamReady: make(chan struct{}),
 	}
 	p.Queue.Mutex.Lock()
 	p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
 	p.Queue.Mutex.Unlock()
 
+	// Send event notification (new behavior)
+	select {
+	case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: freshItem}:
+	default:
+		t.Fatal("failed to send queue notification")
+	}
+
+	// Verify queue state
 	if len(p.Queue.Items) != 2 {
 		t.Fatalf("expected 2 items after requeue, got %d", len(p.Queue.Items))
 	}
@@ -174,6 +185,19 @@ func TestRecoveryRequeueFreshItem(t *testing.T) {
 	}
 	if front.Stream != nil {
 		t.Error("freshItem.Stream must be nil")
+	}
+
+	// Verify event was sent
+	select {
+	case event := <-p.Queue.notifications:
+		if event.Type != EventAdd {
+			t.Errorf("event type = %q, want %q", event.Type, EventAdd)
+		}
+		if event.Item.Video.Title != "interrupted song" {
+			t.Errorf("event item title = %q, want %q", event.Item.Video.Title, "interrupted song")
+		}
+	default:
+		t.Error("expected EventAdd notification in queue channel")
 	}
 
 	second := p.Queue.Items[1]
