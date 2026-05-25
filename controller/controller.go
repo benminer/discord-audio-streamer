@@ -1655,8 +1655,11 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 					if !vc.Ready {
 						log.Warnf("Voice connection not ready for guild %s", p.GuildID)
 
-						// If we're currently playing, attempt recovery
-						if p.Player.IsPlaying() {
+						// If we're actively playing (not paused), attempt recovery.
+						// IsPlaying() is true even when paused (silence loop still runs),
+						// so we guard with !IsPaused() to avoid reconnecting when the user
+						// intentionally disconnected us while paused.
+						if p.Player.IsPlaying() && !p.Player.IsPaused() {
 							log.Infof("Attempting voice connection recovery for guild %s", p.GuildID)
 							p.attemptVoiceRecovery()
 						}

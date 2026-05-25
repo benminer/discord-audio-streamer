@@ -322,6 +322,14 @@ func (p *Player) IsPaused() bool {
 	return p.paused.Load()
 }
 
+func (p *Player) SetPlaying(v bool) {
+	p.playing.Store(v)
+}
+
+func (p *Player) SetPaused(v bool) {
+	p.paused.Store(v)
+}
+
 func (p *Player) SetVolume(volume int) {
 	if volume < 0 {
 		volume = 0

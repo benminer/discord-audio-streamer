@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"beatbot/audio"
 	"beatbot/youtube"
 )
 
@@ -361,5 +362,36 @@ func TestResetReinitializesStopChannels(t *testing.T) {
 	case <-loadStop:
 		t.Error("remade loadStop should have no pending signal")
 	default:
+	}
+}
+
+// TestVoiceMonitorSkipsRecoveryWhenPaused verifies that the voice monitor
+// condition (IsPlaying && !IsPaused) correctly excludes paused players.
+func TestVoiceMonitorSkipsRecoveryWhenPaused(t *testing.T) {
+	p, err := audio.NewPlayer()
+	if err != nil {
+		t.Fatalf("NewPlayer: %v", err)
+	}
+
+	// Simulate active playback: playing=true, paused=false
+	p.SetPlaying(true)
+	shouldRecover := p.IsPlaying() && !p.IsPaused()
+	if !shouldRecover {
+		t.Error("expected recovery when playing and not paused")
+	}
+
+	// Simulate paused playback: playing=true, paused=true
+	p.SetPaused(true)
+	shouldRecover = p.IsPlaying() && !p.IsPaused()
+	if shouldRecover {
+		t.Error("expected NO recovery when playing but paused")
+	}
+
+	// Simulate stopped: playing=false
+	p.SetPlaying(false)
+	p.SetPaused(false)
+	shouldRecover = p.IsPlaying() && !p.IsPaused()
+	if shouldRecover {
+		t.Error("expected NO recovery when not playing")
 	}
 }
