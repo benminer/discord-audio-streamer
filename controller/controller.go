@@ -483,7 +483,10 @@ func (p *GuildPlayer) playNext() {
 				GenerateContent: false,
 			})
 
-			next.WaitForStreamURL()
+			if !next.WaitForStreamURL() {
+				log.Warnf("stream URL not available for %s, skipping", next.Video.Title)
+				return
+			}
 		}
 
 		if next.LoadResult == nil {
@@ -1655,8 +1658,11 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 					if !vc.Ready {
 						log.Warnf("Voice connection not ready for guild %s", p.GuildID)
 
-						// If we're currently playing, attempt recovery
-						if p.Player.IsPlaying() {
+						// If we're actively playing (not paused), attempt recovery.
+						// IsPlaying() is true even when paused (silence loop still runs),
+						// so we guard with !IsPaused() to avoid reconnecting when the user
+						// intentionally disconnected us while paused.
+						if p.Player.IsPlaying() && !p.Player.IsPaused() {
 							log.Infof("Attempting voice connection recovery for guild %s", p.GuildID)
 							p.attemptVoiceRecovery()
 						}
@@ -1772,7 +1778,12 @@ func (p *GuildPlayer) attemptVoiceRecovery() {
 			p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
 			p.Queue.Mutex.Unlock()
 			log.Infof("Re-queued '%s' for fresh playback after voice recovery", savedItem.Video.Title)
-			p.playNext()
+			select {
+			case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: freshItem}:
+				log.Debugf("Recovery requeue notified for guild %s: %s", p.GuildID, freshItem.Video.Title)
+			default:
+				log.Warnf("Queue notifications channel full during recovery for guild %s", p.GuildID)
+			}
 		}
 
 		// Send notification to channel about recovery

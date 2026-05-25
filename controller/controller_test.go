@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"beatbot/audio"
 	"beatbot/youtube"
 )
 
@@ -135,13 +136,15 @@ func TestCurrentItemConcurrentAccess(t *testing.T) {
 
 // TestRecoveryRequeueFreshItem verifies the recovery re-queue logic:
 // when savedItem != nil, a fresh GuildQueueItem with nil LoadResult and
-// Stream is prepended to the front of the queue.
+// Stream is prepended to the front of the queue, and an EventAdd notification
+// is sent through the queue's notifications channel (same as AddToQueue).
 func TestRecoveryRequeueFreshItem(t *testing.T) {
 	p := &GuildPlayer{
 		Queue: &GuildQueue{
 			Items: []*GuildQueueItem{
 				{Video: youtube.VideoResponse{Title: "next song"}},
 			},
+			notifications: make(chan QueueEvent, 100),
 		},
 	}
 
@@ -152,14 +155,23 @@ func TestRecoveryRequeueFreshItem(t *testing.T) {
 
 	// Simulate the re-queue logic from attemptVoiceRecovery
 	freshItem := &GuildQueueItem{
-		Video:      savedItem.Video,
-		LoadResult: nil, // must be nil — one-shot pipe must not be reused
-		Stream:     nil,
+		Video:       savedItem.Video,
+		LoadResult:  nil,
+		Stream:      nil,
+		streamReady: make(chan struct{}),
 	}
 	p.Queue.Mutex.Lock()
 	p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
 	p.Queue.Mutex.Unlock()
 
+	// Send event notification (new behavior)
+	select {
+	case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: freshItem}:
+	default:
+		t.Fatal("failed to send queue notification")
+	}
+
+	// Verify queue state
 	if len(p.Queue.Items) != 2 {
 		t.Fatalf("expected 2 items after requeue, got %d", len(p.Queue.Items))
 	}
@@ -173,6 +185,19 @@ func TestRecoveryRequeueFreshItem(t *testing.T) {
 	}
 	if front.Stream != nil {
 		t.Error("freshItem.Stream must be nil")
+	}
+
+	// Verify event was sent
+	select {
+	case event := <-p.Queue.notifications:
+		if event.Type != EventAdd {
+			t.Errorf("event type = %q, want %q", event.Type, EventAdd)
+		}
+		if event.Item.Video.Title != "interrupted song" {
+			t.Errorf("event item title = %q, want %q", event.Item.Video.Title, "interrupted song")
+		}
+	default:
+		t.Error("expected EventAdd notification in queue channel")
 	}
 
 	second := p.Queue.Items[1]
@@ -361,5 +386,78 @@ func TestResetReinitializesStopChannels(t *testing.T) {
 	case <-loadStop:
 		t.Error("remade loadStop should have no pending signal")
 	default:
+	}
+}
+
+// TestPlayNextNilStreamNoPanic verifies that playNext does not panic
+// when WaitForStreamURL times out and Stream remains nil.
+func TestPlayNextNilStreamNoPanic(t *testing.T) {
+	player, err := audio.NewPlayer()
+	if err != nil {
+		t.Fatalf("NewPlayer: %v", err)
+	}
+
+	p := &GuildPlayer{
+		Queue: &GuildQueue{
+			Items: []*GuildQueueItem{
+				{
+					Video:       youtube.VideoResponse{VideoID: "test", Title: "Test Song"},
+					Stream:      nil,
+					LoadResult:  nil,
+					streamReady: make(chan struct{}),
+					Interaction: &GuildQueueItemInteraction{
+						InteractionToken: "test-token",
+						AppID:            "test-app",
+						UserID:           "test-user",
+					},
+				},
+			},
+		},
+		Player: player,
+		Loader: audio.NewLoader(),
+	}
+
+	// Close streamReady immediately but leave Stream nil —
+	// simulates WaitForStreamURL returning false.
+	close(p.Queue.Items[0].streamReady)
+
+	// This must not panic (was SIGSEGV before fix)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("playNext panicked: %v", r)
+		}
+	}()
+
+	p.playNext()
+}
+
+// TestVoiceMonitorSkipsRecoveryWhenPaused verifies that the voice monitor
+// condition (IsPlaying && !IsPaused) correctly excludes paused players.
+func TestVoiceMonitorSkipsRecoveryWhenPaused(t *testing.T) {
+	p, err := audio.NewPlayer()
+	if err != nil {
+		t.Fatalf("NewPlayer: %v", err)
+	}
+
+	// Simulate active playback: playing=true, paused=false
+	p.SetPlaying(true)
+	shouldRecover := p.IsPlaying() && !p.IsPaused()
+	if !shouldRecover {
+		t.Error("expected recovery when playing and not paused")
+	}
+
+	// Simulate paused playback: playing=true, paused=true
+	p.SetPaused(true)
+	shouldRecover = p.IsPlaying() && !p.IsPaused()
+	if shouldRecover {
+		t.Error("expected NO recovery when playing but paused")
+	}
+
+	// Simulate stopped: playing=false
+	p.SetPlaying(false)
+	p.SetPaused(false)
+	shouldRecover = p.IsPlaying() && !p.IsPaused()
+	if shouldRecover {
+		t.Error("expected NO recovery when not playing")
 	}
 }

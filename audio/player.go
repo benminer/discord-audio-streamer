@@ -80,7 +80,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	}()
 
 	p.playing.Store(true)
-	p.stopping.Store(false) // Reset stopping flag for new song
+	p.stopping.Store(false)
+	p.paused.Store(false)
 	// Initialize position tracking
 	p.playbackStartTime = time.Now()
 	p.playbackPosition.Store(0)
@@ -182,7 +183,14 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				p.logger.Warnf("Error encoding silence during pause: %v", err)
 				sentry.CaptureException(err)
 			} else {
-				safeSendOpus(voiceChannel, p.silenceOpus[:encoded])
+				if !safeSendOpus(voiceChannel, p.silenceOpus[:encoded]) {
+					p.logger.Debug("Pause loop exiting - voice connection lost")
+					p.Notifications <- PlaybackNotification{
+						Event:   PlaybackStopped,
+						VideoID: &data.VideoID,
+					}
+					return nil
+				}
 			}
 
 			time.Sleep(20 * time.Millisecond) // ~50 frames per second
@@ -320,6 +328,14 @@ func (p *Player) IsPlaying() bool {
 
 func (p *Player) IsPaused() bool {
 	return p.paused.Load()
+}
+
+func (p *Player) SetPlaying(v bool) {
+	p.playing.Store(v)
+}
+
+func (p *Player) SetPaused(v bool) {
+	p.paused.Store(v)
 }
 
 func (p *Player) SetVolume(volume int) {
