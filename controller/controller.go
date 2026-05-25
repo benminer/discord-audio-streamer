@@ -483,7 +483,10 @@ func (p *GuildPlayer) playNext() {
 				GenerateContent: false,
 			})
 
-			next.WaitForStreamURL()
+			if !next.WaitForStreamURL() {
+				log.Warnf("stream URL not available for %s, skipping", next.Video.Title)
+				return
+			}
 		}
 
 		if next.LoadResult == nil {

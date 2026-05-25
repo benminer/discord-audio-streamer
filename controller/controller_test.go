@@ -365,6 +365,48 @@ func TestResetReinitializesStopChannels(t *testing.T) {
 	}
 }
 
+// TestPlayNextNilStreamNoPanic verifies that playNext does not panic
+// when WaitForStreamURL times out and Stream remains nil.
+func TestPlayNextNilStreamNoPanic(t *testing.T) {
+	player, err := audio.NewPlayer()
+	if err != nil {
+		t.Fatalf("NewPlayer: %v", err)
+	}
+
+	p := &GuildPlayer{
+		Queue: &GuildQueue{
+			Items: []*GuildQueueItem{
+				{
+					Video:       youtube.VideoResponse{VideoID: "test", Title: "Test Song"},
+					Stream:      nil,
+					LoadResult:  nil,
+					streamReady: make(chan struct{}),
+					Interaction: &GuildQueueItemInteraction{
+						InteractionToken: "test-token",
+						AppID:            "test-app",
+						UserID:           "test-user",
+					},
+				},
+			},
+		},
+		Player: player,
+		Loader: audio.NewLoader(),
+	}
+
+	// Close streamReady immediately but leave Stream nil —
+	// simulates WaitForStreamURL returning false.
+	close(p.Queue.Items[0].streamReady)
+
+	// This must not panic (was SIGSEGV before fix)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("playNext panicked: %v", r)
+		}
+	}()
+
+	p.playNext()
+}
+
 // TestVoiceMonitorSkipsRecoveryWhenPaused verifies that the voice monitor
 // condition (IsPlaying && !IsPaused) correctly excludes paused players.
 func TestVoiceMonitorSkipsRecoveryWhenPaused(t *testing.T) {
