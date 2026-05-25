@@ -80,7 +80,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	}()
 
 	p.playing.Store(true)
-	p.stopping.Store(false) // Reset stopping flag for new song
+	p.stopping.Store(false)
+	p.paused.Store(false)
 	// Initialize position tracking
 	p.playbackStartTime = time.Now()
 	p.playbackPosition.Store(0)
