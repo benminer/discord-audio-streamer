@@ -38,11 +38,13 @@ const (
 // DJScriptContext carries the situational details GenerateDJScript needs to
 // write a natural-sounding announcement for the given AnnouncementType.
 type DJScriptContext struct {
-	Type          AnnouncementType
-	CurrentSong   string   // song that just played (transition)
-	NextSong      string   // song coming up (transition, intro)
-	RecentHistory []string // recent song titles
-	IsRadioPick   bool     // whether next song was auto-queued by radio
+	Type            AnnouncementType
+	CurrentSong     string   // song that just played (transition)
+	NextSong        string   // song coming up (transition, intro)
+	RecentHistory   []string // recent song titles
+	IsRadioPick     bool     // whether next song was auto-queued by radio
+	CurrentQueuedBy string   // who queued the current song (empty = radio/unknown)
+	NextQueuedBy    string   // who queued the next song (empty = radio/unknown)
 }
 
 // Init initializes the shared Gemini client. Must be called once at startup
@@ -408,18 +410,27 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 			radioStr = "This next song was auto-queued by radio mode based on the listening pattern."
 		}
 
+		requesterStr := ""
+		if sc.CurrentQueuedBy != "" {
+			requesterStr += fmt.Sprintf("The current song was queued by %s.\n", sc.CurrentQueuedBy)
+		}
+		if sc.NextQueuedBy != "" {
+			requesterStr += fmt.Sprintf("The next song was queued by %s.\n", sc.NextQueuedBy)
+		}
+
 		taskPrompt = fmt.Sprintf(`Current song (just finished): %s
 Next up: %s
 
 %s
 
 %s
-
+%s
 Your task: Announce what just played and what's coming up next. Write it as two halves: first announce what just played, then what's next.
 - You MUST say BOTH the song/artist that just played AND the song/artist coming up next
 - Never omit either name — they are the entire point of the announcement
+- If you know who queued a song, mention them by name. Skip attribution for songs with no requester.
 
-Now write your transition:`, sc.CurrentSong, sc.NextSong, recentHistoryBlock(sc.RecentHistory), radioStr)
+Now write your transition:`, sc.CurrentSong, sc.NextSong, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
 	case AnnouncementIntro:
 		taskPrompt = fmt.Sprintf(`First song of the session: %s
 
@@ -428,7 +439,7 @@ Your task: Introduce the first song of the session. Build a little anticipation 
 
 Now write your intro:`, sc.NextSong)
 	case AnnouncementQueueEmpty:
-		taskPrompt = `Your task: The queue just ran out. Let listeners know, and mention they can add songs with /queue or turn on non-stop music with /radio.
+		taskPrompt = `Your task: The queue just ran out. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing and it's awesome. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
 
 Now write your announcement:`
 	default:

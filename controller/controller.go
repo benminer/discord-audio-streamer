@@ -1172,6 +1172,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							Title:       queueItem.Video.Title,
 							VideoID:     queueItem.Video.VideoID,
 							IsRadioPick: queueItem.IsRadioPick,
+							QueuedBy:    p.resolveQueuedBy(queueItem),
 						})
 						p.currentItemMutex.Lock()
 						p.CurrentItem = queueItem
@@ -1915,6 +1916,16 @@ func (p *GuildPlayer) sendRecoveryMessage(message string) {
 
 // syncNextFromQueue reads the queue's next item and pushes it into PlaybackState.
 // Call after queue mutations that may change the next-queued item.
+func (p *GuildPlayer) resolveQueuedBy(item *GuildQueueItem) string {
+	if item == nil || item.Interaction == nil || item.Interaction.UserID == "" {
+		return ""
+	}
+	if p.DB != nil {
+		return p.DB.GetOrFetchUsername(p.GuildID, item.Interaction.UserID)
+	}
+	return ""
+}
+
 func (p *GuildPlayer) syncNextFromQueue() {
 	next := p.GetNext()
 	if next != nil {
@@ -1922,6 +1933,7 @@ func (p *GuildPlayer) syncNextFromQueue() {
 			Title:       next.Video.Title,
 			VideoID:     next.Video.VideoID,
 			IsRadioPick: next.IsRadioPick,
+			QueuedBy:    p.resolveQueuedBy(next),
 		})
 	} else {
 		p.playbackState.ClearNext()
@@ -1990,11 +2002,13 @@ func (p *GuildPlayer) generateTransitionTTS() {
 	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer scriptCancel()
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type:          gemini.AnnouncementTransition,
-		CurrentSong:   current.Title,
-		NextSong:      next.Title,
-		RecentHistory: recentHistory,
-		IsRadioPick:   next.IsRadioPick,
+		Type:            gemini.AnnouncementTransition,
+		CurrentSong:     current.Title,
+		NextSong:        next.Title,
+		RecentHistory:   recentHistory,
+		IsRadioPick:     next.IsRadioPick,
+		CurrentQueuedBy: current.QueuedBy,
+		NextQueuedBy:    next.QueuedBy,
 	})
 	if script == "" {
 		return
@@ -2037,7 +2051,7 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 		Type: gemini.AnnouncementQueueEmpty,
 	})
 	if script == "" {
-		script = "That's all for now. Queue up more with /queue, or turn on radio mode with /radio for non-stop tunes."
+		script = "That's all for now. Hit up /radio and I'll keep the vibes going based on what we've been playing. Or queue something specific with /play."
 	}
 
 	ttsPrompt := gemini.BuildTTSPrompt(script)
