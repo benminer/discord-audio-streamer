@@ -131,12 +131,9 @@ type GuildPlayer struct {
 	loopMutex        sync.RWMutex
 
 	// Voice DJ announcement settings (persisted via guild_settings)
-	AnnounceEnabled   bool
-	AnnounceVoice     string
-	announceMu        sync.RWMutex // protects AnnounceEnabled + AnnounceVoice (read by TTS watcher goroutine, written by command handlers)
-	introAnnouncement *audio.TTSPlayback
-	introMu           sync.Mutex
-	introGen          int64 // incremented under introMu each generation
+	AnnounceEnabled bool
+	AnnounceVoice   string
+	announceMu      sync.RWMutex // protects AnnounceEnabled + AnnounceVoice (read by TTS watcher goroutine, written by command handlers)
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -351,12 +348,6 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.playerCancel()
 	p.playerCtx, p.playerCancel = context.WithCancel(context.Background())
 
-	// Clear pending intro announcement state.
-	p.introMu.Lock()
-	p.introAnnouncement = nil
-	p.introGen = 0
-	p.introMu.Unlock()
-
 	// Stop all event listener goroutines via their stop channels.
 	select {
 	case p.idleCheckStop <- struct{}{}:
@@ -560,18 +551,6 @@ func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 		return
 	}
 
-	// Play intro announcement (pre-generated for the first song on idle channel).
-	// Advance the generation counter afterward so any stale goroutine that
-	// finishes after this point discards its result.
-	p.introMu.Lock()
-	intro := p.introAnnouncement
-	p.introAnnouncement = nil
-	p.introGen++
-	p.introMu.Unlock()
-	if intro != nil {
-		p.Player.PlayAnnouncement(intro, vc)
-	}
-
 	if err := p.Player.Play(ctx, data, vc); err != nil {
 		sentryhelper.CaptureException(ctx, err)
 		log.Errorf("Error starting stream: %v", err)
@@ -679,13 +658,6 @@ streamReady:
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
 		})
-
-		// Pre-generate an intro announcement for the first song in an idle channel
-		p.introMu.Lock()
-		p.introGen++
-		introGen := p.introGen
-		p.introMu.Unlock()
-		go p.preGenerateIntroAnnouncement(nextCtx, next.Video.Title, introGen)
 		return
 	}
 
@@ -737,6 +709,9 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 
 	// Start monitoring voice connection health
 	p.startVoiceConnectionMonitor()
+
+	// Play a join announcement the first time the bot enters voice
+	go p.playJoinAnnouncement(vc)
 
 	// Add breadcrumb for voice channel join (uses global scope since this is a guild-level operation)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
@@ -2100,20 +2075,19 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	}
 }
 
-// preGenerateIntroAnnouncement generates an intro TTS for the first song
-// starting on an idle channel. Runs as a goroutine in parallel with loading.
-// Uses a generation counter to ensure the result is only stored if no newer
-// song has started playing (or been consumed by play()) in the meantime.
-func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title string, gen int64) {
+// playJoinAnnouncement generates and plays a DJ intro when the bot first
+// joins a voice channel. Runs as a goroutine from JoinVoiceChannel.
+func (p *GuildPlayer) playJoinAnnouncement(vc *discordgo.VoiceConnection) {
 	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled {
 		return
 	}
 
+	ctx := p.playerCtx
+
 	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer scriptCancel()
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type:     gemini.AnnouncementIntro,
-		NextSong: title,
+		Type: gemini.AnnouncementJoin,
 	})
 	if script == "" {
 		return
@@ -2124,22 +2098,22 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 	defer ttsCancel()
 	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 	if err != nil {
-		log.Errorf("Intro TTS generation failed: %v", err)
+		log.Errorf("Join announcement TTS generation failed: %v", err)
 		sentry.CaptureException(err)
 		return
 	}
 
 	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
 	if convErr != nil {
-		log.Errorf("Intro TTS conversion failed: %v", convErr)
+		log.Errorf("Join announcement TTS conversion failed: %v", convErr)
 		sentry.CaptureException(convErr)
 		return
 	}
 
-	p.introMu.Lock()
-	defer p.introMu.Unlock()
-	if gen == p.introGen {
-		p.introAnnouncement = &audio.TTSPlayback{Samples: samples}
+	tts := &audio.TTSPlayback{Samples: samples}
+	if err := p.Player.PlayAnnouncement(tts, vc); err != nil {
+		log.Errorf("Join announcement playback failed: %v", err)
+		sentry.CaptureException(err)
 	}
 }
 
