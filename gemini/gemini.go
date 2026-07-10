@@ -33,6 +33,7 @@ const (
 	AnnouncementTransition AnnouncementType = iota
 	AnnouncementIntro
 	AnnouncementQueueEmpty
+	AnnouncementRadioStart
 )
 
 // DJScriptContext carries the situational details GenerateDJScript needs to
@@ -369,6 +370,8 @@ func announcementTypeTag(t AnnouncementType) string {
 		return "intro"
 	case AnnouncementQueueEmpty:
 		return "queue_empty"
+	case AnnouncementRadioStart:
+		return "radio_start"
 	default:
 		return "unknown"
 	}
@@ -447,6 +450,12 @@ Now write your intro:`, sc.NextSong)
 		taskPrompt = `Your task: The queue just ran out. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing and it's awesome. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
 
 Now write your announcement:`
+	case AnnouncementRadioStart:
+		taskPrompt = fmt.Sprintf(`Your task: Radio mode was just turned on. You're taking over as DJ.
+Announce that radio mode is on and introduce your first pick: %s.
+Keep it brief and natural.
+
+Now write your announcement:`, sc.NextSong)
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""
