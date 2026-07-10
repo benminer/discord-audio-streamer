@@ -1965,12 +1965,19 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 	defer span.Finish()
 	ctx = span.Context()
 
-	script := gemini.GenerateDJTransitionScript(ctx, currentSong, nextSong, recentHistory, isRadioPick)
+	script := gemini.GenerateDJScript(ctx, gemini.DJScriptContext{
+		Type:          gemini.AnnouncementTransition,
+		CurrentSong:   currentSong,
+		NextSong:      nextSong,
+		RecentHistory: recentHistory,
+		IsRadioPick:   isRadioPick,
+	})
 	if script == "" {
 		return
 	}
 
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	ttsPrompt := gemini.BuildTTSPrompt(script)
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("TTS pre-generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -1996,12 +2003,15 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	ctx, cancel := context.WithTimeout(p.playerCtx, 10*time.Second)
 	defer cancel()
 
-	script := gemini.GenerateRaw(ctx, "Say the queue is empty in a cool radio DJ voice. Mention they can use /queue to add songs or /radio for non-stop music. Keep it to one sentence. No markdown.")
+	script := gemini.GenerateDJScript(ctx, gemini.DJScriptContext{
+		Type: gemini.AnnouncementQueueEmpty,
+	})
 	if script == "" {
 		script = "That's all for now. Queue up more with /queue, or turn on radio mode with /radio for non-stop tunes."
 	}
 
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	ttsPrompt := gemini.BuildTTSPrompt(script)
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2042,12 +2052,16 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	script := gemini.GenerateRaw(ctx, "Say something brief as a radio DJ introducing a new song. Mention the song title. One sentence. No markdown. Example: 'Kicking things off with some Daft Punk, let's go.'")
+	script := gemini.GenerateDJScript(ctx, gemini.DJScriptContext{
+		Type:     gemini.AnnouncementIntro,
+		NextSong: title,
+	})
 	if script == "" {
 		return
 	}
 
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	ttsPrompt := gemini.BuildTTSPrompt(script)
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("Intro TTS generation failed: %v", err)
 		sentry.CaptureException(err)
