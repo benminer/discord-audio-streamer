@@ -12,6 +12,7 @@ type SongInfo struct {
 	Title       string
 	VideoID     string
 	IsRadioPick bool
+	QueuedBy    string // display name of user who queued, empty for radio picks
 }
 
 // PlaybackState is the authoritative single-source-of-truth for what is
