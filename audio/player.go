@@ -311,8 +311,10 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 		}
 
-		// Trigger announcement when approaching end of song
-		if !announcePlayed && pendingAnnounce == nil && data.Duration > 0 {
+		// Trigger announcement when approaching end of song.
+		// Require at least 3s of duration so the announcement doesn't fire
+		// instantly on very short clips (<5s total).
+		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second {
 			tts := p.announcement.Load()
 			if tts != nil {
 				remaining := data.Duration - p.GetPosition()
