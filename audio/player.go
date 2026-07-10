@@ -21,6 +21,7 @@ type Player struct {
 	Notifications     chan PlaybackNotification
 	logger            *log.Entry
 	encoder           *opus.Encoder
+	ttsEncoder        *opus.Encoder
 	paused            atomic.Bool
 	stopping          atomic.Bool
 	playing           atomic.Bool
@@ -46,12 +47,22 @@ func NewPlayer() (*Player, error) {
 	encoder.SetComplexity(10)
 	encoder.SetBitrateToMax()
 
+	ttsEncoder, err := opus.NewEncoder(48000, 2, opus.AppAudio)
+	if err != nil {
+		sentry.CaptureException(err)
+		return nil, err
+	}
+
+	ttsEncoder.SetComplexity(10)
+	ttsEncoder.SetBitrateToMax()
+
 	player := &Player{
 		Notifications: make(chan PlaybackNotification, 100),
 		logger: log.WithFields(log.Fields{
 			"module": "player",
 		}),
 		encoder:       encoder,
+		ttsEncoder:    ttsEncoder,
 		mutex:         sync.Mutex{},
 		silenceBuffer: make([]int16, 960*2),
 		silenceOpus:   make([]byte, 960*4),
@@ -207,22 +218,28 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				// If crossfading and TTS still has audio, play remaining TTS solo
+				// using the dedicated TTS encoder to avoid Opus state corruption
+				// from feeding speech into a music-optimized encoder.
 				if p.crossfading.Load() {
 					tts := p.ttsPlayback.Load()
 					if tts != nil && tts.Remaining() > 0 {
 						p.logger.Debug("Music ended, continuing TTS solo")
 						ttsBuf := make([]int16, 960*2)
+						ttsOpusBuf := make([]byte, 960*4)
+						ttsTicker := time.NewTicker(20 * time.Millisecond)
 						for tts.ReadFrame(ttsBuf) {
-							encoded, encErr := p.encoder.Encode(ttsBuf, opusBuffer)
+							encoded, encErr := p.ttsEncoder.Encode(ttsBuf, ttsOpusBuf)
 							if encErr != nil {
 								break
 							}
 							frame := make([]byte, encoded)
-							copy(frame, opusBuffer[:encoded])
+							copy(frame, ttsOpusBuf[:encoded])
 							if !safeSendOpus(voiceChannel, frame) {
 								break
 							}
+							<-ttsTicker.C
 						}
+						ttsTicker.Stop()
 						p.crossfading.Store(false)
 						p.ttsPlayback.Store(nil)
 					}
