@@ -1559,8 +1559,34 @@ func (p *GuildPlayer) queueRadioSong() string {
 	var picked *youtube.VideoResponse
 	var videos []youtube.VideoResponse
 
-	// Try Gemini-powered recommendation first
-	if config.Config.Gemini.Enabled && len(recent) >= 3 {
+	// Try YouTube Mix playlist first — uses YouTube's own recommendation engine
+	// seeded from the most recently played video. Genre-accurate without relying
+	// on title-based AI inference (which confuses "Microwave" emo vs "Microwave" rap).
+	if seedHistory := p.SongHistory.GetRecent(1); len(seedHistory) > 0 && seedHistory[0].VideoID != "" {
+		seedVideoID := seedHistory[0].VideoID
+		logger.Debugf("Trying YouTube Mix playlist for seed video: %s", seedVideoID)
+
+		mixVideos, err := youtube.GetMixPlaylistVideos(ctx, seedVideoID)
+		if err != nil {
+			logger.Warnf("YouTube Mix playlist failed, falling through to Gemini: %v", err)
+		} else {
+			for i := range mixVideos {
+				if !historyIDs[mixVideos[i].VideoID] && !isRecentTitle(mixVideos[i].Title, recentTitles) {
+					picked = &mixVideos[i]
+					break
+				}
+			}
+			if picked != nil {
+				query = "youtube-mix:" + seedVideoID
+				logger.Infof("YouTube Mix picked: %s", picked.Title)
+			} else {
+				logger.Debug("YouTube Mix results were all duplicates, falling through to Gemini")
+			}
+		}
+	}
+
+	// Try Gemini-powered recommendation if YouTube Mix came up empty
+	if picked == nil && config.Config.Gemini.Enabled && len(recent) >= 3 {
 		// Extract song titles for Gemini
 		songTitles := make([]string, len(recent))
 		for i, song := range recent {
