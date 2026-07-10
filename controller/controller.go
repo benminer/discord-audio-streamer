@@ -710,9 +710,6 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	// Start monitoring voice connection health
 	p.startVoiceConnectionMonitor()
 
-	// Play a join announcement the first time the bot enters voice
-	go p.playJoinAnnouncement(vc)
-
 	// Add breadcrumb for voice channel join (uses global scope since this is a guild-level operation)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
 		Category: "voice",
@@ -2071,48 +2068,6 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 
 	if err := p.Player.PlayAnnouncement(tts, vc); err != nil {
 		log.Errorf("No-more-songs announcement playback failed: %v", err)
-		sentry.CaptureException(err)
-	}
-}
-
-// playJoinAnnouncement generates and plays a DJ intro when the bot first
-// joins a voice channel. Runs as a goroutine from JoinVoiceChannel.
-func (p *GuildPlayer) playJoinAnnouncement(vc *discordgo.VoiceConnection) {
-	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled {
-		return
-	}
-
-	ctx := p.playerCtx
-
-	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer scriptCancel()
-	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type: gemini.AnnouncementJoin,
-	})
-	if script == "" {
-		return
-	}
-
-	ttsPrompt := gemini.BuildTTSPrompt(script)
-	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
-	if err != nil {
-		log.Errorf("Join announcement TTS generation failed: %v", err)
-		sentry.CaptureException(err)
-		return
-	}
-
-	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
-	if convErr != nil {
-		log.Errorf("Join announcement TTS conversion failed: %v", convErr)
-		sentry.CaptureException(convErr)
-		return
-	}
-
-	tts := &audio.TTSPlayback{Samples: samples}
-	if err := p.Player.PlayAnnouncement(tts, vc); err != nil {
-		log.Errorf("Join announcement playback failed: %v", err)
 		sentry.CaptureException(err)
 	}
 }
