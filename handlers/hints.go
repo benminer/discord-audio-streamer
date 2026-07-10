@@ -39,6 +39,7 @@ func NewHints() *Hints {
 			"Pro tip: /volume adjusts the playback volume (0-150)",
 			"Pro tip: /lyrics shows lyrics for the currently playing song",
 			"Pro tip: /favorite saves the current song to your favorites",
+			"Pro tip: /announce toggles the DJ voice announcements between songs",
 		},
 	}
 }
