@@ -332,15 +332,32 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 		// Check the time window BEFORE consuming: ConsumeTTS() is destructive
 		// (read-and-clear), so we must only call it when we're ready to use
 		// the buffer. Otherwise the TTS is consumed early and lost.
-		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second && p.ttsConsumer != nil {
-			remaining := data.Duration - p.GetPosition()
-			if remaining <= 5*time.Second && remaining > 0 {
+		if !announcePlayed && pendingAnnounce == nil && p.ttsConsumer != nil {
+			pos := p.GetPosition()
+			remaining := data.Duration - pos
+
+			// Log periodically (every ~10 seconds) so we can trace timing
+			if pos > 0 && pos%(10*time.Second) < 20*time.Millisecond {
+				p.logger.Debugf("[tts-check] duration=%s pos=%s remaining=%s hasTTS=%v",
+					data.Duration, pos, remaining, p.ttsConsumer != nil)
+			}
+
+			if data.Duration > 3*time.Second && remaining <= 5*time.Second && remaining > 0 {
 				tts := p.ttsConsumer.ConsumeTTS()
 				if tts != nil {
+					p.logger.Debug("[tts-check] Starting TTS crossfade")
 					pendingAnnounce = tts
 					p.fadeOutRemaining.Store(5)
 					continue
+				} else {
+					p.logger.Debug("[tts-check] In 5s window but ConsumeTTS returned nil")
 				}
+			}
+
+			// Log once when we pass the 5-second mark without triggering
+			if data.Duration > 3*time.Second && remaining <= 0 && !announcePlayed {
+				p.logger.Warnf("[tts-check] Song ended without TTS trigger: duration=%s pos=%s remaining=%s",
+					data.Duration, pos, remaining)
 			}
 		}
 

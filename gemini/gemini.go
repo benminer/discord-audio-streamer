@@ -33,7 +33,6 @@ const (
 	AnnouncementTransition AnnouncementType = iota
 	AnnouncementIntro
 	AnnouncementQueueEmpty
-	AnnouncementJoin
 )
 
 // DJScriptContext carries the situational details GenerateDJScript needs to
@@ -368,8 +367,6 @@ func announcementTypeTag(t AnnouncementType) string {
 		return "intro"
 	case AnnouncementQueueEmpty:
 		return "queue_empty"
-	case AnnouncementJoin:
-		return "join"
 	default:
 		return "unknown"
 	}
@@ -434,10 +431,6 @@ Now write your intro:`, sc.NextSong)
 		taskPrompt = `Your task: The queue just ran out. Let listeners know, and mention they can add songs with /queue or turn on non-stop music with /radio.
 
 Now write your announcement:`
-	case AnnouncementJoin:
-		taskPrompt = `Your task: You just joined the voice channel. Introduce yourself briefly. You're the DJ. Tell them to queue up some songs with /play or /queue. Keep it casual and brief.
-
-Now write your intro:`
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""
