@@ -1958,14 +1958,16 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 		recentHistory[i] = entry.Title
 	}
 
-	isRadioPick := currentItem.IsRadioPick
+	isRadioPick := nextItem.IsRadioPick
 
 	ctx := p.playerCtx
 	span := sentry.StartSpan(ctx, "tts.pre_generate")
 	defer span.Finish()
 	ctx = span.Context()
 
-	script := gemini.GenerateDJScript(ctx, gemini.DJScriptContext{
+	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scriptCancel()
+	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
 		Type:          gemini.AnnouncementTransition,
 		CurrentSong:   currentSong,
 		NextSong:      nextSong,
@@ -1977,7 +1979,9 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 	}
 
 	ttsPrompt := gemini.BuildTTSPrompt(script)
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, ttsPrompt, p.AnnounceVoice, "")
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer ttsCancel()
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("TTS pre-generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2000,10 +2004,11 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 // playNoMoreSongsMessage generates and plays a "no more songs" announcement
 // when the queue runs dry. Runs as a goroutine - errors are logged but silent.
 func (p *GuildPlayer) playNoMoreSongsMessage() {
-	ctx, cancel := context.WithTimeout(p.playerCtx, 10*time.Second)
-	defer cancel()
+	ctx := p.playerCtx
 
-	script := gemini.GenerateDJScript(ctx, gemini.DJScriptContext{
+	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scriptCancel()
+	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
 		Type: gemini.AnnouncementQueueEmpty,
 	})
 	if script == "" {
@@ -2011,7 +2016,9 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	}
 
 	ttsPrompt := gemini.BuildTTSPrompt(script)
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, ttsPrompt, p.AnnounceVoice, "")
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer ttsCancel()
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2049,10 +2056,9 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	script := gemini.GenerateDJScript(ctx, gemini.DJScriptContext{
+	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scriptCancel()
+	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
 		Type:     gemini.AnnouncementIntro,
 		NextSong: title,
 	})
@@ -2061,7 +2067,9 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 	}
 
 	ttsPrompt := gemini.BuildTTSPrompt(script)
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, ttsPrompt, p.AnnounceVoice, "")
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer ttsCancel()
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("Intro TTS generation failed: %v", err)
 		sentry.CaptureException(err)
