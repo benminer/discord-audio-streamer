@@ -381,11 +381,7 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		// all alias the same memory without a copy.
 		frame := make([]byte, encoded)
 		copy(frame, opusBuf[:encoded])
-		select {
-		case <-ticker.C:
-		default:
-			log.Warnf("TTS playback falling behind (ticker missed!)")
-		}
+		<-ticker.C
 		if !trySendOpus(vc, frame) {
 			break
 		}
@@ -395,6 +391,40 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 
 	// Send followup message with the voice name and the script text
 	manager.SendRequest(interaction, fmt.Sprintf("🎙️ Voice preview (**%s**): *%s*", voice, script), false)
+}
+
+func (manager *Manager) handleVoices(interaction *Interaction) Response {
+	guildID := interaction.GuildID
+	player := manager.Controller.GetPlayer(guildID)
+
+	currentVoice := player.AnnounceVoice
+	if currentVoice == "" && player.DB != nil {
+		if v, _ := player.DB.GetGuildSetting(guildID, "announce_voice"); v != "" {
+			currentVoice = v
+		}
+	}
+	if currentVoice == "" {
+		currentVoice = "Kore"
+	}
+
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("🎙️ **Available TTS Voices** (current: **%s**)\n", currentVoice))
+	for i, v := range gemini.AvailableVoices {
+		if v == currentVoice {
+			msg.WriteString(fmt.Sprintf("`%2d.` **%s** ← active\n", i+1, v))
+		} else {
+			msg.WriteString(fmt.Sprintf("`%2d.` %s\n", i+1, v))
+		}
+	}
+	msg.WriteString("\nUse `/announce voice:<name>` to switch")
+
+	return Response{
+		Type: 4,
+		Data: ResponseData{
+			Content: msg.String(),
+			Flags:   64,
+		},
+	}
 }
 
 // trySendOpus sends opus data to the voice connection, recovering from panics
