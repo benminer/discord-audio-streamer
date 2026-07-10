@@ -17,6 +17,12 @@ import (
 	"gopkg.in/hraban/opus.v2"
 )
 
+// TTSConsumer is the interface Player uses to consume pre-generated TTS
+// at song transitions. The controller's PlaybackState implements this.
+type TTSConsumer interface {
+	ConsumeTTS() *TTSPlayback
+}
+
 type Player struct {
 	Notifications     chan PlaybackNotification
 	logger            *log.Entry
@@ -29,10 +35,10 @@ type Player struct {
 	fadeOutRemaining  atomic.Int32
 	mutex             sync.Mutex
 	playbackStartTime time.Time
-	playbackPosition  atomic.Int64                // microseconds
-	silenceBuffer     []int16                     // Pre-allocated for pause loop
-	silenceOpus       []byte                      // Pre-allocated for pause loop
-	announcement      atomic.Pointer[TTSPlayback] // pre-generated TTS to play between songs
+	playbackPosition  atomic.Int64 // microseconds
+	silenceBuffer     []int16      // Pre-allocated for pause loop
+	silenceOpus       []byte       // Pre-allocated for pause loop
+	ttsConsumer       TTSConsumer  // reads pre-generated TTS for song transitions
 }
 
 func NewPlayer() (*Player, error) {
@@ -130,10 +136,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				continue
 			}
 
-			// Apply fade-out multiplier (cubic fade for sharp curve)
+			// Apply fade-out multiplier (quartic fade — steeper than cubic,
+			// drops to ~0.4% on the last frame for near-silent TTS transition).
 			remaining := p.fadeOutRemaining.Load()
 			t := float64(remaining) / 5.0
-			fadeMultiplier := t * t * t
+			fadeMultiplier := t * t * t * t
 			for i := range buffer {
 				sample := float64(buffer[i]) * fadeMultiplier
 				if sample > 32767 {
@@ -176,6 +183,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				ttsOpus := make([]byte, 960*4)
 				ttsTicker := time.NewTicker(20 * time.Millisecond)
 				for pendingAnnounce.ReadFrame(ttsBuf) {
+					amplifySamples(ttsBuf, ttsVolumeBoost)
 					encoded, encErr := p.ttsEncoder.Encode(ttsBuf, ttsOpus)
 					if encErr != nil {
 						break
@@ -321,14 +329,16 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 		}
 
 		// Trigger announcement when approaching end of song.
+		// Only consume TTS within the 5-second window before song end to
+		// avoid cutting the song short when Gemini finishes early.
 		// Require at least 3s of duration so the announcement doesn't fire
 		// instantly on very short clips (<5s total).
-		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second {
-			tts := p.announcement.Load()
+		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second && p.ttsConsumer != nil {
+			tts := p.ttsConsumer.ConsumeTTS()
 			if tts != nil {
 				remaining := data.Duration - p.GetPosition()
 				if remaining <= 5*time.Second && remaining > 0 {
-					pendingAnnounce = p.GetAndClearAnnouncement()
+					pendingAnnounce = tts
 					p.fadeOutRemaining.Store(5)
 					continue
 				}
@@ -368,6 +378,22 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	}
 }
 
+// amplifySamples multiplies each int16 sample by factor and clamps to int16 range.
+// Used to boost TTS volume so it cuts through clearly over music.
+const ttsVolumeBoost = 2.5
+
+func amplifySamples(buf []int16, factor float64) {
+	for i := range buf {
+		sample := float64(buf[i]) * factor
+		if sample > 32767 {
+			sample = 32767
+		} else if sample < -32768 {
+			sample = -32768
+		}
+		buf[i] = int16(sample)
+	}
+}
+
 // safeSendOpus sends opus data to the voice connection.
 // Returns false if the OpusSend channel is closed (voice disconnected),
 // which is recovered from the panic that a send on a closed channel causes.
@@ -381,14 +407,8 @@ func safeSendOpus(vc *discordgo.VoiceConnection, data []byte) (sent bool) {
 	return true
 }
 
-func (p *Player) SetAnnouncement(tts *TTSPlayback) {
-	p.announcement.Store(tts)
-}
-
-func (p *Player) GetAndClearAnnouncement() *TTSPlayback {
-	tts := p.announcement.Load()
-	p.announcement.Store(nil)
-	return tts
+func (p *Player) SetTTSConsumer(c TTSConsumer) {
+	p.ttsConsumer = c
 }
 
 func (p *Player) PlayAnnouncement(tts *TTSPlayback, vc *discordgo.VoiceConnection) error {
@@ -405,6 +425,7 @@ func (p *Player) PlayAnnouncement(tts *TTSPlayback, vc *discordgo.VoiceConnectio
 	defer ticker.Stop()
 
 	for tts.ReadFrame(frameBuf) {
+		amplifySamples(frameBuf, ttsVolumeBoost)
 		encoded, err := p.ttsEncoder.Encode(frameBuf, opusBuf)
 		if err != nil {
 			return err

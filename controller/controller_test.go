@@ -299,15 +299,11 @@ func TestListenerStopChannelExits(t *testing.T) {
 	}
 }
 
-// TestCurrentSongMutexConcurrent is a race-detector test that concurrently
-// reads and writes CurrentSong via currentSongMutex, verifying there are no
-// data races under the new locking scheme.
+// TestPlaybackStateConcurrent is a race-detector test that concurrently
+// reads and writes PlaybackState, verifying there are no data races.
 // Run with: go test -race ./controller/...
-func TestCurrentSongMutexConcurrent(t *testing.T) {
-	p := &GuildPlayer{
-		Queue: &GuildQueue{},
-	}
-	title := "test song"
+func TestPlaybackStateConcurrent(t *testing.T) {
+	ps := newPlaybackState()
 
 	var wg sync.WaitGroup
 	const goroutines = 100
@@ -316,22 +312,16 @@ func TestCurrentSongMutexConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			switch i % 3 {
+			switch i % 4 {
 			case 0:
-				// write title (PlaybackStarted path)
-				p.currentSongMutex.Lock()
-				p.CurrentSong = &title
-				p.currentSongMutex.Unlock()
+				ps.SetCurrent(SongInfo{Title: "test song", VideoID: "1"})
 			case 1:
-				// write nil (PlaybackCompleted/Stopped/Error path)
-				p.currentSongMutex.Lock()
-				p.CurrentSong = nil
-				p.currentSongMutex.Unlock()
+				ps.ClearCurrent()
 			case 2:
-				// read (handleAdd shouldPlay path)
-				p.currentSongMutex.RLock()
-				_ = p.CurrentSong == nil
-				p.currentSongMutex.RUnlock()
+				ps.SetNext(&SongInfo{Title: "next song", VideoID: "2"})
+			case 3:
+				_ = ps.Current()
+				_ = ps.Next()
 			}
 		}(i)
 	}

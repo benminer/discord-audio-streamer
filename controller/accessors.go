@@ -6,15 +6,19 @@ package controller
 
 // --- CurrentSong ---
 
-// GetCurrentSong returns a copy of the current song title pointer under the read lock.
-// Callers should capture the returned pointer in a local variable and nil-check + dereference
-// in one step to avoid TOCTOU races:
+// GetCurrentSong returns the title of the currently playing song, or nil if nothing is playing.
+// Delegates to PlaybackState, the single source of truth for playback state.
 //
 //	if song := player.GetCurrentSong(); song != nil { ... use *song ... }
 func (p *GuildPlayer) GetCurrentSong() *string {
-	p.currentSongMutex.RLock()
-	defer p.currentSongMutex.RUnlock()
-	return p.CurrentSong
+	if p.playbackState == nil {
+		return nil
+	}
+	current := p.playbackState.Current()
+	if current == nil {
+		return nil
+	}
+	return &current.Title
 }
 
 // --- CurrentItem ---
@@ -71,6 +75,36 @@ func (p *GuildPlayer) GetQueueSnapshot() []*GuildQueueItem {
 	snap := make([]*GuildQueueItem, len(p.Queue.Items))
 	copy(snap, p.Queue.Items)
 	return snap
+}
+
+// --- AnnounceEnabled / AnnounceVoice ---
+
+// GetAnnounceEnabled returns a thread-safe copy of AnnounceEnabled.
+func (p *GuildPlayer) GetAnnounceEnabled() bool {
+	p.announceMu.RLock()
+	defer p.announceMu.RUnlock()
+	return p.AnnounceEnabled
+}
+
+// SetAnnounceEnabled sets AnnounceEnabled under the announce mutex.
+func (p *GuildPlayer) SetAnnounceEnabled(v bool) {
+	p.announceMu.Lock()
+	p.AnnounceEnabled = v
+	p.announceMu.Unlock()
+}
+
+// GetAnnounceVoice returns a thread-safe copy of AnnounceVoice.
+func (p *GuildPlayer) GetAnnounceVoice() string {
+	p.announceMu.RLock()
+	defer p.announceMu.RUnlock()
+	return p.AnnounceVoice
+}
+
+// SetAnnounceVoice sets AnnounceVoice under the announce mutex.
+func (p *GuildPlayer) SetAnnounceVoice(voice string) {
+	p.announceMu.Lock()
+	p.AnnounceVoice = voice
+	p.announceMu.Unlock()
 }
 
 // --- ShouldJoinVoice ---
