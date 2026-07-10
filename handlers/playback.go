@@ -349,7 +349,7 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 	}
 
 	// Create a temporary Opus encoder (matches player.go settings)
-	encoder, err := opus.NewEncoder(48000, 2, opus.AppVoIP)
+	encoder, err := opus.NewEncoder(48000, 2, opus.AppAudio)
 	if err != nil {
 		log.Errorf("Error creating opus encoder: %v", err)
 		sentryhelper.CaptureException(ctx, err)
@@ -358,7 +358,7 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 	}
 	// Important: We must use the same bit depth and complexity as the main player
 	// for consistency.
-	encoder.SetBitrate(128000) // Explicit bitrate
+	encoder.SetBitrateToMax() // Explicit bitrate
 	encoder.SetComplexity(10)
 
 	// Play TTS frames through the voice connection
