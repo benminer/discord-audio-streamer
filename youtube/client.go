@@ -217,6 +217,163 @@ func GetPlaylistVideos(ctx context.Context, playlistID string, limit int) (*Play
 	}, nil
 }
 
+// GetMixPlaylistVideos returns videos from YouTube's auto-generated "RD" Mix
+// playlist for seedVideoID, filtered to tracks under 12 minutes. It tries the
+// YouTube Data API first; if fewer than 3 results come back (dynamic mixes are
+// often not exposed via the API), it falls back to yt-dlp.
+func GetMixPlaylistVideos(ctx context.Context, seedVideoID string) ([]VideoResponse, error) {
+	logger := log.WithFields(log.Fields{
+		"module":   "youtube",
+		"function": "GetMixPlaylistVideos",
+		"seed_id":  seedVideoID,
+	})
+
+	span := sentry.StartSpan(ctx, "youtube.get_mix_playlist")
+	span.Description = "Fetch YouTube Mix playlist for radio"
+	span.SetTag("seed_video_id", seedVideoID)
+	defer span.Finish()
+
+	// Tier 1: YouTube Data API
+	apiResults, apiErr := fetchMixViaAPI(ctx, "RD"+seedVideoID, seedVideoID, logger)
+	if apiErr != nil {
+		logger.Debugf("Data API mix fetch failed: %v, falling back to yt-dlp", apiErr)
+	} else if len(apiResults) >= 3 {
+		span.Status = sentry.SpanStatusOK
+		span.SetData("source", "api")
+		span.SetData("count", len(apiResults))
+		return apiResults, nil
+	} else {
+		logger.Debugf("Data API returned %d mix results, falling back to yt-dlp", len(apiResults))
+	}
+
+	// Tier 2: yt-dlp
+	ytdlpResults, ytdlpErr := fetchMixViaYtdlp(ctx, seedVideoID, logger)
+	if ytdlpErr != nil {
+		span.Status = sentry.SpanStatusInternalError
+		if apiErr != nil {
+			return nil, fmt.Errorf("mix playlist failed: api: %v; yt-dlp: %v", apiErr, ytdlpErr)
+		}
+		return nil, fmt.Errorf("mix playlist yt-dlp failed (api returned %d results): %v", len(apiResults), ytdlpErr)
+	}
+
+	span.Status = sentry.SpanStatusOK
+	span.SetData("source", "yt-dlp")
+	span.SetData("count", len(ytdlpResults))
+	return ytdlpResults, nil
+}
+
+func fetchMixViaAPI(ctx context.Context, playlistID, seedVideoID string, logger *log.Entry) ([]VideoResponse, error) {
+	service, err := ytapi.NewService(ctx, option.WithAPIKey(config.Config.Youtube.APIKey))
+	if err != nil {
+		return nil, fmt.Errorf("creating YouTube client: %v", err)
+	}
+
+	itemsResp, err := service.PlaylistItems.List([]string{"snippet"}).
+		PlaylistId(playlistID).
+		MaxResults(25).
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("playlistItems.list: %v", err)
+	}
+
+	videoIDs := make([]string, 0, len(itemsResp.Items))
+	titleMap := make(map[string]string)
+	for _, item := range itemsResp.Items {
+		vid := item.Snippet.ResourceId.VideoId
+		if vid == "" || vid == seedVideoID {
+			continue
+		}
+		videoIDs = append(videoIDs, vid)
+		titleMap[vid] = html.UnescapeString(item.Snippet.Title)
+	}
+
+	if len(videoIDs) == 0 {
+		return nil, nil
+	}
+
+	detailsResp, err := service.Videos.List([]string{"contentDetails"}).Id(videoIDs...).Do()
+	if err != nil {
+		return nil, fmt.Errorf("videos.list: %v", err)
+	}
+
+	videos := make([]VideoResponse, 0, len(detailsResp.Items))
+	for _, item := range detailsResp.Items {
+		dur := parseYoutubeDuration(item.ContentDetails.Duration)
+		if dur > 0 && dur <= 12*time.Minute {
+			videos = append(videos, VideoResponse{
+				Title:    titleMap[item.Id],
+				VideoID:  item.Id,
+				Duration: dur,
+			})
+		}
+	}
+
+	return videos, nil
+}
+
+func fetchMixViaYtdlp(ctx context.Context, seedVideoID string, logger *log.Entry) ([]VideoResponse, error) {
+	mixURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s&list=RD%s", seedVideoID, seedVideoID)
+
+	ytdlpCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ytdlpCtx,
+		"yt-dlp",
+		"--flat-playlist",
+		"--print", "%(id)s",
+		"--playlist-end", "25",
+		"--socket-timeout", "10",
+		"--no-warnings",
+		mixURL,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp flat-playlist: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	videoIDs := make([]string, 0, len(lines))
+	for _, line := range lines {
+		id := strings.TrimSpace(line)
+		if id != "" && id != seedVideoID {
+			videoIDs = append(videoIDs, id)
+		}
+	}
+
+	if len(videoIDs) == 0 {
+		return nil, fmt.Errorf("yt-dlp returned no video IDs")
+	}
+
+	service, err := ytapi.NewService(ctx, option.WithAPIKey(config.Config.Youtube.APIKey))
+	if err != nil {
+		return nil, fmt.Errorf("creating YouTube client for yt-dlp IDs: %v", err)
+	}
+
+	detailsResp, err := service.Videos.List([]string{"snippet", "contentDetails"}).Id(videoIDs...).Do()
+	if err != nil {
+		return nil, fmt.Errorf("videos.list for yt-dlp IDs: %v", err)
+	}
+
+	videos := make([]VideoResponse, 0, len(detailsResp.Items))
+	for _, item := range detailsResp.Items {
+		dur := parseYoutubeDuration(item.ContentDetails.Duration)
+		if dur > 0 && dur <= 12*time.Minute {
+			videos = append(videos, VideoResponse{
+				Title:    html.UnescapeString(item.Snippet.Title),
+				VideoID:  item.Id,
+				Duration: dur,
+			})
+		}
+	}
+
+	if len(videos) == 0 {
+		return nil, fmt.Errorf("no tracks under 12 minutes in yt-dlp mix results")
+	}
+
+	return videos, nil
+}
+
 func Query(ctx context.Context, query string) []VideoResponse {
 	logger := log.WithFields(log.Fields{"module": "youtube", "function": "Query"})
 
