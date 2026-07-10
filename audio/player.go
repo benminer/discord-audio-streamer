@@ -136,10 +136,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				continue
 			}
 
-			// Apply fade-out multiplier (cubic fade for sharp curve)
+			// Apply fade-out multiplier (quartic fade — steeper than cubic,
+			// drops to ~0.4% on the last frame for near-silent TTS transition).
 			remaining := p.fadeOutRemaining.Load()
 			t := float64(remaining) / 5.0
-			fadeMultiplier := t * t * t
+			fadeMultiplier := t * t * t * t
 			for i := range buffer {
 				sample := float64(buffer[i]) * fadeMultiplier
 				if sample > 32767 {
@@ -182,6 +183,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				ttsOpus := make([]byte, 960*4)
 				ttsTicker := time.NewTicker(20 * time.Millisecond)
 				for pendingAnnounce.ReadFrame(ttsBuf) {
+					amplifySamples(ttsBuf, ttsVolumeBoost)
 					encoded, encErr := p.ttsEncoder.Encode(ttsBuf, ttsOpus)
 					if encErr != nil {
 						break
@@ -376,6 +378,22 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	}
 }
 
+// amplifySamples multiplies each int16 sample by factor and clamps to int16 range.
+// Used to boost TTS volume so it cuts through clearly over music.
+const ttsVolumeBoost = 2.5
+
+func amplifySamples(buf []int16, factor float64) {
+	for i := range buf {
+		sample := float64(buf[i]) * factor
+		if sample > 32767 {
+			sample = 32767
+		} else if sample < -32768 {
+			sample = -32768
+		}
+		buf[i] = int16(sample)
+	}
+}
+
 // safeSendOpus sends opus data to the voice connection.
 // Returns false if the OpusSend channel is closed (voice disconnected),
 // which is recovered from the panic that a send on a closed channel causes.
@@ -407,6 +425,7 @@ func (p *Player) PlayAnnouncement(tts *TTSPlayback, vc *discordgo.VoiceConnectio
 	defer ticker.Stop()
 
 	for tts.ReadFrame(frameBuf) {
+		amplifySamples(frameBuf, ttsVolumeBoost)
 		encoded, err := p.ttsEncoder.Encode(frameBuf, opusBuf)
 		if err != nil {
 			return err
