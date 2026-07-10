@@ -1176,8 +1176,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						go p.queueRadioSong()
 					}
 
-					// If queue is still empty and announcements are enabled, play "no more songs" TTS
-					if p.IsEmpty() && p.GetAnnounceEnabled() && config.Config.Gemini.Enabled {
+					// If queue is still empty, radio is off, and announcements are enabled, play "no more songs" TTS.
+					// Skip when radio is on since it will queue something.
+					if p.IsEmpty() && !p.IsRadioEnabled() && p.GetAnnounceEnabled() && config.Config.Gemini.Enabled {
 						go p.playNoMoreSongsMessage()
 					}
 				case audio.PlaybackStarted:
@@ -1239,6 +1240,12 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.syncNextFromQueue()
 					// if there are more songs in the queue, load the next one
 					p.loadNext()
+
+					// Pre-queue the next radio song NOW (not at PlaybackCompleted)
+					// so it loads during playback and TTS has time to generate.
+					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
+						go p.queueRadioSong()
+					}
 				case audio.PlaybackError:
 					p.playbackState.ClearCurrent()
 					p.currentItemMutex.Lock()
