@@ -123,8 +123,10 @@ type GuildPlayer struct {
 	ttsWatcherStop         chan struct{}
 	RadioEnabled           bool
 	radioMutex             sync.Mutex
+	radioQueueing          sync.Mutex // held while queueRadioSong is in-flight, prevents double-queue
 	radioStartAnnouncement *audio.TTSPlayback
 	radioStartMu           sync.Mutex
+	radioStartGen          int64
 	SongHistory            *SongHistory
 
 	CurrentItem      *GuildQueueItem
@@ -352,6 +354,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 
 	p.radioStartMu.Lock()
 	p.radioStartAnnouncement = nil
+	p.radioStartGen++
 	p.radioStartMu.Unlock()
 
 	// Stop all event listener goroutines via their stop channels.
@@ -860,7 +863,7 @@ func (p *GuildPlayer) listenForQueueEvents() {
 					p.playNext()
 					// If radio is on and the skip drained the queue, auto-fill like a natural song end would
 					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
-						go p.queueRadioSong()
+						go p.tryQueueRadioSong()
 					}
 				case EventClear:
 					log.Debug("queue has been cleared")
@@ -1173,7 +1176,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 
 					// If radio is enabled and queue is empty, auto-queue a similar song
 					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
-						go p.queueRadioSong()
+						go p.tryQueueRadioSong()
 					}
 
 					// If queue is still empty, radio is off, and announcements are enabled, play "no more songs" TTS.
@@ -1244,7 +1247,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					// Pre-queue the next radio song NOW (not at PlaybackCompleted)
 					// so it loads during playback and TTS has time to generate.
 					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
-						go p.queueRadioSong()
+						go p.tryQueueRadioSong()
 					}
 				case audio.PlaybackError:
 					p.playbackState.ClearCurrent()
@@ -1407,12 +1410,20 @@ func isRecentTitle(candidate string, recentTitles []string) bool {
 // It queues a radio song, generates a "radio mode starting" TTS announcement,
 // and stores it so play() speaks it before the first radio song starts.
 func (p *GuildPlayer) startRadioMode() {
-	// Queue a song based on recent history (blocks until Add is called)
-	p.queueRadioSong()
+	// Claim a generation slot so Reset can invalidate us.
+	p.radioStartMu.Lock()
+	p.radioStartGen++
+	myGen := p.radioStartGen
+	p.radioStartMu.Unlock()
 
-	// Check what was queued
-	next := p.GetNext()
-	if next == nil {
+	// Queue a song based on recent history (blocks for Gemini + YouTube, 2-5s).
+	songTitle := p.tryQueueRadioSong()
+	if songTitle == "" {
+		return
+	}
+
+	// Re-check: user may have toggled radio off during the queue delay.
+	if !p.IsRadioEnabled() {
 		return
 	}
 
@@ -1420,12 +1431,13 @@ func (p *GuildPlayer) startRadioMode() {
 		return
 	}
 
-	ctx := p.playerCtx
+	// Use a detached context so playerCtx cancellation doesn't abort us.
+	ctx := context.Background()
 	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer scriptCancel()
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
 		Type:     gemini.AnnouncementRadioStart,
-		NextSong: next.Video.Title,
+		NextSong: songTitle,
 	})
 	if script == "" {
 		return
@@ -1448,14 +1460,32 @@ func (p *GuildPlayer) startRadioMode() {
 		return
 	}
 
+	// Only store if our generation is still current (Reset didn't fire).
 	p.radioStartMu.Lock()
-	p.radioStartAnnouncement = &audio.TTSPlayback{Samples: samples}
+	if myGen == p.radioStartGen {
+		p.radioStartAnnouncement = &audio.TTSPlayback{Samples: samples}
+		log.Infof("Radio start announcement generated for: %s", songTitle)
+	} else {
+		log.Debugf("Radio start gen %d superseded, discarding", myGen)
+	}
 	p.radioStartMu.Unlock()
-	log.Infof("Radio start announcement generated for: %s", next.Video.Title)
 }
 
-// queueRadioSong finds and queues a similar song based on play history using Gemini AI
-func (p *GuildPlayer) queueRadioSong() {
+// tryQueueRadioSong attempts to queue a radio song, but skips if another
+// goroutine is already in-flight. Returns the queued song title, or "" if
+// skipped or failed. Prevents double-queuing from concurrent PlaybackStarted
+// and PlaybackCompleted triggers.
+func (p *GuildPlayer) tryQueueRadioSong() string {
+	if !p.radioQueueing.TryLock() {
+		return ""
+	}
+	defer p.radioQueueing.Unlock()
+	return p.queueRadioSong()
+}
+
+// queueRadioSong finds and queues a similar song based on play history using Gemini AI.
+// Returns the queued song title, or "" if nothing was queued.
+func (p *GuildPlayer) queueRadioSong() string {
 	logger := log.WithFields(log.Fields{
 		"module":  "controller",
 		"method":  "queueRadioSong",
@@ -1464,7 +1494,7 @@ func (p *GuildPlayer) queueRadioSong() {
 
 	if p.SongHistory.Len() == 0 {
 		logger.Debug("no song history for radio, skipping")
-		return
+		return ""
 	}
 
 	ctx := context.Background()
@@ -1554,7 +1584,7 @@ func (p *GuildPlayer) queueRadioSong() {
 		videos = youtube.Query(ctx, query)
 		if len(videos) == 0 {
 			logger.Warn("radio: no YouTube results found")
-			return
+			return ""
 		}
 
 		// Find first result not already played (VideoID or title match)
@@ -1584,7 +1614,7 @@ func (p *GuildPlayer) queueRadioSong() {
 
 	if picked == nil {
 		logger.Warn("radio: could not find a non-duplicate song")
-		return
+		return ""
 	}
 
 	logger.Infof("Radio queuing: %s", picked.Title)
@@ -1613,6 +1643,7 @@ func (p *GuildPlayer) queueRadioSong() {
 	// Use a synthetic interaction for radio-queued items
 	// We use empty interaction token/appID since there's no user interaction
 	p.Add(ctx, *picked, "", "", "", nil, true)
+	return picked.Title
 }
 
 func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, userID string, interactionToken string, appID string, fallbackVideos []youtube.VideoResponse, isRadioPick ...bool) {

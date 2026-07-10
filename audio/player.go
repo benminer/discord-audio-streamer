@@ -343,7 +343,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					data.Duration, pos, remaining, p.ttsConsumer.HasTTS())
 			}
 
-			if data.Duration > 3*time.Second && remaining <= 5*time.Second {
+			if data.Duration > 3*time.Second && remaining <= 5*time.Second && remaining > -500*time.Millisecond {
 				tts := p.ttsConsumer.ConsumeTTS()
 				if tts != nil {
 					p.logger.Debug("[tts-check] Starting TTS crossfade")
