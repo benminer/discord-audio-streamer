@@ -125,6 +125,12 @@ func (d *Database) migrate() error {
 		// inserted even under concurrent load. INSERT OR IGNORE in AddFavorite
 		// relies on this constraint for idempotency.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_favorites_unique ON user_favorites(user_id, guild_id, video_id)`,
+		`CREATE TABLE IF NOT EXISTS guild_settings (
+			guild_id TEXT NOT NULL,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			PRIMARY KEY (guild_id, key)
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -470,4 +476,33 @@ func (d *Database) RemoveFavoriteByIndex(userID, guildID string, index int) (str
 	}
 
 	return title, tx.Commit()
+}
+
+// GetGuildSetting returns the value for a per-guild setting, or "" if not found.
+func (d *Database) GetGuildSetting(guildID, key string) (string, error) {
+	var value string
+	err := d.db.QueryRow(
+		`SELECT value FROM guild_settings WHERE guild_id = ? AND key = ?`,
+		guildID, key,
+	).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get guild setting %s/%s: %w", guildID, key, err)
+	}
+	return value, nil
+}
+
+// SetGuildSetting upserts a per-guild setting.
+func (d *Database) SetGuildSetting(guildID, key, value string) error {
+	_, err := d.db.Exec(
+		`INSERT INTO guild_settings (guild_id, key, value) VALUES (?, ?, ?)
+		 ON CONFLICT(guild_id, key) DO UPDATE SET value = excluded.value`,
+		guildID, key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set guild setting %s/%s: %w", guildID, key, err)
+	}
+	return nil
 }

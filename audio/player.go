@@ -28,9 +28,12 @@ type Player struct {
 	fadeOutRemaining  atomic.Int32
 	mutex             sync.Mutex
 	playbackStartTime time.Time
-	playbackPosition  atomic.Int64 // microseconds
-	silenceBuffer     []int16      // Pre-allocated for pause loop
-	silenceOpus       []byte       // Pre-allocated for pause loop
+	playbackPosition  atomic.Int64                // microseconds
+	silenceBuffer     []int16                     // Pre-allocated for pause loop
+	silenceOpus       []byte                      // Pre-allocated for pause loop
+	ttsPlayback       atomic.Pointer[TTSPlayback] // pre-generated TTS to mix during crossfade
+	crossfading       atomic.Bool                 // true when crossfade is active
+	crossfadePos      int32                       // frames into the crossfade (NOT atomic — only accessed in Play loop)
 }
 
 func NewPlayer() (*Player, error) {
@@ -82,6 +85,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	p.playing.Store(true)
 	p.stopping.Store(false)
 	p.paused.Store(false)
+	p.crossfading.Store(false)
+	p.crossfadePos = 0
 	// Initialize position tracking
 	p.playbackStartTime = time.Now()
 	p.playbackPosition.Store(0)
@@ -201,6 +206,25 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 		for attempts < 3 {
 			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				// If crossfading and TTS still has audio, play remaining TTS solo
+				if p.crossfading.Load() {
+					tts := p.ttsPlayback.Load()
+					if tts != nil && tts.Remaining() > 0 {
+						p.logger.Debug("Music ended, continuing TTS solo")
+						ttsBuf := make([]int16, 960*2)
+						for tts.ReadFrame(ttsBuf) {
+							encoded, encErr := p.encoder.Encode(ttsBuf, opusBuffer)
+							if encErr != nil {
+								break
+							}
+							if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
+								break
+							}
+						}
+						p.crossfading.Store(false)
+						p.ttsPlayback.Store(nil)
+					}
+				}
 				p.logger.Trace("Reached end of audio stream")
 				span.Status = sentry.SpanStatusOK
 				p.Notifications <- PlaybackNotification{
@@ -249,6 +273,40 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 		}
 
+		// Crossfade: fade out music and mix in TTS audio
+		if p.crossfading.Load() {
+			tts := p.ttsPlayback.Load()
+			if tts != nil {
+				// Slow fade-out of music over ~250 frames (5 seconds)
+				const crossfadeDuration int32 = 250
+				p.crossfadePos++
+				t := 1.0 - float64(p.crossfadePos)/float64(crossfadeDuration)
+				if t < 0 {
+					t = 0
+				}
+				musicFade := t * t // quadratic fade
+
+				// Apply music fade
+				for i := range buffer {
+					buffer[i] = int16(float64(buffer[i]) * musicFade)
+				}
+
+				// Mix in TTS audio
+				ttsBuf := make([]int16, 960*2)
+				if tts.ReadFrame(ttsBuf) || tts.Position > 0 {
+					for i := range buffer {
+						mixed := int32(buffer[i]) + int32(ttsBuf[i])
+						if mixed > 32767 {
+							mixed = 32767
+						} else if mixed < -32768 {
+							mixed = -32768
+						}
+						buffer[i] = int16(mixed)
+					}
+				}
+			}
+		}
+
 		encoded, err := p.encoder.Encode(buffer, opusBuffer)
 		if err != nil {
 			p.logger.Warnf("Error encoding to opus: %v", err)
@@ -266,6 +324,19 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 		if !p.paused.Load() && !p.stopping.Load() {
 			currentPos := p.playbackPosition.Load() + 20000 // 20ms in microseconds
 			p.playbackPosition.Store(currentPos)
+		}
+
+		// Check if we should start crossfading (TTS ready + approaching end of song)
+		if !p.crossfading.Load() && data.Duration > 0 {
+			tts := p.ttsPlayback.Load()
+			if tts != nil {
+				remaining := data.Duration - p.GetPosition()
+				if remaining <= 5*time.Second && remaining > 0 {
+					p.crossfading.Store(true)
+					p.crossfadePos = 0
+					p.logger.Debug("Starting TTS crossfade")
+				}
+			}
 		}
 
 		if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
@@ -291,6 +362,15 @@ func safeSendOpus(vc *discordgo.VoiceConnection, data []byte) (sent bool) {
 	}()
 	vc.OpusSend <- data
 	return true
+}
+
+func (p *Player) SetTTSPlayback(tts *TTSPlayback) {
+	p.ttsPlayback.Store(tts)
+}
+
+func (p *Player) ClearTTSPlayback() {
+	p.ttsPlayback.Store(nil)
+	p.crossfading.Store(false)
 }
 
 func (p *Player) Pause(ctx context.Context) {

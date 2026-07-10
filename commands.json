@@ -193,5 +193,31 @@
         "max_value": 25
       }
     ]
+  },
+  {
+    "name": "announce",
+    "type": 1,
+    "description": "Toggle DJ voice announcements between songs",
+    "options": [
+      {
+        "name": "voice",
+        "description": "Set the DJ voice (e.g. Kore, Puck, Charon)",
+        "type": 3,
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "voice-demo",
+    "type": 1,
+    "description": "Preview the DJ voice with a short quip",
+    "options": [
+      {
+        "name": "voice",
+        "description": "Voice to preview (uses current voice if omitted)",
+        "type": 3,
+        "required": false
+      }
+    ]
   }
 ]

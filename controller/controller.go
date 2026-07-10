@@ -130,6 +130,10 @@ type GuildPlayer struct {
 	LoopEnabled      bool
 	loopMutex        sync.RWMutex
 
+	// Voice DJ announcement settings (persisted via guild_settings)
+	AnnounceEnabled bool
+	AnnounceVoice   string
+
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
 	NowPlayingChannelID   *string
@@ -293,6 +297,16 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		SongHistory:          NewSongHistory(20),
 		playerCtx:            playerCtx,
 		playerCancel:         playerCancel,
+	}
+
+	// Load announce settings from DB
+	if val, _ := c.db.GetGuildSetting(guildID, "announce_enabled"); val == "true" {
+		session.AnnounceEnabled = true
+	}
+	if val, _ := c.db.GetGuildSetting(guildID, "announce_voice"); val != "" {
+		session.AnnounceVoice = val
+	} else {
+		session.AnnounceVoice = "Kore"
 	}
 
 	session.listenForQueueEvents()
@@ -1092,6 +1106,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.stopNowPlayingUpdates()
 					p.clearNowPlayingCard()
 
+					// Clear any pre-generated TTS so it doesn't carry over
+					p.Player.ClearTTSPlayback()
+
 					// Loop current song if enabled
 					p.currentItemMutex.RLock()
 					currentItemForLoop := p.CurrentItem
@@ -1154,6 +1171,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 
 						// Send now-playing card
 						go p.sendNowPlayingCard(queueItem)
+
+						// Pre-generate TTS for the transition to the next song
+						go p.preGenerateTTS(queueItem)
 
 						// Record in song history for radio mode
 						p.SongHistory.Add(SongHistoryEntry{
@@ -1825,6 +1845,54 @@ func (p *GuildPlayer) sendRecoveryMessage(message string) {
 			log.Errorf("Failed to send recovery message to channel %s: %v", textCh, err)
 		}
 	}
+}
+
+// preGenerateTTS generates TTS audio for the transition between the current
+// song and the next song in queue, then sets it on the player for crossfade.
+// Runs as a goroutine - errors are logged but never propagated.
+func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
+	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
+		return
+	}
+
+	nextItem := p.GetNext()
+	if nextItem == nil {
+		return
+	}
+
+	currentSong := currentItem.Video.Title
+	nextSong := nextItem.Video.Title
+
+	// Build recent history titles
+	recentEntries := p.SongHistory.GetRecent(5)
+	recentHistory := make([]string, len(recentEntries))
+	for i, entry := range recentEntries {
+		recentHistory[i] = entry.Title
+	}
+
+	isRadioPick := currentItem.IsRadioPick
+
+	ctx := p.playerCtx
+	span := sentry.StartSpan(ctx, "tts.pre_generate")
+	defer span.Finish()
+	ctx = span.Context()
+
+	script := gemini.GenerateDJTransitionScript(ctx, currentSong, nextSong, recentHistory, isRadioPick)
+	if script == "" {
+		return
+	}
+
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	if err != nil {
+		log.Errorf("TTS pre-generation failed: %v", err)
+		return
+	}
+
+	samples := audio.ConvertTTSToDiscord(audioBytes)
+	tts := &audio.TTSPlayback{Samples: samples}
+	p.Player.SetTTSPlayback(tts)
+
+	log.Infof("TTS pre-generated for transition: %s → %s", currentSong, nextSong)
 }
 
 // sendNowPlayingCard creates and sends a now-playing embed

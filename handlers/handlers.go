@@ -265,6 +265,12 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return manager.handleFavorites(interaction)
 	case "unfavorite":
 		return manager.handleUnfavorite(interaction)
+	case "announce":
+		return manager.handleAnnounce(ctx, interaction)
+	case "voice-demo":
+		finishTransaction = false
+		go manager.handleVoiceDemo(ctx, transaction, interaction)
+		return Response{Type: 5}
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:

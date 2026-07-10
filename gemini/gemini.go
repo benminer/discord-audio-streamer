@@ -16,6 +16,15 @@ import (
 // Creating a new HTTP client + TLS session on every call was wasteful.
 var defaultClient *genai.Client
 
+// AvailableVoices lists all Gemini TTS voice presets available for DJ announcements.
+var AvailableVoices = []string{
+	"Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+	"Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
+	"Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
+	"Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
+	"Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+}
+
 // Init initializes the shared Gemini client. Must be called once at startup
 // (after config is loaded) before any Gemini functions are used. Safe to call
 // when Gemini is disabled — it becomes a no-op.
@@ -327,4 +336,119 @@ Now write your commentary:`, currentSong, historyStr, radioStr))
 	}).Debug("Generated now playing commentary")
 
 	return commentary
+}
+
+// GenerateDJTransitionScript generates a short spoken-word transition line that a
+// DJ would say over the fade-out of the current song before the next one starts.
+// The result is intended to be fed into TTS, so it avoids markdown and formatting.
+func GenerateDJTransitionScript(ctx context.Context, currentSong, nextSong string, recentHistory []string, isRadioPick bool) string {
+	if !config.Config.Gemini.Enabled || defaultClient == nil {
+		return ""
+	}
+
+	span := sentry.StartSpan(ctx, "gemini.dj_transition_script")
+	span.Description = "Generate DJ transition script for TTS"
+	span.SetTag("model", config.Config.Gemini.Model)
+	defer span.Finish()
+
+	var historyStr string
+	if len(recentHistory) > 0 {
+		historyStr = "Recent songs played (most recent first):\n"
+		for i, song := range recentHistory {
+			historyStr += fmt.Sprintf("%d. %s\n", i+1, song)
+		}
+	} else {
+		historyStr = "This is the first song in the session."
+	}
+
+	radioStr := ""
+	if isRadioPick {
+		radioStr = "This next song was auto-queued by radio mode based on the listening pattern."
+	}
+
+	instructions := buildPrompt(fmt.Sprintf(`You are about to talk over the fade-out of the current song. Write ONE sentence that transitions from the current song to the next one.
+
+Current song: %s
+Next up: %s
+
+%s
+
+%s
+
+Rules:
+- ONE sentence ONLY
+- No markdown. No bold. No asterisks
+- Natural spoken cadence. This will be read aloud by text-to-speech
+- Keep it SHORT - 5-10 words ideal, 15 words max
+- Think like a radio DJ talking over the tail of a song
+
+Example good: "Fading out the Weeknd, rolling into some Daft Punk next."
+Example bad: "**The Weeknd's** track was great! Now let me introduce you to **Daft Punk** with their amazing hit!"
+
+Now write your transition:`, currentSong, nextSong, historyStr, radioStr))
+
+	response := generateResponse(ctx, instructions)
+	if response == "" {
+		span.Status = sentry.SpanStatusInternalError
+		return ""
+	}
+
+	span.Status = sentry.SpanStatusOK
+	return strings.TrimSpace(response)
+}
+
+// GenerateTTSAudio synthesizes speech from a script using Gemini's TTS model.
+// Returns raw PCM audio data (16-bit 24kHz mono). The caller is responsible for
+// encoding or resampling before sending to Discord.
+func GenerateTTSAudio(ctx context.Context, script, voice, model string) ([]byte, error) {
+	if defaultClient == nil {
+		return nil, fmt.Errorf("gemini client not initialized")
+	}
+
+	if model == "" {
+		model = config.Config.Gemini.TTSModel
+	}
+	if voice == "" {
+		voice = "Kore"
+	}
+
+	span := sentry.StartSpan(ctx, "gemini.tts")
+	span.Description = "Generate TTS audio"
+	span.SetTag("model", model)
+	span.SetTag("voice", voice)
+	defer span.Finish()
+
+	content := []*genai.Content{{Parts: []*genai.Part{{Text: script}}}}
+	resp, err := defaultClient.Models.GenerateContent(ctx, model, content, &genai.GenerateContentConfig{
+		ResponseModalities: []string{"AUDIO"},
+		SpeechConfig: &genai.SpeechConfig{
+			VoiceConfig: &genai.VoiceConfig{
+				PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
+					VoiceName: voice,
+				},
+			},
+		},
+	})
+	if err != nil {
+		log.WithFields(log.Fields{
+			"module": "gemini",
+			"model":  model,
+			"voice":  voice,
+		}).Errorf("TTS generation failed: %v", err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return nil, fmt.Errorf("TTS generation failed: %w", err)
+	}
+
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil ||
+		len(resp.Candidates[0].Content.Parts) == 0 || resp.Candidates[0].Content.Parts[0].InlineData == nil {
+		err := fmt.Errorf("TTS response contained no audio data")
+		log.WithField("module", "gemini").Error(err)
+		sentry.CaptureException(err)
+		span.Status = sentry.SpanStatusInternalError
+		return nil, err
+	}
+
+	span.Status = sentry.SpanStatusOK
+	return resp.Candidates[0].Content.Parts[0].InlineData.Data, nil
 }
