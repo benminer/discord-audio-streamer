@@ -148,7 +148,35 @@ func (manager *Manager) handleLoop(ctx context.Context, interaction *Interaction
 func (manager *Manager) handleRadio(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
+	// Before toggling on, make sure the bot is in voice
+	// (peek at the current state to know if we're enabling)
+	wasEnabled := player.IsRadioEnabled()
+
 	enabled := player.ToggleRadio()
+
+	if enabled && !wasEnabled {
+		voiceState, _ := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
+		if voiceState == nil {
+			player.ToggleRadio() // undo
+			return Response{
+				Type: 4,
+				Data: ResponseData{
+					Content: "📻 Join a voice channel first, then try again.",
+				},
+			}
+		}
+		if player.ShouldJoinVoice(voiceState.ChannelID) {
+			if err := player.JoinVoiceChannel(interaction.Member.User.ID); err != nil {
+				player.ToggleRadio() // undo
+				return Response{
+					Type: 4,
+					Data: ResponseData{
+						Content: "📻 Couldn't join your voice channel: " + err.Error(),
+					},
+				}
+			}
+		}
+	}
 
 	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
 	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
@@ -159,6 +187,9 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 	var msg string
 	if enabled {
 		msg = "📻 Radio mode **enabled** — " + djResponse
+		if player.SongHistory.Len() == 0 {
+			msg += "\n*Queue a few songs first so I have something to go off of.*"
+		}
 	} else {
 		msg = "📻 Radio mode **disabled** — " + djResponse
 	}
