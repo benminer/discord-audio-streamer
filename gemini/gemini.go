@@ -449,6 +449,13 @@ func GenerateTTSAudio(ctx context.Context, script, voice, model string) ([]byte,
 		return nil, err
 	}
 
+	inlineData := resp.Candidates[0].Content.Parts[0].InlineData
+	log.WithFields(log.Fields{
+		"module":    "gemini",
+		"mime_type": inlineData.MIMEType,
+		"data_size": len(inlineData.Data),
+	}).Debug("TTS audio received from Gemini")
+
 	span.Status = sentry.SpanStatusOK
-	return resp.Candidates[0].Content.Parts[0].InlineData.Data, nil
+	return inlineData.Data, nil
 }

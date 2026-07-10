@@ -1888,7 +1888,11 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 		return
 	}
 
-	samples := audio.ConvertTTSToDiscord(audioBytes)
+	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
+	if convErr != nil {
+		log.Errorf("TTS audio conversion failed: %v", convErr)
+		return
+	}
 	tts := &audio.TTSPlayback{Samples: samples}
 	p.Player.SetTTSPlayback(tts)
 

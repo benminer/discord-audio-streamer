@@ -328,8 +328,14 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		return
 	}
 
-	// Convert to Discord format (48kHz stereo)
-	samples := audio.ConvertTTSToDiscord(audioBytes)
+	// Convert to Discord format (48kHz stereo) via FFmpeg
+	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
+	if convErr != nil {
+		log.Errorf("TTS audio conversion failed: %v", convErr)
+		sentryhelper.CaptureException(ctx, convErr)
+		manager.SendError(interaction, "Audio conversion failed: "+convErr.Error(), true)
+		return
+	}
 	ttsPlayback := &audio.TTSPlayback{Samples: samples}
 
 	// Get the voice connection
@@ -350,9 +356,12 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		manager.SendError(interaction, "Error creating audio encoder", true)
 		return
 	}
+	encoder.SetComplexity(10)
+	encoder.SetBitrateToMax()
 
 	// Play TTS frames through the voice connection
 	vc.Speaking(true)
+	time.Sleep(50 * time.Millisecond)
 
 	frameBuf := make([]int16, 960*2)
 	opusBuf := make([]byte, 960*4)
