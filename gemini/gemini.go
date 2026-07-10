@@ -338,9 +338,9 @@ Now write your commentary:`, currentSong, historyStr, radioStr))
 	return commentary
 }
 
-// GenerateDJTransitionScript generates a short spoken-word transition line that a
-// DJ would say over the fade-out of the current song before the next one starts.
-// The result is intended to be fed into TTS, so it avoids markdown and formatting.
+// GenerateDJTransitionScript generates a short spoken-word transition line that
+// announces the song that just played and the one coming up next, in a natural
+// radio DJ cadence. The result is fed into TTS and must avoid markdown.
 func GenerateDJTransitionScript(ctx context.Context, currentSong, nextSong string, recentHistory []string, isRadioPick bool) string {
 	if !config.Config.Gemini.Enabled || defaultClient == nil {
 		return ""
@@ -366,9 +366,9 @@ func GenerateDJTransitionScript(ctx context.Context, currentSong, nextSong strin
 		radioStr = "This next song was auto-queued by radio mode based on the listening pattern."
 	}
 
-	instructions := buildPrompt(fmt.Sprintf(`You are about to talk over the fade-out of the current song. Write ONE sentence that transitions from the current song to the next one.
+	instructions := buildPrompt(fmt.Sprintf(`You are a radio DJ over the fade-out of the current song. Write ONE short sentence that announces the song that just played and what's coming up next.
 
-Current song: %s
+Current song (just finished): %s
 Next up: %s
 
 %s
@@ -376,13 +376,16 @@ Next up: %s
 %s
 
 Rules:
-- ONE sentence ONLY
+- ONE sentence ONLY, divided into two halves
+- First half: announce what just played ("That was X...")
+- Second half: announce what's coming up next ("...up next is Y")
 - No markdown. No bold. No asterisks
-- Natural spoken cadence. This will be read aloud by text-to-speech
-- Keep it SHORT - 5-10 words ideal, 15 words max
-- Think like a radio DJ talking over the tail of a song
+- Natural spoken cadence for text-to-speech
+- Keep it SHORT - 15-20 words max, 5-10 seconds spoken
+- Artist names and song titles only — skip the album mention unless it's obvious
+- Sound like a real radio DJ, not a robot
 
-Example good: "Fading out the Weeknd, rolling into some Daft Punk next."
+Example good: "That was the Weeknd rolling out, up next we got some Daft Punk coming your way."
 Example bad: "**The Weeknd's** track was great! Now let me introduce you to **Daft Punk** with their amazing hit!"
 
 Now write your transition:`, currentSong, nextSong, historyStr, radioStr))
@@ -409,7 +412,7 @@ func GenerateTTSAudio(ctx context.Context, script, voice, model string) ([]byte,
 		model = config.Config.Gemini.TTSModel
 	}
 	if voice == "" {
-		voice = "Kore"
+		voice = "Aoede"
 	}
 
 	span := sentry.StartSpan(ctx, "gemini.tts")

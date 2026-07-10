@@ -131,8 +131,11 @@ type GuildPlayer struct {
 	loopMutex        sync.RWMutex
 
 	// Voice DJ announcement settings (persisted via guild_settings)
-	AnnounceEnabled bool
-	AnnounceVoice   string
+	AnnounceEnabled   bool
+	AnnounceVoice     string
+	introAnnouncement *audio.TTSPlayback
+	introMu           sync.Mutex
+	introGen          int64 // incremented under introMu each generation
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -306,7 +309,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	if val, _ := c.db.GetGuildSetting(guildID, "announce_voice"); val != "" {
 		session.AnnounceVoice = val
 	} else {
-		session.AnnounceVoice = "Kore"
+		session.AnnounceVoice = "Aoede"
 	}
 
 	session.listenForQueueEvents()
@@ -342,6 +345,12 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.playerCancel()
 	p.playerCtx, p.playerCancel = context.WithCancel(context.Background())
 
+	// Clear pending intro announcement state.
+	p.introMu.Lock()
+	p.introAnnouncement = nil
+	p.introGen = 0
+	p.introMu.Unlock()
+
 	// Stop all event listener goroutines via their stop channels.
 	select {
 	case p.idleCheckStop <- struct{}{}:
@@ -363,6 +372,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	// Flush audio and voice connection before touching queue state.
 	if p.Player != nil {
 		p.Player.Stop()
+		p.Player.GetAndClearAnnouncement()
 	}
 	p.stopVoiceConnectionMonitor()
 
@@ -536,6 +546,18 @@ func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 		return
 	}
 
+	// Play intro announcement (pre-generated for the first song on idle channel).
+	// Advance the generation counter afterward so any stale goroutine that
+	// finishes after this point discards its result.
+	p.introMu.Lock()
+	intro := p.introAnnouncement
+	p.introAnnouncement = nil
+	p.introGen++
+	p.introMu.Unlock()
+	if intro != nil {
+		p.Player.PlayAnnouncement(intro, vc)
+	}
+
 	if err := p.Player.Play(ctx, data, vc); err != nil {
 		sentryhelper.CaptureException(ctx, err)
 		log.Errorf("Error starting stream: %v", err)
@@ -647,6 +669,13 @@ streamReady:
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
 		})
+
+		// Pre-generate an intro announcement for the first song in an idle channel
+		p.introMu.Lock()
+		p.introGen++
+		introGen := p.introGen
+		p.introMu.Unlock()
+		go p.preGenerateIntroAnnouncement(nextCtx, next.Video.Title, introGen)
 		return
 	}
 
@@ -1078,6 +1107,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"guild_name": p.getGuildName(),
 						},
 					})
+					// Clear any stale TTS from preGenerateTTS goroutines that
+					// may still be in-flight from the skipped song.
+					p.Player.GetAndClearAnnouncement()
 					p.currentSongMutex.Lock()
 					p.CurrentSong = nil
 					p.currentSongMutex.Unlock()
@@ -1106,16 +1138,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.stopNowPlayingUpdates()
 					p.clearNowPlayingCard()
 
-					// Play between-songs announcement if one was pre-generated
-					tts := p.Player.GetAndClearAnnouncement()
-					if tts != nil {
-						p.VoiceChannelMutex.RLock()
-						vc := p.VoiceConnection
-						p.VoiceChannelMutex.RUnlock()
-						if vc != nil {
-							p.Player.PlayAnnouncement(tts, vc)
-						}
-					}
+					// Announcement playback handled inline by Play() before EOF.
+					// No cleanup needed — preGenerateTTS may have just set a new
+					// announcement for the next song's transition.
 
 					// Loop current song if enabled
 					p.currentItemMutex.RLock()
@@ -1898,12 +1923,14 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("TTS pre-generation failed: %v", err)
+		sentry.CaptureException(err)
 		return
 	}
 
 	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
 	if convErr != nil {
 		log.Errorf("TTS audio conversion failed: %v", convErr)
+		sentry.CaptureException(convErr)
 		return
 	}
 	tts := &audio.TTSPlayback{Samples: samples}
@@ -1926,12 +1953,14 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
+		sentry.CaptureException(err)
 		return
 	}
 
 	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
 	if convErr != nil {
 		log.Errorf("No-more-songs audio conversion failed: %v", convErr)
+		sentry.CaptureException(convErr)
 		return
 	}
 
@@ -1946,6 +1975,45 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 
 	if err := p.Player.PlayAnnouncement(tts, vc); err != nil {
 		log.Errorf("No-more-songs announcement playback failed: %v", err)
+		sentry.CaptureException(err)
+	}
+}
+
+// preGenerateIntroAnnouncement generates an intro TTS for the first song
+// starting on an idle channel. Runs as a goroutine in parallel with loading.
+// Uses a generation counter to ensure the result is only stored if no newer
+// song has started playing (or been consumed by play()) in the meantime.
+func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title string, gen int64) {
+	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	script := gemini.GenerateRaw(ctx, "Say something brief as a radio DJ introducing a new song. Mention the song title. One sentence. No markdown. Example: 'Kicking things off with some Daft Punk, let's go.'")
+	if script == "" {
+		return
+	}
+
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	if err != nil {
+		log.Errorf("Intro TTS generation failed: %v", err)
+		sentry.CaptureException(err)
+		return
+	}
+
+	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
+	if convErr != nil {
+		log.Errorf("Intro TTS conversion failed: %v", convErr)
+		sentry.CaptureException(convErr)
+		return
+	}
+
+	p.introMu.Lock()
+	defer p.introMu.Unlock()
+	if gen == p.introGen {
+		p.introAnnouncement = &audio.TTSPlayback{Samples: samples}
 	}
 }
 

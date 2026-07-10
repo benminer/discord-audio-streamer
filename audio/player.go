@@ -100,6 +100,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 	opusBuffer := make([]byte, 960*4)
+	var pendingAnnounce *TTSPlayback
+	var announcePlayed bool
 
 	// Prime the voice connection before streaming
 	p.logger.Debug("Setting Speaking(true) to prime voice connection")
@@ -159,6 +161,54 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			if p.stopping.Load() && p.fadeOutRemaining.Load() == 0 {
 				p.logger.Debug("Fade-out complete, stopping playback")
 				span.Status = sentry.SpanStatusCanceled
+				return nil
+			}
+
+			// If fade-out completed and we have an announcement, play TTS solo
+			if p.fadeOutRemaining.Load() == 0 && !announcePlayed && pendingAnnounce != nil {
+				announcePlayed = true
+				ttsBuf := make([]int16, 960*2)
+				ttsOpus := make([]byte, 960*4)
+				ttsTicker := time.NewTicker(20 * time.Millisecond)
+				for pendingAnnounce.ReadFrame(ttsBuf) {
+					encoded, encErr := p.ttsEncoder.Encode(ttsBuf, ttsOpus)
+					if encErr != nil {
+						break
+					}
+					frame := make([]byte, encoded)
+					copy(frame, ttsOpus[:encoded])
+					if !safeSendOpus(voiceChannel, frame) {
+						break
+					}
+					<-ttsTicker.C
+				}
+				ttsTicker.Stop()
+				pendingAnnounce = nil
+				// Drain remaining audio silently to keep the voice pipeline flowing
+				// without playing music over the announcement.
+				silenceFrame := make([]int16, 960*2)
+				for {
+					err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+					if err == io.EOF || err == io.ErrUnexpectedEOF {
+						break
+					}
+					if err != nil {
+						break
+					}
+					silenceEncoded, silErr := p.encoder.Encode(silenceFrame, opusBuffer)
+					if silErr == nil {
+						if !safeSendOpus(voiceChannel, opusBuffer[:silenceEncoded]) {
+							break
+						}
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				p.logger.Trace("Reached end of audio stream")
+				span.Status = sentry.SpanStatusOK
+				p.Notifications <- PlaybackNotification{
+					Event:   PlaybackCompleted,
+					VideoID: &data.VideoID,
+				}
 				return nil
 			}
 
@@ -258,6 +308,21 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					sample = -32768
 				}
 				buffer[i] = int16(sample)
+			}
+		}
+
+		// Trigger announcement when approaching end of song.
+		// Require at least 3s of duration so the announcement doesn't fire
+		// instantly on very short clips (<5s total).
+		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second {
+			tts := p.announcement.Load()
+			if tts != nil {
+				remaining := data.Duration - p.GetPosition()
+				if remaining <= 5*time.Second && remaining > 0 {
+					pendingAnnounce = p.GetAndClearAnnouncement()
+					p.fadeOutRemaining.Store(5)
+					continue
+				}
 			}
 		}
 

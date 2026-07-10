@@ -310,7 +310,7 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		}
 	}
 	if voice == "" {
-		voice = "Kore"
+		voice = "Aoede"
 	}
 
 	// Generate a short demo script via Gemini
@@ -404,7 +404,7 @@ func (manager *Manager) handleVoices(interaction *Interaction) Response {
 		}
 	}
 	if currentVoice == "" {
-		currentVoice = "Kore"
+		currentVoice = "Aoede"
 	}
 
 	var msg strings.Builder
