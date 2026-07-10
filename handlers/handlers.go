@@ -271,6 +271,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		finishTransaction = false
 		go manager.handleVoiceDemo(ctx, transaction, interaction)
 		return Response{Type: 5}
+	case "voices":
+		return manager.handleVoices(interaction)
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:

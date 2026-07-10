@@ -310,11 +310,18 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					buffer[i] = int16(float64(buffer[i]) * musicFade)
 				}
 
-				// Mix in TTS audio
+				// Mix in TTS audio with 2x gain boost so it cuts through
+				// even when the music hasn't fully faded yet.
 				ttsBuf := make([]int16, 960*2)
 				if tts.ReadFrame(ttsBuf) || tts.Position > 0 {
 					for i := range buffer {
-						mixed := int32(buffer[i]) + int32(ttsBuf[i])
+						boosted := int32(float64(ttsBuf[i]) * 2.0)
+						if boosted > 32767 {
+							boosted = 32767
+						} else if boosted < -32768 {
+							boosted = -32768
+						}
+						mixed := int32(buffer[i]) + boosted
 						if mixed > 32767 {
 							mixed = 32767
 						} else if mixed < -32768 {

@@ -219,5 +219,10 @@
         "required": false
       }
     ]
+  },
+  {
+    "name": "voices",
+    "type": 1,
+    "description": "List available TTS voices for DJ announcements"
   }
 ]
