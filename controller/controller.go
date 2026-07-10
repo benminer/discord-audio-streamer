@@ -1360,11 +1360,39 @@ func (p *GuildPlayer) ToggleRadio() bool {
 	enabled := p.RadioEnabled
 	p.radioMutex.Unlock()
 
-	if enabled && !p.Player.IsPlaying() && p.IsEmpty() && p.SongHistory.Len() > 0 {
-		go p.startRadioMode()
+	if enabled && !p.Player.IsPlaying() && p.IsEmpty() {
+		p.seedHistoryFromDB()
+		if p.SongHistory.Len() > 0 {
+			go p.startRadioMode()
+		}
 	}
 
 	return enabled
+}
+
+// seedHistoryFromDB loads recent plays from the SQLite song_history table
+// into the in-memory SongHistory ring buffer. Only runs when the buffer is
+// empty (e.g. fresh bot restart). This lets radio mode work immediately
+// without the user needing to queue songs first.
+func (p *GuildPlayer) seedHistoryFromDB() {
+	if p.SongHistory.Len() > 0 || p.DB == nil {
+		return
+	}
+	records, err := p.DB.GetHistory(p.GuildID, 10)
+	if err != nil {
+		log.Errorf("Failed to seed song history from DB: %v", err)
+		return
+	}
+	if len(records) == 0 {
+		return
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		p.SongHistory.Add(SongHistoryEntry{
+			VideoID: records[i].VideoID,
+			Title:   records[i].Title,
+		})
+	}
+	log.Debugf("Seeded song history from DB with %d entries for guild %s", len(records), p.GuildID)
 }
 
 // IsRadioEnabled returns whether radio mode is on
