@@ -1435,8 +1435,8 @@ func isRecentTitle(candidate string, recentTitles []string) bool {
 }
 
 // startRadioMode is called when radio is toggled on while the bot is idle.
-// It queues a radio song, generates a "radio mode starting" TTS announcement,
-// and stores it so play() speaks it before the first radio song starts.
+// It picks a song, generates a TTS announcement, then queues the song.
+// The announcement is stored BEFORE queuing so play() finds it ready.
 func (p *GuildPlayer) startRadioMode() {
 	// Claim a generation slot so Reset can invalidate us.
 	p.radioStartMu.Lock()
@@ -1444,59 +1444,56 @@ func (p *GuildPlayer) startRadioMode() {
 	myGen := p.radioStartGen
 	p.radioStartMu.Unlock()
 
-	// Queue a song based on recent history (blocks for Gemini + YouTube, 2-5s).
-	songTitle := p.tryQueueRadioSong()
-	if songTitle == "" {
+	// 1. Pick a song (blocks for Gemini + YouTube, 2-5s).
+	picked := p.pickRadioSong()
+	if picked == nil {
 		return
 	}
 
-	// Re-check: user may have toggled radio off during the queue delay.
+	// Re-check: user may have toggled radio off during the pick delay.
 	if !p.IsRadioEnabled() {
 		return
 	}
 
-	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled {
-		return
+	// 2. Generate TTS announcement BEFORE queuing, so it's ready when play() starts.
+	if p.GetAnnounceEnabled() && config.Config.Gemini.Enabled {
+		ctx := context.Background()
+		scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer scriptCancel()
+		script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
+			Type:     gemini.AnnouncementRadioStart,
+			NextSong: picked.Title,
+		})
+		if script != "" {
+			ttsPrompt := gemini.BuildTTSPrompt(script)
+			ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+			defer ttsCancel()
+			audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
+			if err != nil {
+				log.Errorf("Radio start TTS generation failed: %v", err)
+				sentry.CaptureException(err)
+			} else {
+				samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
+				if convErr != nil {
+					log.Errorf("Radio start TTS conversion failed: %v", convErr)
+					sentry.CaptureException(convErr)
+				} else {
+					p.radioStartMu.Lock()
+					if myGen == p.radioStartGen {
+						p.radioStartAnnouncement = &audio.TTSPlayback{Samples: samples}
+						log.Infof("Radio start announcement generated for: %s", picked.Title)
+					} else {
+						log.Debugf("Radio start gen %d superseded, discarding", myGen)
+					}
+					p.radioStartMu.Unlock()
+				}
+			}
+		}
 	}
 
-	// Use a detached context so playerCtx cancellation doesn't abort us.
-	ctx := context.Background()
-	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer scriptCancel()
-	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type:     gemini.AnnouncementRadioStart,
-		NextSong: songTitle,
-	})
-	if script == "" {
-		return
-	}
-
-	ttsPrompt := gemini.BuildTTSPrompt(script)
-	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
-	if err != nil {
-		log.Errorf("Radio start TTS generation failed: %v", err)
-		sentry.CaptureException(err)
-		return
-	}
-
-	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
-	if convErr != nil {
-		log.Errorf("Radio start TTS conversion failed: %v", convErr)
-		sentry.CaptureException(convErr)
-		return
-	}
-
-	// Only store if our generation is still current (Reset didn't fire).
-	p.radioStartMu.Lock()
-	if myGen == p.radioStartGen {
-		p.radioStartAnnouncement = &audio.TTSPlayback{Samples: samples}
-		log.Infof("Radio start announcement generated for: %s", songTitle)
-	} else {
-		log.Debugf("Radio start gen %d superseded, discarding", myGen)
-	}
-	p.radioStartMu.Unlock()
+	// 3. NOW queue the song. The announcement is already stored, so play() will
+	// find it when handleAdd triggers the load/play pipeline.
+	p.enqueueRadioPick(picked)
 }
 
 // tryQueueRadioSong attempts to queue a radio song, but skips if another
@@ -1511,18 +1508,19 @@ func (p *GuildPlayer) tryQueueRadioSong() string {
 	return p.queueRadioSong()
 }
 
-// queueRadioSong finds and queues a similar song based on play history using Gemini AI.
-// Returns the queued song title, or "" if nothing was queued.
-func (p *GuildPlayer) queueRadioSong() string {
+// pickRadioSong uses Gemini recommendations and YouTube search to find a song
+// similar to recent listening history. Returns the picked video, or nil if
+// nothing suitable was found. Does NOT queue the song.
+func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 	logger := log.WithFields(log.Fields{
 		"module":  "controller",
-		"method":  "queueRadioSong",
+		"method":  "pickRadioSong",
 		"guildID": p.GuildID,
 	})
 
 	if p.SongHistory.Len() == 0 {
 		logger.Debug("no song history for radio, skipping")
-		return ""
+		return nil
 	}
 
 	ctx := context.Background()
@@ -1537,18 +1535,15 @@ func (p *GuildPlayer) queueRadioSong() string {
 		},
 	})
 
-	// Get recent songs to build a search query
 	recent := p.SongHistory.GetRecent(3)
 	historyIDs := p.SongHistory.GetAllVideoIDs()
 
-	// Build a lowercase title set for fuzzy dedup (VideoID dedup misses re-uploads/alt videos)
 	recentForDedup := p.SongHistory.GetRecent(5)
 	recentTitles := make([]string, 0, len(recentForDedup))
 	for _, entry := range recentForDedup {
 		recentTitles = append(recentTitles, strings.ToLower(entry.Title))
 	}
 
-	// Also exclude anything currently in queue
 	p.Queue.Mutex.Lock()
 	for _, item := range p.Queue.Items {
 		historyIDs[item.Video.VideoID] = true
@@ -1587,7 +1582,6 @@ func (p *GuildPlayer) queueRadioSong() string {
 
 	// Try Gemini-powered recommendation if YouTube Mix came up empty
 	if picked == nil && config.Config.Gemini.Enabled && len(recent) >= 3 {
-		// Extract song titles for Gemini
 		songTitles := make([]string, len(recent))
 		for i, song := range recent {
 			songTitles[i] = song.Title
@@ -1611,7 +1605,6 @@ func (p *GuildPlayer) queueRadioSong() string {
 
 			videos = youtube.Query(ctx, query)
 			if len(videos) > 0 {
-				// Find first result not already played (VideoID or title match)
 				for i := range videos {
 					if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
 						picked = &videos[i]
@@ -1624,11 +1617,9 @@ func (p *GuildPlayer) queueRadioSong() string {
 		}
 	}
 
-	// Fallback to legacy random artist search if Gemini failed or is disabled
 	if picked == nil {
 		logger.Debug("Using fallback legacy search method")
 
-		// Pick a random recent song's artist for variety
 		idx := rand.Intn(len(recent))
 		artist := ExtractArtist(recent[idx].Title)
 		query = artist + " music"
@@ -1638,10 +1629,9 @@ func (p *GuildPlayer) queueRadioSong() string {
 		videos = youtube.Query(ctx, query)
 		if len(videos) == 0 {
 			logger.Warn("radio: no YouTube results found")
-			return ""
+			return nil
 		}
 
-		// Find first result not already played (VideoID or title match)
 		for i := range videos {
 			if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
 				picked = &videos[i]
@@ -1651,7 +1641,6 @@ func (p *GuildPlayer) queueRadioSong() string {
 
 		if picked == nil {
 			logger.Info("radio: all search results already in history, trying broader query")
-			// Fallback: try with a different recent song
 			fallbackIdx := (idx + 1) % len(recent)
 			fallbackArtist := ExtractArtist(recent[fallbackIdx].Title)
 			fallbackQuery := fallbackArtist + " songs"
@@ -1668,11 +1657,17 @@ func (p *GuildPlayer) queueRadioSong() string {
 
 	if picked == nil {
 		logger.Warn("radio: could not find a non-duplicate song")
-		return ""
+		return nil
 	}
 
-	logger.Infof("Radio queuing: %s", picked.Title)
+	logger.Infof("Radio picked: %s", picked.Title)
+	return picked
+}
 
+// enqueueRadioPick queues a previously picked radio song and sends the text
+// channel announcement. Separated from pickRadioSong so callers can do work
+// (like generating TTS) between picking and queueing.
+func (p *GuildPlayer) enqueueRadioPick(picked *youtube.VideoResponse) {
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
 		Category: "radio",
 		Message:  "Radio auto-queued: " + picked.Title,
@@ -1682,21 +1677,27 @@ func (p *GuildPlayer) queueRadioSong() string {
 			"guild_name": p.getGuildName(),
 			"video_id":   picked.VideoID,
 			"title":      picked.Title,
-			"query":      query,
 		},
 	})
 
-	// Send announcement to the text channel
 	if textCh := p.GetLastTextChannelID(); textCh != "" && p.Discord != nil {
 		msg := "📻 **Radio:** queued **" + picked.Title + "**"
 		if _, err := p.Discord.ChannelMessageSend(textCh, msg); err != nil {
-			logger.Errorf("Failed to send radio announcement: %v", err)
+			log.Errorf("Failed to send radio announcement: %v", err)
 		}
 	}
 
-	// Use a synthetic interaction for radio-queued items
-	// We use empty interaction token/appID since there's no user interaction
-	p.Add(ctx, *picked, "", "", "", nil, true)
+	p.Add(context.Background(), *picked, "", "", "", nil, true)
+}
+
+// queueRadioSong picks and queues a radio song in one step.
+// Used by the normal playback flow (PlaybackStarted, PlaybackCompleted, Skip).
+func (p *GuildPlayer) queueRadioSong() string {
+	picked := p.pickRadioSong()
+	if picked == nil {
+		return ""
+	}
+	p.enqueueRadioPick(picked)
 	return picked.Title
 }
 
