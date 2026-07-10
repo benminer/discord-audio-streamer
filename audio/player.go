@@ -217,7 +217,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 							if encErr != nil {
 								break
 							}
-							if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
+							frame := make([]byte, encoded)
+							copy(frame, opusBuffer[:encoded])
+							if !safeSendOpus(voiceChannel, frame) {
 								break
 							}
 						}

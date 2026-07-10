@@ -365,6 +365,8 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 
 	frameBuf := make([]int16, 960*2)
 	opusBuf := make([]byte, 960*4)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
 
 	for ttsPlayback.ReadFrame(frameBuf) {
 		encoded, encErr := encoder.Encode(frameBuf, opusBuf)
@@ -372,7 +374,13 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 			log.Warnf("Error encoding TTS frame: %v", encErr)
 			break
 		}
-		if !trySendOpus(vc, opusBuf[:encoded]) {
+		// Copy the encoded data: opusBuf is reused each iteration, but
+		// OpusSend is buffered (100 frames) so unconsumed slices would
+		// all alias the same memory without a copy.
+		frame := make([]byte, encoded)
+		copy(frame, opusBuf[:encoded])
+		<-ticker.C
+		if !trySendOpus(vc, frame) {
 			break
 		}
 	}
