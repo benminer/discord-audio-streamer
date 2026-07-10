@@ -131,8 +131,11 @@ type GuildPlayer struct {
 	loopMutex        sync.RWMutex
 
 	// Voice DJ announcement settings (persisted via guild_settings)
-	AnnounceEnabled bool
-	AnnounceVoice   string
+	AnnounceEnabled       bool
+	AnnounceVoice         string
+	introAnnouncement     *audio.TTSPlayback
+	introAnnouncementMu   sync.Mutex
+	introAnnouncementDone chan struct{}
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -536,6 +539,19 @@ func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 		return
 	}
 
+	// Play intro announcement for the first song in an idle channel
+	p.introAnnouncementMu.Lock()
+	intro := p.introAnnouncement
+	p.introAnnouncement = nil
+	done := p.introAnnouncementDone
+	p.introAnnouncementMu.Unlock()
+	if intro != nil {
+		if done != nil {
+			<-done
+		}
+		p.Player.PlayAnnouncement(intro, vc)
+	}
+
 	if err := p.Player.Play(ctx, data, vc); err != nil {
 		sentryhelper.CaptureException(ctx, err)
 		log.Errorf("Error starting stream: %v", err)
@@ -647,6 +663,9 @@ streamReady:
 			VideoID: next.Video.VideoID,
 			Title:   next.Video.Title,
 		})
+
+		// Pre-generate an intro announcement for the first song in an idle channel
+		go p.preGenerateIntroAnnouncement(nextCtx, next.Video.Title)
 		return
 	}
 
@@ -1940,6 +1959,41 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	if err := p.Player.PlayAnnouncement(tts, vc); err != nil {
 		log.Errorf("No-more-songs announcement playback failed: %v", err)
 	}
+}
+
+// preGenerateIntroAnnouncement generates an intro TTS for the first song
+// starting on an idle channel. Runs as a goroutine in parallel with loading.
+func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title string) {
+	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	script := gemini.GenerateRaw(ctx, "Say something brief as a radio DJ introducing a new song. Mention the song title. One sentence. No markdown. Example: 'Kicking things off with some Daft Punk, let's go.'")
+	if script == "" {
+		return
+	}
+
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	if err != nil {
+		log.Errorf("Intro TTS generation failed: %v", err)
+		return
+	}
+
+	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
+	if convErr != nil {
+		log.Errorf("Intro TTS conversion failed: %v", convErr)
+		return
+	}
+
+	done := make(chan struct{})
+	p.introAnnouncementMu.Lock()
+	p.introAnnouncement = &audio.TTSPlayback{Samples: samples}
+	p.introAnnouncementDone = done
+	p.introAnnouncementMu.Unlock()
+	close(done)
 }
 
 // sendNowPlayingCard creates and sends a now-playing embed
