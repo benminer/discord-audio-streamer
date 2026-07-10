@@ -379,14 +379,15 @@ Rules:
 - ONE sentence ONLY, divided into two halves
 - First half: announce what just played ("That was X...")
 - Second half: announce what's coming up next ("...up next is Y")
+- You MUST include BOTH the song/artist that just played AND the song/artist coming up next
+- Never omit either name — they are the entire point of the announcement
 - No markdown. No bold. No asterisks
 - Natural spoken cadence for text-to-speech
 - Keep it SHORT - 15-20 words max, 5-10 seconds spoken
-- Artist names and song titles only — skip the album mention unless it's obvious
 - Sound like a real radio DJ, not a robot
 
 Example good: "That was the Weeknd rolling out, up next we got some Daft Punk coming your way."
-Example bad: "**The Weeknd's** track was great! Now let me introduce you to **Daft Punk** with their amazing hit!"
+Example bad: "This one's just doing its thing."
 
 Now write your transition:`, currentSong, nextSong, historyStr, radioStr))
 
