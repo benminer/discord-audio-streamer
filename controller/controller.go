@@ -308,8 +308,8 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		playerCancel:         playerCancel,
 	}
 
-	// Load announce settings from DB
-	if val, _ := c.db.GetGuildSetting(guildID, "announce_enabled"); val == "true" {
+	// Load announce settings from DB — default to enabled; only disable when explicitly stored as "false"
+	if val, _ := c.db.GetGuildSetting(guildID, "announce_enabled"); val != "false" {
 		session.SetAnnounceEnabled(true)
 	}
 	if val, _ := c.db.GetGuildSetting(guildID, "announce_voice"); val != "" {
@@ -2274,8 +2274,14 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
 
+	// Include a discoverable hint about /announce occasionally when DJ announcements are on
+	content := ""
+	if p.GetAnnounceEnabled() && rand.Float32() < 0.15 {
+		content = "-# 💡 Use /announce to disable DJ voice announcements"
+	}
+
 	// Send message
-	message, err := discord.SendChannelMessage(textCh, "", embed, nil)
+	message, err := discord.SendChannelMessage(textCh, content, embed, nil)
 	if err != nil {
 		log.Errorf("Failed to send now-playing card: %v", err)
 		if discord.IsMissingPermissions(err) {
