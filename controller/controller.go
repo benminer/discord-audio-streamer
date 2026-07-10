@@ -1958,19 +1958,30 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 		recentHistory[i] = entry.Title
 	}
 
-	isRadioPick := currentItem.IsRadioPick
+	isRadioPick := nextItem.IsRadioPick
 
 	ctx := p.playerCtx
 	span := sentry.StartSpan(ctx, "tts.pre_generate")
 	defer span.Finish()
 	ctx = span.Context()
 
-	script := gemini.GenerateDJTransitionScript(ctx, currentSong, nextSong, recentHistory, isRadioPick)
+	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scriptCancel()
+	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
+		Type:          gemini.AnnouncementTransition,
+		CurrentSong:   currentSong,
+		NextSong:      nextSong,
+		RecentHistory: recentHistory,
+		IsRadioPick:   isRadioPick,
+	})
 	if script == "" {
 		return
 	}
 
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	ttsPrompt := gemini.BuildTTSPrompt(script)
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer ttsCancel()
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("TTS pre-generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -1993,15 +2004,21 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 // playNoMoreSongsMessage generates and plays a "no more songs" announcement
 // when the queue runs dry. Runs as a goroutine - errors are logged but silent.
 func (p *GuildPlayer) playNoMoreSongsMessage() {
-	ctx, cancel := context.WithTimeout(p.playerCtx, 10*time.Second)
-	defer cancel()
+	ctx := p.playerCtx
 
-	script := gemini.GenerateRaw(ctx, "Say the queue is empty in a cool radio DJ voice. Mention they can use /queue to add songs or /radio for non-stop music. Keep it to one sentence. No markdown.")
+	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scriptCancel()
+	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
+		Type: gemini.AnnouncementQueueEmpty,
+	})
 	if script == "" {
 		script = "That's all for now. Queue up more with /queue, or turn on radio mode with /radio for non-stop tunes."
 	}
 
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	ttsPrompt := gemini.BuildTTSPrompt(script)
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer ttsCancel()
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2039,15 +2056,20 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	script := gemini.GenerateRaw(ctx, "Say something brief as a radio DJ introducing a new song. Mention the song title. One sentence. No markdown. Example: 'Kicking things off with some Daft Punk, let's go.'")
+	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer scriptCancel()
+	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
+		Type:     gemini.AnnouncementIntro,
+		NextSong: title,
+	})
 	if script == "" {
 		return
 	}
 
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	ttsPrompt := gemini.BuildTTSPrompt(script)
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer ttsCancel()
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
 	if err != nil {
 		log.Errorf("Intro TTS generation failed: %v", err)
 		sentry.CaptureException(err)

@@ -170,7 +170,7 @@ func getGeminiModel() string {
 func getGeminiTTSModel() string {
 	model := os.Getenv("GEMINI_TTS_MODEL")
 	if model == "" {
-		return "gemini-2.5-flash-preview-tts"
+		return "gemini-3.1-flash-tts-preview"
 	}
 	return model
 }
