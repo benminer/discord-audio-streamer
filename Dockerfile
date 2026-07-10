@@ -50,17 +50,21 @@ FROM ubuntu:24.04
 ARG TARGETARCH
 
 # Install runtime dependencies
-# Map TARGETARCH to yt-dlp binary name (arm64 -> yt-dlp_linux_aarch64, amd64 -> yt-dlp_linux)
 RUN apt-get update && apt-get install -y \
     libopusfile0 \
     libopus0 \
     ffmpeg \
     curl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp to a user-writable location so entrypoint can self-update
+RUN mkdir -p /app/bin \
     && YTDLP_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "_aarch64" || echo "") \
-    && curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux${YTDLP_SUFFIX}" -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+    && curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux${YTDLP_SUFFIX}" -o /app/bin/yt-dlp \
+    && chmod a+rx /app/bin/yt-dlp
+
+ENV PATH="/app/bin:${PATH}"
 
 # Create non-root user (use UID 1001 since ubuntu:24.04 already has UID 1000)
 RUN useradd -m -u 1001 -s /bin/bash appuser
