@@ -45,6 +45,7 @@ docker run -d --name discord-audio-streamer \
   -e SPOTIFY_ENABLED=true \
   -e GEMINI_API_KEY=$GEMINI_API_KEY \
   -e GEMINI_ENABLED=$GEMINI_ENABLED \
+  -e GEMINI_MODEL=$GEMINI_MODEL \
   -e CLOUDFLARE_TUNNEL_URL=$CLOUDFLARE_TUNNEL_URL \
   -e SENTRY_DSN=$SENTRY_DSN \
   benminer/discord-audio-streamer:latest
