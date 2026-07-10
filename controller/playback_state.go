@@ -4,6 +4,8 @@ import (
 	"sync"
 
 	"beatbot/audio"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // SongInfo holds metadata about a song for playback state tracking.
@@ -64,10 +66,11 @@ func (ps *PlaybackState) Current() *SongInfo {
 func (ps *PlaybackState) SetNext(info *SongInfo) {
 	ps.mu.Lock()
 	ps.next = info
-	// Clear the TTS buffer so the player never announces a stale transition
-	// while new TTS is being generated.
 	ps.ttsBuffer = nil
 	ps.mu.Unlock()
+	if info != nil {
+		log.Debugf("[playback-state] SetNext: %s (ttsBuffer cleared, regen signaled)", info.Title)
+	}
 	ps.SignalRegen()
 }
 
@@ -75,10 +78,9 @@ func (ps *PlaybackState) ClearNext() {
 	ps.mu.Lock()
 	ps.next = nil
 	ps.ttsBuffer = nil
-	// Bump gen so any in-flight generateTransitionTTS goroutine that
-	// finishes after this point discards its result via SetTTSBuffer.
 	ps.gen++
 	ps.mu.Unlock()
+	log.Debug("[playback-state] ClearNext: cleared next + TTS buffer")
 	ps.SignalRegen()
 }
 
@@ -94,6 +96,13 @@ func (ps *PlaybackState) Next() *SongInfo {
 
 // --- TTS buffer ---
 
+// HasTTS returns whether a TTS buffer is available without consuming it.
+func (ps *PlaybackState) HasTTS() bool {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return ps.ttsBuffer != nil
+}
+
 // ConsumeTTS atomically reads and clears the TTS buffer.
 // Used by Player at the end-of-song transition point.
 func (ps *PlaybackState) ConsumeTTS() *audio.TTSPlayback {
@@ -101,6 +110,9 @@ func (ps *PlaybackState) ConsumeTTS() *audio.TTSPlayback {
 	defer ps.mu.Unlock()
 	tts := ps.ttsBuffer
 	ps.ttsBuffer = nil
+	if tts != nil {
+		log.Debug("[playback-state] ConsumeTTS: buffer consumed")
+	}
 	return tts
 }
 

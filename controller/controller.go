@@ -1623,25 +1623,37 @@ func (p *GuildPlayer) Remove(index int) string {
 
 	// Snapshot next info before releasing queue lock so PlaybackState
 	// is updated without nesting two mutexes.
-	var nextTitle, nextVideoID string
+	var nextTitle, nextVideoID, nextUserID string
 	var nextIsRadioPick, hasNext bool
 	if len(p.Queue.Items) > 0 {
 		hasNext = true
 		nextTitle = p.Queue.Items[0].Video.Title
 		nextVideoID = p.Queue.Items[0].Video.VideoID
 		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
+		if p.Queue.Items[0].Interaction != nil {
+			nextUserID = p.Queue.Items[0].Interaction.UserID
+		}
 	}
 	p.Queue.Mutex.Unlock()
 
-	// Update PlaybackState outside the queue lock to avoid nested mutexes.
-	// SetNext/ClearNext trigger SignalRegen automatically.
+	// Only update PlaybackState if the next song actually changed.
+	// Removing song #3 from a 5-song queue doesn't affect the transition.
+	currentNext := p.playbackState.Next()
 	if hasNext {
+		if currentNext != nil && currentNext.VideoID == nextVideoID {
+			return removed.Video.Title
+		}
+		queuedBy := ""
+		if nextUserID != "" && p.DB != nil {
+			queuedBy = p.DB.GetOrFetchUsername(p.GuildID, nextUserID)
+		}
 		p.playbackState.SetNext(&SongInfo{
 			Title:       nextTitle,
 			VideoID:     nextVideoID,
 			IsRadioPick: nextIsRadioPick,
+			QueuedBy:    queuedBy,
 		})
-	} else {
+	} else if currentNext != nil {
 		p.playbackState.ClearNext()
 	}
 
