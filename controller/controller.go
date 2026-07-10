@@ -306,7 +306,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	if val, _ := c.db.GetGuildSetting(guildID, "announce_voice"); val != "" {
 		session.AnnounceVoice = val
 	} else {
-		session.AnnounceVoice = "Kore"
+		session.AnnounceVoice = "Aoede"
 	}
 
 	session.listenForQueueEvents()
@@ -1106,16 +1106,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.stopNowPlayingUpdates()
 					p.clearNowPlayingCard()
 
-					// Play between-songs announcement if one was pre-generated
-					tts := p.Player.GetAndClearAnnouncement()
-					if tts != nil {
-						p.VoiceChannelMutex.RLock()
-						vc := p.VoiceConnection
-						p.VoiceChannelMutex.RUnlock()
-						if vc != nil {
-							p.Player.PlayAnnouncement(tts, vc)
-						}
-					}
+					// Announcement playback handled inline by Play() before EOF.
+					// Clear any stale announcement that wasn't played.
+					p.Player.GetAndClearAnnouncement()
 
 					// Loop current song if enabled
 					p.currentItemMutex.RLock()

@@ -409,7 +409,7 @@ func GenerateTTSAudio(ctx context.Context, script, voice, model string) ([]byte,
 		model = config.Config.Gemini.TTSModel
 	}
 	if voice == "" {
-		voice = "Kore"
+		voice = "Aoede"
 	}
 
 	span := sentry.StartSpan(ctx, "gemini.tts")

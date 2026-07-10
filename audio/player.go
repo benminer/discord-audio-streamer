@@ -100,6 +100,8 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	firstPacket := true
 	buffer := make([]int16, 960*2)
 	opusBuffer := make([]byte, 960*4)
+	var pendingAnnounce *TTSPlayback
+	var announcePlayed bool
 
 	// Prime the voice connection before streaming
 	p.logger.Debug("Setting Speaking(true) to prime voice connection")
@@ -160,6 +162,30 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				p.logger.Debug("Fade-out complete, stopping playback")
 				span.Status = sentry.SpanStatusCanceled
 				return nil
+			}
+
+			// If fade-out completed and we have an announcement, play TTS solo
+			if p.fadeOutRemaining.Load() == 0 && !announcePlayed && pendingAnnounce != nil {
+				announcePlayed = true
+				ttsBuf := make([]int16, 960*2)
+				ttsOpus := make([]byte, 960*4)
+				ttsTicker := time.NewTicker(20 * time.Millisecond)
+				for pendingAnnounce.ReadFrame(ttsBuf) {
+					encoded, encErr := p.ttsEncoder.Encode(ttsBuf, ttsOpus)
+					if encErr != nil {
+						break
+					}
+					frame := make([]byte, encoded)
+					copy(frame, ttsOpus[:encoded])
+					if !safeSendOpus(voiceChannel, frame) {
+						break
+					}
+					<-ttsTicker.C
+				}
+				ttsTicker.Stop()
+				pendingAnnounce = nil
+				time.Sleep(20 * time.Millisecond)
+				continue
 			}
 
 			time.Sleep(20 * time.Millisecond)
@@ -258,6 +284,19 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					sample = -32768
 				}
 				buffer[i] = int16(sample)
+			}
+		}
+
+		// Trigger announcement when approaching end of song
+		if !announcePlayed && pendingAnnounce == nil && data.Duration > 0 {
+			tts := p.announcement.Load()
+			if tts != nil {
+				remaining := data.Duration - p.GetPosition()
+				if remaining <= 5*time.Second && remaining > 0 {
+					pendingAnnounce = p.GetAndClearAnnouncement()
+					p.fadeOutRemaining.Store(5)
+					continue
+				}
 			}
 		}
 
