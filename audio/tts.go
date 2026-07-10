@@ -7,27 +7,76 @@ package audio
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"os/exec"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const ttsFrameSamples = 960 * 2 // 20ms frame at 48kHz stereo
 
-// ConvertTTSToDiscord upsamples 24kHz mono PCM to 48kHz stereo by
-// duplicating each sample twice for rate doubling and twice more for
-// stereo, producing S, S, S, S per input sample S.
-func ConvertTTSToDiscord(pcm24kMono []byte) []int16 {
-	reader := bytes.NewReader(pcm24kMono)
-	samples := make([]int16, 0, (len(pcm24kMono)/2)*4)
-
-	for {
-		var sample int16
-		if err := binary.Read(reader, binary.LittleEndian, &sample); err != nil {
-			break
-		}
-		samples = append(samples, sample, sample, sample, sample)
+// ConvertTTSToDiscord resamples TTS audio to 48kHz stereo PCM using FFmpeg.
+// Accepts raw 24kHz mono PCM (the default Gemini TTS output) or WAV.
+// Falls back to raw PCM input flags if auto-detection fails.
+func ConvertTTSToDiscord(ttsAudio []byte) ([]int16, error) {
+	if len(ttsAudio) == 0 {
+		return nil, fmt.Errorf("empty TTS audio data")
 	}
 
-	return samples
+	isWAV := len(ttsAudio) >= 4 && string(ttsAudio[:4]) == "RIFF"
+
+	var cmd *exec.Cmd
+	if isWAV {
+		log.Debug("TTS audio detected as WAV, using auto-detection")
+		cmd = exec.Command("ffmpeg",
+			"-i", "pipe:0",
+			"-f", "s16le",
+			"-ar", "48000",
+			"-ac", "2",
+			"-loglevel", "error",
+			"pipe:1")
+	} else {
+		log.Debug("TTS audio detected as raw PCM, using explicit format flags")
+		cmd = exec.Command("ffmpeg",
+			"-f", "s16le",
+			"-ar", "24000",
+			"-ac", "1",
+			"-i", "pipe:0",
+			"-f", "s16le",
+			"-ar", "48000",
+			"-ac", "2",
+			"-af", "aresample=48000",
+			"-loglevel", "error",
+			"pipe:1")
+	}
+
+	cmd.Stdin = bytes.NewReader(ttsAudio)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("FFmpeg TTS conversion failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	if len(output) == 0 {
+		return nil, fmt.Errorf("FFmpeg produced empty output")
+	}
+
+	samples := make([]int16, len(output)/2)
+	if err := binary.Read(bytes.NewReader(output), binary.LittleEndian, &samples); err != nil {
+		return nil, fmt.Errorf("failed to read FFmpeg output as int16: %w", err)
+	}
+
+	log.WithFields(log.Fields{
+		"input_bytes":    len(ttsAudio),
+		"output_samples": len(samples),
+		"duration_ms":    len(samples) / 2 / 48,
+		"is_wav":         isWAV,
+	}).Debug("TTS audio converted to Discord format")
+
+	return samples, nil
 }
 
 type TTSPlayback struct {
