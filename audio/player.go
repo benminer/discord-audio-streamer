@@ -184,8 +184,32 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				}
 				ttsTicker.Stop()
 				pendingAnnounce = nil
-				time.Sleep(20 * time.Millisecond)
-				continue
+				// Drain remaining audio silently to keep the voice pipeline flowing
+				// without playing music over the announcement.
+				silenceFrame := make([]int16, 960*2)
+				for {
+					err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+					if err == io.EOF || err == io.ErrUnexpectedEOF {
+						break
+					}
+					if err != nil {
+						break
+					}
+					silenceEncoded, silErr := p.encoder.Encode(silenceFrame, opusBuffer)
+					if silErr == nil {
+						if !safeSendOpus(voiceChannel, opusBuffer[:silenceEncoded]) {
+							break
+						}
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				p.logger.Trace("Reached end of audio stream")
+				span.Status = sentry.SpanStatusOK
+				p.Notifications <- PlaybackNotification{
+					Event:   PlaybackCompleted,
+					VideoID: &data.VideoID,
+				}
+				return nil
 			}
 
 			time.Sleep(20 * time.Millisecond)
