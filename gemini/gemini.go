@@ -25,6 +25,26 @@ var AvailableVoices = []string{
 	"Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
 }
 
+// AnnouncementType identifies which kind of DJ announcement is being generated,
+// so GenerateDJScript can tailor instructions and context to the moment.
+type AnnouncementType int
+
+const (
+	AnnouncementTransition AnnouncementType = iota
+	AnnouncementIntro
+	AnnouncementQueueEmpty
+)
+
+// DJScriptContext carries the situational details GenerateDJScript needs to
+// write a natural-sounding announcement for the given AnnouncementType.
+type DJScriptContext struct {
+	Type          AnnouncementType
+	CurrentSong   string   // song that just played (transition)
+	NextSong      string   // song coming up (transition, intro)
+	RecentHistory []string // recent song titles
+	IsRadioPick   bool     // whether next song was auto-queued by radio
+}
+
 // Init initializes the shared Gemini client. Must be called once at startup
 // (after config is loaded) before any Gemini functions are used. Safe to call
 // when Gemini is disabled — it becomes a no-op.
@@ -338,58 +358,87 @@ Now write your commentary:`, currentSong, historyStr, radioStr))
 	return commentary
 }
 
-// GenerateDJTransitionScript generates a short spoken-word transition line that
-// announces the song that just played and the one coming up next, in a natural
-// radio DJ cadence. The result is fed into TTS and must avoid markdown.
-func GenerateDJTransitionScript(ctx context.Context, currentSong, nextSong string, recentHistory []string, isRadioPick bool) string {
+// announcementTypeTag returns a short string for Sentry tagging.
+func announcementTypeTag(t AnnouncementType) string {
+	switch t {
+	case AnnouncementTransition:
+		return "transition"
+	case AnnouncementIntro:
+		return "intro"
+	case AnnouncementQueueEmpty:
+		return "queue_empty"
+	default:
+		return "unknown"
+	}
+}
+
+// recentHistoryBlock formats recent song history as a numbered list, or a
+// fallback line when there's no history yet. Shared across announcement types.
+func recentHistoryBlock(recentHistory []string) string {
+	if len(recentHistory) == 0 {
+		return "This is the first song in the session."
+	}
+	var sb strings.Builder
+	sb.WriteString("Recent songs played (most recent first):\n")
+	for i, song := range recentHistory {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, song))
+	}
+	return sb.String()
+}
+
+// GenerateDJScript generates a short spoken-word DJ script — with inline audio
+// tags for TTS delivery — for the moment described by sc. The result must
+// avoid markdown; it's fed directly into GenerateTTSAudio via BuildTTSPrompt.
+func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 	if !config.Config.Gemini.Enabled || defaultClient == nil {
 		return ""
 	}
 
-	span := sentry.StartSpan(ctx, "gemini.dj_transition_script")
-	span.Description = "Generate DJ transition script for TTS"
+	span := sentry.StartSpan(ctx, "gemini.dj_script")
+	span.Description = "Generate DJ script for TTS"
 	span.SetTag("model", config.Config.Gemini.Model)
+	span.SetTag("announcement_type", announcementTypeTag(sc.Type))
 	defer span.Finish()
 
-	var historyStr string
-	if len(recentHistory) > 0 {
-		historyStr = "Recent songs played (most recent first):\n"
-		for i, song := range recentHistory {
-			historyStr += fmt.Sprintf("%d. %s\n", i+1, song)
+	var taskPrompt string
+	switch sc.Type {
+	case AnnouncementTransition:
+		radioStr := ""
+		if sc.IsRadioPick {
+			radioStr = "This next song was auto-queued by radio mode based on the listening pattern."
 		}
-	} else {
-		historyStr = "This is the first song in the session."
-	}
 
-	radioStr := ""
-	if isRadioPick {
-		radioStr = "This next song was auto-queued by radio mode based on the listening pattern."
-	}
-
-	instructions := buildPrompt(fmt.Sprintf(`You are a radio DJ over the fade-out of the current song. Write ONE short sentence that announces the song that just played and what's coming up next.
-
-Current song (just finished): %s
+		taskPrompt = fmt.Sprintf(`Current song (just finished): %s
 Next up: %s
 
 %s
 
 %s
 
-Rules:
-- ONE sentence ONLY, divided into two halves
-- First half: announce what just played ("That was X...")
-- Second half: announce what's coming up next ("...up next is Y")
-- You MUST include BOTH the song/artist that just played AND the song/artist coming up next
+Your task: Announce what just played and what's coming up next. Write it as two halves: first announce what just played, then what's next.
+- You MUST say BOTH the song/artist that just played AND the song/artist coming up next
 - Never omit either name — they are the entire point of the announcement
-- No markdown. No bold. No asterisks
-- Natural spoken cadence for text-to-speech
-- Keep it SHORT - 15-20 words max, 5-10 seconds spoken
-- Sound like a real radio DJ, not a robot
 
-Example good: "That was the Weeknd rolling out, up next we got some Daft Punk coming your way."
-Example bad: "This one's just doing its thing."
+Now write your transition:`, sc.CurrentSong, sc.NextSong, recentHistoryBlock(sc.RecentHistory), radioStr)
+	case AnnouncementIntro:
+		taskPrompt = fmt.Sprintf(`First song of the session: %s
 
-Now write your transition:`, currentSong, nextSong, historyStr, radioStr))
+Your task: Introduce the first song of the session. Build a little anticipation — you're kicking things off.
+- You MUST say the song/artist
+
+Now write your intro:`, sc.NextSong)
+	case AnnouncementQueueEmpty:
+		taskPrompt = fmt.Sprintf(`%s
+
+Your task: The queue just ran out. Let listeners know, and mention they can add songs with /queue or turn on non-stop music with /radio.
+
+Now write your announcement:`, recentHistoryBlock(sc.RecentHistory))
+	default:
+		span.Status = sentry.SpanStatusInvalidArgument
+		return ""
+	}
+
+	instructions := TTSPersonalityPrompt + "\n\n" + taskPrompt
 
 	response := generateResponse(ctx, instructions)
 	if response == "" {
@@ -399,6 +448,12 @@ Now write your transition:`, currentSong, nextSong, historyStr, radioStr))
 
 	span.Status = sentry.SpanStatusOK
 	return strings.TrimSpace(response)
+}
+
+// BuildTTSPrompt wraps a generated DJ script in the fixed audio profile so the
+// TTS model has consistent voice direction across every announcement.
+func BuildTTSPrompt(script string) string {
+	return fmt.Sprintf(TTSAudioProfile, script)
 }
 
 // GenerateTTSAudio synthesizes speech from a script using Gemini's TTS model.
