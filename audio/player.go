@@ -21,6 +21,7 @@ import (
 // at song transitions. The controller's PlaybackState implements this.
 type TTSConsumer interface {
 	ConsumeTTS() *TTSPlayback
+	HasTTS() bool
 }
 
 type Player struct {
@@ -339,10 +340,10 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			// Log periodically (every ~10 seconds) so we can trace timing
 			if pos > 0 && pos%(10*time.Second) < 20*time.Millisecond {
 				p.logger.Debugf("[tts-check] duration=%s pos=%s remaining=%s hasTTS=%v",
-					data.Duration, pos, remaining, p.ttsConsumer != nil)
+					data.Duration, pos, remaining, p.ttsConsumer.HasTTS())
 			}
 
-			if data.Duration > 3*time.Second && remaining <= 5*time.Second && remaining > 0 {
+			if data.Duration > 3*time.Second && remaining <= 5*time.Second && remaining > -500*time.Millisecond {
 				tts := p.ttsConsumer.ConsumeTTS()
 				if tts != nil {
 					p.logger.Debug("[tts-check] Starting TTS crossfade")

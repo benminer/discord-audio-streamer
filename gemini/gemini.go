@@ -33,6 +33,7 @@ const (
 	AnnouncementTransition AnnouncementType = iota
 	AnnouncementIntro
 	AnnouncementQueueEmpty
+	AnnouncementRadioStart
 )
 
 // DJScriptContext carries the situational details GenerateDJScript needs to
@@ -369,6 +370,8 @@ func announcementTypeTag(t AnnouncementType) string {
 		return "intro"
 	case AnnouncementQueueEmpty:
 		return "queue_empty"
+	case AnnouncementRadioStart:
+		return "radio_start"
 	default:
 		return "unknown"
 	}
@@ -411,11 +414,15 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 		}
 
 		requesterStr := ""
-		if sc.CurrentQueuedBy != "" {
-			requesterStr += fmt.Sprintf("The current song was queued by %s.\n", sc.CurrentQueuedBy)
-		}
-		if sc.NextQueuedBy != "" {
-			requesterStr += fmt.Sprintf("The next song was queued by %s.\n", sc.NextQueuedBy)
+		if sc.CurrentQueuedBy != "" && sc.CurrentQueuedBy == sc.NextQueuedBy {
+			requesterStr = fmt.Sprintf("Both songs were queued by %s.\n", sc.CurrentQueuedBy)
+		} else {
+			if sc.CurrentQueuedBy != "" {
+				requesterStr += fmt.Sprintf("The current song was queued by %s.\n", sc.CurrentQueuedBy)
+			}
+			if sc.NextQueuedBy != "" {
+				requesterStr += fmt.Sprintf("The next song was queued by %s.\n", sc.NextQueuedBy)
+			}
 		}
 
 		taskPrompt = fmt.Sprintf(`Current song (just finished): %s
@@ -429,6 +436,7 @@ Your task: Announce what just played and what's coming up next. Write it as two 
 - You MUST say BOTH the song/artist that just played AND the song/artist coming up next
 - Never omit either name — they are the entire point of the announcement
 - If you know who queued a song, mention them by name. Skip attribution for songs with no requester.
+- If both songs were queued by the same person, mention them once naturally (e.g. "both queued by Ben").
 
 Now write your transition:`, sc.CurrentSong, sc.NextSong, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
 	case AnnouncementIntro:
@@ -442,6 +450,12 @@ Now write your intro:`, sc.NextSong)
 		taskPrompt = `Your task: The queue just ran out. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing and it's awesome. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
 
 Now write your announcement:`
+	case AnnouncementRadioStart:
+		taskPrompt = fmt.Sprintf(`Your task: Radio mode was just turned on. You're taking over as DJ.
+Announce that radio mode is on and introduce your first pick: %s.
+Keep it brief and natural.
+
+Now write your announcement:`, sc.NextSong)
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""
