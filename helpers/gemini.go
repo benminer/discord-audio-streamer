@@ -21,6 +21,7 @@ var DJFallbacks = map[string]string{
 	"volume":      "Volume adjusted.",
 	"radio":       "Radio mode toggled.",
 	"loop":        "Loop mode toggled.",
+	"announce":    "DJ announcements toggled.",
 	"history":     "Here's what we've been vibing to.",
 	"leaderboard": "Top tracks incoming.",
 	"favorites":   "Your saved tracks.",
@@ -138,6 +139,17 @@ func buildDJPrompt(command string, args []interface{}) string {
 			action = "enabled"
 		}
 		return fmt.Sprintf("Write a brief DJ response to loop mode being %s. Keep it brief. One sentence.", action)
+
+	case "announce":
+		enabled := false
+		if len(args) > 0 {
+			enabled = args[0].(bool)
+		}
+		action := "disabled"
+		if enabled {
+			action = "enabled"
+		}
+		return fmt.Sprintf("Write a brief DJ response to voice announcements being %s. Keep it brief. One sentence.", action)
 
 	case "history":
 		return "Write a brief DJ response showing the recent history. Keep it casual. One sentence."

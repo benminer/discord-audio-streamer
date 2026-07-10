@@ -130,6 +130,10 @@ type GuildPlayer struct {
 	LoopEnabled      bool
 	loopMutex        sync.RWMutex
 
+	// Voice DJ announcement settings (persisted via guild_settings)
+	AnnounceEnabled bool
+	AnnounceVoice   string
+
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
 	NowPlayingChannelID   *string
