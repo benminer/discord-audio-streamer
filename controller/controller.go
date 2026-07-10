@@ -679,8 +679,10 @@ streamReady:
 		return
 	}
 
-	// Refresh transition TTS when a song is queued while something is playing
-	if p.Player.IsPlaying() {
+	// Refresh transition TTS when a song is queued. Use !shouldPlay as the guard
+	// (rather than IsPlaying) because the player may have just finished between
+	// the queue action and this handler running.
+	if !shouldPlay {
 		go p.refreshTransitionTTS()
 	}
 
@@ -1215,9 +1217,6 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						// Send now-playing card
 						go p.sendNowPlayingCard(queueItem)
 
-						// Pre-generate TTS for the transition to the next song
-						go p.preGenerateTTS(queueItem)
-
 						// Record in song history for radio mode
 						p.SongHistory.Add(SongHistoryEntry{
 							VideoID: queueItem.Video.VideoID,
@@ -1244,6 +1243,11 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.speakOnVC(true)
 					// once a song starts playback, we can pop it from the queue
 					p.popQueue()
+					// Pre-generate TTS for transition AFTER popQueue so GetNext()
+					// returns the real next song, not the one that just started.
+					if queueItem != nil {
+						go p.preGenerateTTS(queueItem)
+					}
 					// if there are more songs in the queue, load the next one
 					p.loadNext()
 				case audio.PlaybackError:
@@ -1904,9 +1908,31 @@ func (p *GuildPlayer) refreshTransitionTTS() {
 	currentItem := p.CurrentItem
 	p.currentItemMutex.RUnlock()
 	if currentItem == nil {
-		return
+		// Song just ended and CurrentItem was cleared. Use song history
+		// so the transition can still say "That was X, up next is Y."
+		recent := p.SongHistory.GetRecent(1)
+		if len(recent) == 0 {
+			return
+		}
+		currentItem = &GuildQueueItem{
+			Video: youtube.VideoResponse{Title: recent[0].Title},
+		}
 	}
+	// Capture the item identity at start so we can detect if a new song
+	// started while we were generating (refresh runs as a goroutine, and
+	// PlaybackStarted + preGenerateTTS for a new song may have fired).
+	origID := currentItem.Video.VideoID
+
 	p.preGenerateTTS(currentItem)
+
+	// If the current item changed during generation, the announcement we
+	// just set is stale — clear it so the real preGenerateTTS result wins.
+	p.currentItemMutex.RLock()
+	currentItemNow := p.CurrentItem
+	p.currentItemMutex.RUnlock()
+	if currentItemNow != nil && currentItemNow.Video.VideoID != origID {
+		p.Player.GetAndClearAnnouncement()
+	}
 }
 
 func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
@@ -1916,6 +1942,9 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 
 	nextItem := p.GetNext()
 	if nextItem == nil {
+		// No next song — clear any stale transition that may have been left
+		// by a refresh goroutine that started before the current song did.
+		p.Player.GetAndClearAnnouncement()
 		return
 	}
 
