@@ -211,7 +211,7 @@ func (manager *Manager) handleAnnounce(ctx context.Context, interaction *Interac
 				log.Errorf("Failed to save announce voice: %v", err)
 			}
 		}
-		player.AnnounceVoice = matchedVoice
+		player.SetAnnounceVoice(matchedVoice)
 
 		hint := manager.Hints.ShowIfApplicable(guildID)
 
@@ -224,7 +224,7 @@ func (manager *Manager) handleAnnounce(ctx context.Context, interaction *Interac
 	}
 
 	// Toggle announce enabled
-	player.AnnounceEnabled = !player.AnnounceEnabled
+	player.SetAnnounceEnabled(!player.GetAnnounceEnabled())
 
 	enabledStr := "false"
 	if player.AnnounceEnabled {
@@ -240,7 +240,7 @@ func (manager *Manager) handleAnnounce(ctx context.Context, interaction *Interac
 	// Generate DJ response with a tight deadline so we never blow Discord's 3s interaction limit
 	djCtx, djCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer djCancel()
-	djResponse := helpers.GenerateDJResponse(djCtx, "announce", player.AnnounceEnabled)
+	djResponse := helpers.GenerateDJResponse(djCtx, "announce", player.GetAnnounceEnabled())
 	hint := manager.Hints.ShowIfApplicable(guildID)
 
 	var msg string
@@ -302,7 +302,7 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		}
 	}
 	if voice == "" {
-		voice = player.AnnounceVoice
+		voice = player.GetAnnounceVoice()
 	}
 	if voice == "" && player.DB != nil {
 		if v, _ := player.DB.GetGuildSetting(guildID, "announce_voice"); v != "" {
@@ -397,7 +397,7 @@ func (manager *Manager) handleVoices(interaction *Interaction) Response {
 	guildID := interaction.GuildID
 	player := manager.Controller.GetPlayer(guildID)
 
-	currentVoice := player.AnnounceVoice
+	currentVoice := player.GetAnnounceVoice()
 	if currentVoice == "" && player.DB != nil {
 		if v, _ := player.DB.GetGuildSetting(guildID, "announce_voice"); v != "" {
 			currentVoice = v

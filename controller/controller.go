@@ -102,8 +102,7 @@ type GuildPlayer struct {
 	Discord              *discordgo.Session
 	DB                   *database.Database
 	GuildID              string
-	CurrentSong          *string
-	currentSongMutex     sync.RWMutex
+	playbackState        *PlaybackState
 	Queue                *GuildQueue
 	VoiceChannelMutex    sync.RWMutex
 	VoiceChannelID       *string
@@ -121,6 +120,7 @@ type GuildPlayer struct {
 	queueListenerStop    chan struct{}
 	playbackListenerStop chan struct{}
 	loadListenerStop     chan struct{}
+	ttsWatcherStop       chan struct{}
 	RadioEnabled         bool
 	radioMutex           sync.Mutex
 	SongHistory          *SongHistory
@@ -133,11 +133,10 @@ type GuildPlayer struct {
 	// Voice DJ announcement settings (persisted via guild_settings)
 	AnnounceEnabled   bool
 	AnnounceVoice     string
+	announceMu        sync.RWMutex // protects AnnounceEnabled + AnnounceVoice (read by TTS watcher goroutine, written by command handlers)
 	introAnnouncement *audio.TTSPlayback
 	introMu           sync.Mutex
 	introGen          int64 // incremented under introMu each generation
-	ttsMu             sync.Mutex
-	ttsGen            int64 // incremented each time a TTS generation starts
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -282,13 +281,16 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	}
 
 	playerCtx, playerCancel := context.WithCancel(context.Background())
+	ps := newPlaybackState()
+	player.SetTTSConsumer(ps)
 
 	session := &GuildPlayer{
 		// inject the global discord session to the player
 		// todo: I think I could just make this a global variable
-		Discord: c.discord,
-		DB:      c.db,
-		GuildID: guildID,
+		Discord:       c.discord,
+		DB:            c.db,
+		GuildID:       guildID,
+		playbackState: ps,
 		Queue: &GuildQueue{
 			notifications: make(chan QueueEvent, 100),
 		},
@@ -299,6 +301,7 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 		queueListenerStop:    make(chan struct{}),
 		playbackListenerStop: make(chan struct{}),
 		loadListenerStop:     make(chan struct{}),
+		ttsWatcherStop:       make(chan struct{}),
 		SongHistory:          NewSongHistory(20),
 		playerCtx:            playerCtx,
 		playerCancel:         playerCancel,
@@ -306,18 +309,19 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 
 	// Load announce settings from DB
 	if val, _ := c.db.GetGuildSetting(guildID, "announce_enabled"); val == "true" {
-		session.AnnounceEnabled = true
+		session.SetAnnounceEnabled(true)
 	}
 	if val, _ := c.db.GetGuildSetting(guildID, "announce_voice"); val != "" {
-		session.AnnounceVoice = val
+		session.SetAnnounceVoice(val)
 	} else {
-		session.AnnounceVoice = "Aoede"
+		session.SetAnnounceVoice("Aoede")
 	}
 
 	session.listenForQueueEvents()
 	session.listenForPlaybackEvents()
 	session.listenForLoadEvents()
 	session.startIdleChecker()
+	session.startTTSWatcher()
 
 	c.sessions[guildID] = session
 	return session
@@ -370,11 +374,17 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	case p.loadListenerStop <- struct{}{}:
 	default:
 	}
+	if p.ttsWatcherStop != nil {
+		close(p.ttsWatcherStop)
+		p.ttsWatcherStop = nil
+	}
 
 	// Flush audio and voice connection before touching queue state.
 	if p.Player != nil {
 		p.Player.Stop()
-		p.Player.GetAndClearAnnouncement()
+	}
+	if p.playbackState != nil {
+		p.playbackState.ClearNext()
 	}
 	p.stopVoiceConnectionMonitor()
 
@@ -399,9 +409,10 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.Queue.Items = nil
 	p.Queue.Mutex.Unlock()
 
-	p.currentSongMutex.Lock()
-	p.CurrentSong = nil
-	p.currentSongMutex.Unlock()
+	if p.playbackState != nil {
+		p.playbackState.ClearCurrent()
+		p.syncNextFromQueue()
+	}
 
 	p.currentItemMutex.Lock()
 	p.CurrentItem = nil
@@ -418,6 +429,7 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	p.listenForQueueEvents()
 	p.listenForPlaybackEvents()
 	p.listenForLoadEvents()
+	p.startTTSWatcher()
 
 	// Fire the user-facing Discord followup outside any lock.
 	go discord.SendFollowup(&discord.FollowUpRequest{
@@ -530,9 +542,9 @@ func (p *GuildPlayer) playNext() {
 		}
 	} else {
 		log.Tracef("no more songs in queue, stopping player")
-		p.currentSongMutex.Lock()
-		p.CurrentSong = nil
-		p.currentSongMutex.Unlock()
+		if p.playbackState != nil {
+			p.playbackState.ClearCurrent()
+		}
 	}
 }
 
@@ -651,11 +663,7 @@ streamReady:
 
 	shouldPlay := vc != nil &&
 		vcid != nil &&
-		func() bool {
-			p.currentSongMutex.RLock()
-			defer p.currentSongMutex.RUnlock()
-			return p.CurrentSong == nil
-		}() &&
+		p.playbackState.Current() == nil &&
 		!p.Player.IsPlaying()
 
 	// if the player is stopped, or not loading anything, play the next song in the queue
@@ -681,11 +689,11 @@ streamReady:
 		return
 	}
 
-	// Refresh transition TTS when a song is queued. Use !shouldPlay as the guard
-	// (rather than IsPlaying) because the player may have just finished between
-	// the queue action and this handler running.
+	// Refresh transition TTS when a song is queued while playback is active.
+	// The TTS watcher goroutine will read the updated next state and regenerate.
+	// syncNextFromQueue calls SetNext which triggers SignalRegen automatically.
 	if !shouldPlay {
-		go p.refreshTransitionTTS()
+		p.syncNextFromQueue()
 	}
 
 	index := p.getIndexForItem(event.Item)
@@ -898,9 +906,7 @@ func (p *GuildPlayer) listenForLoadEvents() {
 				switch event.Event {
 				case audio.PlaybackLoaded:
 					if queueItem != nil && event.LoadResult != nil {
-						p.currentSongMutex.RLock()
-						currentSongNil := p.CurrentSong == nil
-						p.currentSongMutex.RUnlock()
+						currentSongNil := p.playbackState.Current() == nil
 						if queueIndex == 0 && currentSongNil {
 							log.Tracef("loaded song is next up, playing")
 							ctx := queueItem.Context
@@ -1116,12 +1122,10 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"guild_name": p.getGuildName(),
 						},
 					})
-					// Clear any stale TTS from preGenerateTTS goroutines that
-					// may still be in-flight from the skipped song.
-					p.Player.GetAndClearAnnouncement()
-					p.currentSongMutex.Lock()
-					p.CurrentSong = nil
-					p.currentSongMutex.Unlock()
+					// Clear stale TTS and current/next state. The TTS watcher
+					// will regenerate when PlaybackStarted fires again.
+					p.playbackState.ClearNext()
+					p.playbackState.ClearCurrent()
 					p.speakOnVC(false)
 
 					// Stop now-playing updates
@@ -1138,18 +1142,12 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							"video_id":   videoID,
 						},
 					})
-					p.currentSongMutex.Lock()
-					p.CurrentSong = nil
-					p.currentSongMutex.Unlock()
+					p.playbackState.ClearCurrent()
 					p.speakOnVC(false)
 
 					// Stop now-playing updates
 					p.stopNowPlayingUpdates()
 					p.clearNowPlayingCard()
-
-					// Announcement playback handled inline by Play() before EOF.
-					// No cleanup needed — preGenerateTTS may have just set a new
-					// announcement for the next song's transition.
 
 					// Loop current song if enabled
 					p.currentItemMutex.RLock()
@@ -1192,15 +1190,17 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					}
 
 					// If queue is still empty and announcements are enabled, play "no more songs" TTS
-					if p.IsEmpty() && p.AnnounceEnabled && config.Config.Gemini.Enabled {
+					if p.IsEmpty() && p.GetAnnounceEnabled() && config.Config.Gemini.Enabled {
 						go p.playNoMoreSongsMessage()
 					}
 				case audio.PlaybackStarted:
 					if queueItem != nil {
 						log.Tracef("playback started for %s", queueItem.Video.Title)
-						p.currentSongMutex.Lock()
-						p.CurrentSong = &queueItem.Video.Title
-						p.currentSongMutex.Unlock()
+						p.playbackState.SetCurrent(SongInfo{
+							Title:       queueItem.Video.Title,
+							VideoID:     queueItem.Video.VideoID,
+							IsRadioPick: queueItem.IsRadioPick,
+						})
 						p.currentItemMutex.Lock()
 						p.CurrentItem = queueItem
 						p.currentItemMutex.Unlock()
@@ -1245,15 +1245,14 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.speakOnVC(true)
 					// once a song starts playback, we can pop it from the queue
 					p.popQueue()
-					// Pre-generate TTS for transition AFTER popQueue so GetNext()
-					// returns the real next song, not the one that just started.
-					go p.preGenerateTTS()
+					// Sync next song into PlaybackState for the TTS watcher.
+					// This must happen after popQueue so the next item is correct.
+					// SetNext triggers SignalRegen automatically.
+					p.syncNextFromQueue()
 					// if there are more songs in the queue, load the next one
 					p.loadNext()
 				case audio.PlaybackError:
-					p.currentSongMutex.Lock()
-					p.CurrentSong = nil
-					p.currentSongMutex.Unlock()
+					p.playbackState.ClearCurrent()
 					p.currentItemMutex.Lock()
 					p.CurrentItem = nil
 					p.currentItemMutex.Unlock()
@@ -1629,13 +1628,14 @@ func (p *GuildPlayer) Add(ctx context.Context, video youtube.VideoResponse, user
 
 func (p *GuildPlayer) Remove(index int) string {
 	p.Queue.Mutex.Lock()
-	defer p.Queue.Mutex.Unlock()
 
 	if len(p.Queue.Items) == 0 {
+		p.Queue.Mutex.Unlock()
 		return ""
 	}
 
 	if index < 1 || index > len(p.Queue.Items) {
+		p.Queue.Mutex.Unlock()
 		return ""
 	}
 
@@ -1647,6 +1647,30 @@ func (p *GuildPlayer) Remove(index int) string {
 	copy(p.Queue.Items[index-1:], p.Queue.Items[index:])
 	p.Queue.Items[len(p.Queue.Items)-1] = nil // Clear trailing reference
 	p.Queue.Items = p.Queue.Items[:len(p.Queue.Items)-1]
+
+	// Snapshot next info before releasing queue lock so PlaybackState
+	// is updated without nesting two mutexes.
+	var nextTitle, nextVideoID string
+	var nextIsRadioPick, hasNext bool
+	if len(p.Queue.Items) > 0 {
+		hasNext = true
+		nextTitle = p.Queue.Items[0].Video.Title
+		nextVideoID = p.Queue.Items[0].Video.VideoID
+		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
+	}
+	p.Queue.Mutex.Unlock()
+
+	// Update PlaybackState outside the queue lock to avoid nested mutexes.
+	// SetNext/ClearNext trigger SignalRegen automatically.
+	if hasNext {
+		p.playbackState.SetNext(&SongInfo{
+			Title:       nextTitle,
+			VideoID:     nextVideoID,
+			IsRadioPick: nextIsRadioPick,
+		})
+	} else {
+		p.playbackState.ClearNext()
+	}
 
 	if removed == nil {
 		return ""
@@ -1668,7 +1692,6 @@ func (p *GuildPlayer) Skip() {
 
 func (p *GuildPlayer) Clear() {
 	p.Queue.Mutex.Lock()
-	defer p.Queue.Mutex.Unlock()
 	p.Queue.Items = []*GuildQueueItem{}
 	select {
 	case p.Queue.notifications <- QueueEvent{Type: EventClear}:
@@ -1677,6 +1700,11 @@ func (p *GuildPlayer) Clear() {
 		sentry.CaptureMessage(msg)
 		log.Warn(msg)
 	}
+	p.Queue.Mutex.Unlock()
+
+	// Update PlaybackState outside the queue lock.
+	// ClearNext triggers SignalRegen automatically.
+	p.playbackState.ClearNext()
 }
 
 func (p *GuildPlayer) IsEmpty() bool {
@@ -1687,9 +1715,9 @@ func (p *GuildPlayer) IsEmpty() bool {
 
 func (p *GuildPlayer) Shuffle() int {
 	p.Queue.Mutex.Lock()
-	defer p.Queue.Mutex.Unlock()
 
 	if len(p.Queue.Items) <= 1 {
+		p.Queue.Mutex.Unlock()
 		return len(p.Queue.Items)
 	}
 
@@ -1698,7 +1726,26 @@ func (p *GuildPlayer) Shuffle() int {
 		p.Queue.Items[i], p.Queue.Items[j] = p.Queue.Items[j], p.Queue.Items[i]
 	})
 
-	return len(p.Queue.Items)
+	// Snapshot next info before releasing queue lock.
+	var nextTitle, nextVideoID string
+	var nextIsRadioPick bool
+	if len(p.Queue.Items) > 0 {
+		nextTitle = p.Queue.Items[0].Video.Title
+		nextVideoID = p.Queue.Items[0].Video.VideoID
+		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
+	}
+	n := len(p.Queue.Items)
+	p.Queue.Mutex.Unlock()
+
+	// Update PlaybackState outside the queue lock.
+	// SetNext triggers SignalRegen automatically.
+	p.playbackState.SetNext(&SongInfo{
+		Title:       nextTitle,
+		VideoID:     nextVideoID,
+		IsRadioPick: nextIsRadioPick,
+	})
+
+	return n
 }
 
 // startVoiceConnectionMonitor starts a goroutine to monitor voice connection health
@@ -1894,60 +1941,76 @@ func (p *GuildPlayer) sendRecoveryMessage(message string) {
 	}
 }
 
-// preGenerateTTS generates TTS audio for the transition between the current
-// song and the next song in queue, then sets it on the player for crossfade.
-// Runs as a goroutine - errors are logged but never propagated.
-// refreshTransitionTTS regenerates the between-songs transition TTS based on
-// the current queue state. Call when the queue changes so the announcement
-// always reflects the actual next song.
-func (p *GuildPlayer) refreshTransitionTTS() {
-	p.preGenerateTTS()
+// syncNextFromQueue reads the queue's next item and pushes it into PlaybackState.
+// Call after queue mutations that may change the next-queued item.
+func (p *GuildPlayer) syncNextFromQueue() {
+	next := p.GetNext()
+	if next != nil {
+		p.playbackState.SetNext(&SongInfo{
+			Title:       next.Video.Title,
+			VideoID:     next.Video.VideoID,
+			IsRadioPick: next.IsRadioPick,
+		})
+	} else {
+		p.playbackState.ClearNext()
+	}
 }
 
-func (p *GuildPlayer) preGenerateTTS() {
-	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
+// startTTSWatcher starts the serial TTS watcher goroutine. It waits on
+// PlaybackState.regenNotify and generates transition TTS one at a time.
+// Never more than one generation in flight per guild.
+// The stop channel is captured by value in the closure so that Reset can
+// close it (notifying the goroutine) and replace p.ttsWatcherStop with a
+// fresh channel without the old goroutine racing on the new one.
+func (p *GuildPlayer) startTTSWatcher() {
+	stop := make(chan struct{})
+	p.ttsWatcherStop = stop
+	go func() {
+		for {
+			select {
+			case <-p.playbackState.regenNotify:
+				p.generateTransitionTTS()
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// generateTransitionTTS generates a between-songs transition TTS announcement
+// based on the current and next songs in PlaybackState. Called serially by
+// the TTS watcher goroutine — never call this concurrently.
+func (p *GuildPlayer) generateTransitionTTS() {
+	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled {
 		return
 	}
 
-	// Claim a generation slot so stale goroutines can't overwrite newer results.
-	p.ttsMu.Lock()
-	p.ttsGen++
-	myGen := p.ttsGen
-	p.ttsMu.Unlock()
+	current := p.playbackState.Current()
+	next := p.playbackState.Next()
 
-	// Use SongHistory as the source of truth for "currently playing."
-	// The history is written in PlaybackStarted before popQueue, so it's
-	// always accurate regardless of queue mutation timing.
-	recent := p.SongHistory.GetRecent(1)
-	if len(recent) == 0 {
-		return
-	}
-	currentSong := recent[0].Title
-	currentVideoID := recent[0].VideoID
-
-	nextItem := p.GetNext()
-	if nextItem == nil {
-		p.Player.GetAndClearAnnouncement()
+	if current == nil || next == nil {
 		return
 	}
 
-	// Guard against announcing "X → X" if the queue hasn't been drained yet.
-	if nextItem.Video.VideoID == currentVideoID {
+	// Guard against "X → X" if the queue hasn't settled yet.
+	if current.VideoID == next.VideoID {
 		return
 	}
 
-	nextSong := nextItem.Video.Title
+	// Claim a generation slot so newer signals can supersede this one.
+	gen := p.playbackState.StartRegen()
 
-	// Build recent history titles
+	// Build recent history for Gemini context
 	recentEntries := p.SongHistory.GetRecent(5)
 	recentHistory := make([]string, len(recentEntries))
 	for i, entry := range recentEntries {
 		recentHistory[i] = entry.Title
 	}
 
-	isRadioPick := nextItem.IsRadioPick
-
-	ctx := p.playerCtx
+	// Use a detached context so Reset/playerCtx cancellation doesn't
+	// abort mid-flight TTS generation. The TTS watcher goroutine is
+	// stopped separately via ttsWatcherStop.
+	ctx := context.Background()
 	span := sentry.StartSpan(ctx, "tts.pre_generate")
 	defer span.Finish()
 	ctx = span.Context()
@@ -1956,10 +2019,10 @@ func (p *GuildPlayer) preGenerateTTS() {
 	defer scriptCancel()
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
 		Type:          gemini.AnnouncementTransition,
-		CurrentSong:   currentSong,
-		NextSong:      nextSong,
+		CurrentSong:   current.Title,
+		NextSong:      next.Title,
 		RecentHistory: recentHistory,
-		IsRadioPick:   isRadioPick,
+		IsRadioPick:   next.IsRadioPick,
 	})
 	if script == "" {
 		return
@@ -1968,9 +2031,9 @@ func (p *GuildPlayer) preGenerateTTS() {
 	ttsPrompt := gemini.BuildTTSPrompt(script)
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 	if err != nil {
-		log.Errorf("TTS pre-generation failed: %v", err)
+		log.Errorf("TTS generation failed: %v", err)
 		sentry.CaptureException(err)
 		return
 	}
@@ -1982,21 +2045,13 @@ func (p *GuildPlayer) preGenerateTTS() {
 		return
 	}
 
-	// Check if a newer generation started while we were making API calls.
-	// If so, our result is stale — don't overwrite.
-	p.ttsMu.Lock()
-	stale := myGen != p.ttsGen
-	p.ttsMu.Unlock()
-	if stale {
-		log.Debugf("TTS generation %d superseded by %d, discarding", myGen, p.ttsGen)
-		return
-	}
-
 	tts := &audio.TTSPlayback{Samples: samples}
-	p.Player.SetAnnouncement(tts)
-
-	log.Infof("TTS pre-generated for transition: %s → %s (script=%d chars, audio=%d bytes, pcm=%d samples)",
-		currentSong, nextSong, len(script), len(audioBytes), len(samples))
+	if p.playbackState.SetTTSBuffer(gen, tts) {
+		log.Infof("TTS generated for transition: %s → %s (script=%d chars, audio=%d bytes, pcm=%d samples)",
+			current.Title, next.Title, len(script), len(audioBytes), len(samples))
+	} else {
+		log.Debugf("TTS generation %d superseded, discarding", gen)
+	}
 }
 
 // playNoMoreSongsMessage generates and plays a "no more songs" announcement
@@ -2016,7 +2071,7 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	ttsPrompt := gemini.BuildTTSPrompt(script)
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2050,7 +2105,7 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 // Uses a generation counter to ensure the result is only stored if no newer
 // song has started playing (or been consumed by play()) in the meantime.
 func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title string, gen int64) {
-	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
+	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled {
 		return
 	}
 
@@ -2067,7 +2122,7 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 	ttsPrompt := gemini.BuildTTSPrompt(script)
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.AnnounceVoice, "")
+	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 	if err != nil {
 		log.Errorf("Intro TTS generation failed: %v", err)
 		sentry.CaptureException(err)

@@ -8,10 +8,11 @@ import (
 )
 
 // TestGetCurrentSongConcurrent is a race-detector test that verifies
-// GetCurrentSong() is safe to call concurrently with CurrentSong writes.
+// GetCurrentSong() is safe to call concurrently with PlaybackState writes.
 func TestGetCurrentSongConcurrent(t *testing.T) {
 	p := &GuildPlayer{
-		Queue: &GuildQueue{},
+		Queue:         &GuildQueue{},
+		playbackState: newPlaybackState(),
 	}
 	title := "test song"
 
@@ -24,17 +25,10 @@ func TestGetCurrentSongConcurrent(t *testing.T) {
 			defer wg.Done()
 			switch i % 3 {
 			case 0:
-				// Write via accessor
-				p.currentSongMutex.Lock()
-				p.CurrentSong = &title
-				p.currentSongMutex.Unlock()
+				p.playbackState.SetCurrent(SongInfo{Title: title, VideoID: "1"})
 			case 1:
-				// Write nil via accessor
-				p.currentSongMutex.Lock()
-				p.CurrentSong = nil
-				p.currentSongMutex.Unlock()
+				p.playbackState.ClearCurrent()
 			case 2:
-				// Read via accessor (the method under test)
 				_ = p.GetCurrentSong()
 			}
 		}(i)

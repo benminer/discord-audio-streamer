@@ -17,6 +17,12 @@ import (
 	"gopkg.in/hraban/opus.v2"
 )
 
+// TTSConsumer is the interface Player uses to consume pre-generated TTS
+// at song transitions. The controller's PlaybackState implements this.
+type TTSConsumer interface {
+	ConsumeTTS() *TTSPlayback
+}
+
 type Player struct {
 	Notifications     chan PlaybackNotification
 	logger            *log.Entry
@@ -29,10 +35,10 @@ type Player struct {
 	fadeOutRemaining  atomic.Int32
 	mutex             sync.Mutex
 	playbackStartTime time.Time
-	playbackPosition  atomic.Int64                // microseconds
-	silenceBuffer     []int16                     // Pre-allocated for pause loop
-	silenceOpus       []byte                      // Pre-allocated for pause loop
-	announcement      atomic.Pointer[TTSPlayback] // pre-generated TTS to play between songs
+	playbackPosition  atomic.Int64 // microseconds
+	silenceBuffer     []int16      // Pre-allocated for pause loop
+	silenceOpus       []byte       // Pre-allocated for pause loop
+	ttsConsumer       TTSConsumer  // reads pre-generated TTS for song transitions
 }
 
 func NewPlayer() (*Player, error) {
@@ -321,14 +327,16 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 		}
 
 		// Trigger announcement when approaching end of song.
+		// Only consume TTS within the 5-second window before song end to
+		// avoid cutting the song short when Gemini finishes early.
 		// Require at least 3s of duration so the announcement doesn't fire
 		// instantly on very short clips (<5s total).
-		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second {
-			tts := p.announcement.Load()
+		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second && p.ttsConsumer != nil {
+			tts := p.ttsConsumer.ConsumeTTS()
 			if tts != nil {
 				remaining := data.Duration - p.GetPosition()
 				if remaining <= 5*time.Second && remaining > 0 {
-					pendingAnnounce = p.GetAndClearAnnouncement()
+					pendingAnnounce = tts
 					p.fadeOutRemaining.Store(5)
 					continue
 				}
@@ -381,14 +389,8 @@ func safeSendOpus(vc *discordgo.VoiceConnection, data []byte) (sent bool) {
 	return true
 }
 
-func (p *Player) SetAnnouncement(tts *TTSPlayback) {
-	p.announcement.Store(tts)
-}
-
-func (p *Player) GetAndClearAnnouncement() *TTSPlayback {
-	tts := p.announcement.Load()
-	p.announcement.Store(nil)
-	return tts
+func (p *Player) SetTTSConsumer(c TTSConsumer) {
+	p.ttsConsumer = c
 }
 
 func (p *Player) PlayAnnouncement(tts *TTSPlayback, vc *discordgo.VoiceConnection) error {
