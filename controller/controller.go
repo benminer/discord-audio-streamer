@@ -1106,8 +1106,16 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.stopNowPlayingUpdates()
 					p.clearNowPlayingCard()
 
-					// Clear any pre-generated TTS so it doesn't carry over
-					p.Player.ClearTTSPlayback()
+					// Play between-songs announcement if one was pre-generated
+					tts := p.Player.GetAndClearAnnouncement()
+					if tts != nil {
+						p.VoiceChannelMutex.RLock()
+						vc := p.VoiceConnection
+						p.VoiceChannelMutex.RUnlock()
+						if vc != nil {
+							p.Player.PlayAnnouncement(tts, vc)
+						}
+					}
 
 					// Loop current song if enabled
 					p.currentItemMutex.RLock()
@@ -1147,6 +1155,11 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					// If radio is enabled and queue is empty, auto-queue a similar song
 					if p.IsRadioEnabled() && p.IsEmpty() && p.SongHistory.Len() > 0 {
 						go p.queueRadioSong()
+					}
+
+					// If queue is still empty and announcements are enabled, play "no more songs" TTS
+					if p.IsEmpty() && p.AnnounceEnabled && config.Config.Gemini.Enabled {
+						go p.playNoMoreSongsMessage()
 					}
 				case audio.PlaybackStarted:
 					if queueItem != nil {
@@ -1894,9 +1907,46 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 		return
 	}
 	tts := &audio.TTSPlayback{Samples: samples}
-	p.Player.SetTTSPlayback(tts)
+	p.Player.SetAnnouncement(tts)
 
 	log.Infof("TTS pre-generated for transition: %s → %s", currentSong, nextSong)
+}
+
+// playNoMoreSongsMessage generates and plays a "no more songs" announcement
+// when the queue runs dry. Runs as a goroutine - errors are logged but silent.
+func (p *GuildPlayer) playNoMoreSongsMessage() {
+	ctx, cancel := context.WithTimeout(p.playerCtx, 10*time.Second)
+	defer cancel()
+
+	script := gemini.GenerateRaw(ctx, "Say the queue is empty in a cool radio DJ voice. Mention they can use /queue to add songs or /radio for non-stop music. Keep it to one sentence. No markdown.")
+	if script == "" {
+		script = "That's all for now. Queue up more with /queue, or turn on radio mode with /radio for non-stop tunes."
+	}
+
+	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, p.AnnounceVoice, "")
+	if err != nil {
+		log.Errorf("No-more-songs TTS generation failed: %v", err)
+		return
+	}
+
+	samples, convErr := audio.ConvertTTSToDiscord(audioBytes)
+	if convErr != nil {
+		log.Errorf("No-more-songs audio conversion failed: %v", convErr)
+		return
+	}
+
+	tts := &audio.TTSPlayback{Samples: samples}
+
+	p.VoiceChannelMutex.RLock()
+	vc := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if vc == nil {
+		return
+	}
+
+	if err := p.Player.PlayAnnouncement(tts, vc); err != nil {
+		log.Errorf("No-more-songs announcement playback failed: %v", err)
+	}
 }
 
 // sendNowPlayingCard creates and sends a now-playing embed
