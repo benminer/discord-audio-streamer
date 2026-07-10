@@ -136,6 +136,8 @@ type GuildPlayer struct {
 	introAnnouncement *audio.TTSPlayback
 	introMu           sync.Mutex
 	introGen          int64 // incremented under introMu each generation
+	ttsMu             sync.Mutex
+	ttsGen            int64 // incremented each time a TTS generation starts
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -1940,11 +1942,24 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 		return
 	}
 
+	// Claim a generation slot so stale goroutines can't overwrite newer results.
+	p.ttsMu.Lock()
+	p.ttsGen++
+	myGen := p.ttsGen
+	p.ttsMu.Unlock()
+
 	nextItem := p.GetNext()
 	if nextItem == nil {
 		// No next song — clear any stale transition that may have been left
 		// by a refresh goroutine that started before the current song did.
 		p.Player.GetAndClearAnnouncement()
+		return
+	}
+
+	// Guard against "X → X" transitions caused by GetNext() seeing the queue
+	// before popQueue has drained the currently-playing song.
+	if nextItem.Video.VideoID == currentItem.Video.VideoID {
+		log.Debugf("TTS skipped: next song is same as current (%s)", currentItem.Video.Title)
 		return
 	}
 
@@ -1994,6 +2009,17 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 		sentry.CaptureException(convErr)
 		return
 	}
+
+	// Check if a newer generation started while we were making API calls.
+	// If so, our result is stale — don't overwrite.
+	p.ttsMu.Lock()
+	stale := myGen != p.ttsGen
+	p.ttsMu.Unlock()
+	if stale {
+		log.Debugf("TTS generation %d superseded by %d, discarding", myGen, p.ttsGen)
+		return
+	}
+
 	tts := &audio.TTSPlayback{Samples: samples}
 	p.Player.SetAnnouncement(tts)
 
