@@ -349,15 +349,17 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 	}
 
 	// Create a temporary Opus encoder (matches player.go settings)
-	encoder, err := opus.NewEncoder(48000, 2, opus.AppAudio)
+	encoder, err := opus.NewEncoder(48000, 2, opus.AppVoIP)
 	if err != nil {
 		log.Errorf("Error creating opus encoder: %v", err)
 		sentryhelper.CaptureException(ctx, err)
 		manager.SendError(interaction, "Error creating audio encoder", true)
 		return
 	}
+	// Important: We must use the same bit depth and complexity as the main player
+	// for consistency.
+	encoder.SetBitrate(128000) // Explicit bitrate
 	encoder.SetComplexity(10)
-	encoder.SetBitrateToMax()
 
 	// Play TTS frames through the voice connection
 	vc.Speaking(true)
@@ -379,7 +381,11 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		// all alias the same memory without a copy.
 		frame := make([]byte, encoded)
 		copy(frame, opusBuf[:encoded])
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		default:
+			log.Warnf("TTS playback falling behind (ticker missed!)")
+		}
 		if !trySendOpus(vc, frame) {
 			break
 		}
