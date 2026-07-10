@@ -329,15 +329,14 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 		}
 
 		// Trigger announcement when approaching end of song.
-		// Only consume TTS within the 5-second window before song end to
-		// avoid cutting the song short when Gemini finishes early.
-		// Require at least 3s of duration so the announcement doesn't fire
-		// instantly on very short clips (<5s total).
+		// Check the time window BEFORE consuming: ConsumeTTS() is destructive
+		// (read-and-clear), so we must only call it when we're ready to use
+		// the buffer. Otherwise the TTS is consumed early and lost.
 		if !announcePlayed && pendingAnnounce == nil && data.Duration > 3*time.Second && p.ttsConsumer != nil {
-			tts := p.ttsConsumer.ConsumeTTS()
-			if tts != nil {
-				remaining := data.Duration - p.GetPosition()
-				if remaining <= 5*time.Second && remaining > 0 {
+			remaining := data.Duration - p.GetPosition()
+			if remaining <= 5*time.Second && remaining > 0 {
+				tts := p.ttsConsumer.ConsumeTTS()
+				if tts != nil {
 					pendingAnnounce = tts
 					p.fadeOutRemaining.Store(5)
 					continue
