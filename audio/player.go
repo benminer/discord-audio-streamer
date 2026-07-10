@@ -397,7 +397,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 
 // amplifySamples multiplies each int16 sample by factor and clamps to int16 range.
 // Used to boost TTS volume so it cuts through clearly over music.
-const ttsVolumeBoost = 2.5
+const ttsVolumeBoost = 4.0
 
 func amplifySamples(buf []int16, factor float64) {
 	for i := range buf {
