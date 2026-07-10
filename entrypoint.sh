@@ -3,7 +3,7 @@ set -e
 
 # Update yt-dlp to latest version on every container start
 echo "Updating yt-dlp..."
-yt-dlp -U || echo "Warning: yt-dlp self-update failed, using bundled version"
+timeout 30 yt-dlp -U || echo "Warning: yt-dlp self-update failed, using bundled version"
 
 # Register slash commands with Discord on startup
 if [ -n "$DISCORD_BOT_TOKEN" ] && [ -n "$DISCORD_APP_ID" ]; then
