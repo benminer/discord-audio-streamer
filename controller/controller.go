@@ -131,11 +131,11 @@ type GuildPlayer struct {
 	loopMutex        sync.RWMutex
 
 	// Voice DJ announcement settings (persisted via guild_settings)
-	AnnounceEnabled       bool
-	AnnounceVoice         string
-	introAnnouncement     *audio.TTSPlayback
-	introAnnouncementMu   sync.Mutex
-	introAnnouncementDone chan struct{}
+	AnnounceEnabled   bool
+	AnnounceVoice     string
+	introAnnouncement *audio.TTSPlayback
+	introMu           sync.Mutex
+	introGen          int64 // incremented under introMu each generation
 
 	// Now-playing card tracking
 	NowPlayingMessageID   *string
@@ -539,16 +539,15 @@ func (p *GuildPlayer) play(ctx context.Context, data *audio.LoadResult) {
 		return
 	}
 
-	// Play intro announcement for the first song in an idle channel
-	p.introAnnouncementMu.Lock()
+	// Play intro announcement (pre-generated for the first song on idle channel).
+	// Advance the generation counter afterward so any stale goroutine that
+	// finishes after this point discards its result.
+	p.introMu.Lock()
 	intro := p.introAnnouncement
 	p.introAnnouncement = nil
-	done := p.introAnnouncementDone
-	p.introAnnouncementMu.Unlock()
+	p.introGen++
+	p.introMu.Unlock()
 	if intro != nil {
-		if done != nil {
-			<-done
-		}
 		p.Player.PlayAnnouncement(intro, vc)
 	}
 
@@ -665,7 +664,11 @@ streamReady:
 		})
 
 		// Pre-generate an intro announcement for the first song in an idle channel
-		go p.preGenerateIntroAnnouncement(nextCtx, next.Video.Title)
+		p.introMu.Lock()
+		p.introGen++
+		introGen := p.introGen
+		p.introMu.Unlock()
+		go p.preGenerateIntroAnnouncement(nextCtx, next.Video.Title, introGen)
 		return
 	}
 
@@ -1126,8 +1129,8 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 					p.clearNowPlayingCard()
 
 					// Announcement playback handled inline by Play() before EOF.
-					// Clear any stale announcement that wasn't played.
-					p.Player.GetAndClearAnnouncement()
+					// No cleanup needed — preGenerateTTS may have just set a new
+					// announcement for the next song's transition.
 
 					// Loop current song if enabled
 					p.currentItemMutex.RLock()
@@ -1963,7 +1966,9 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 
 // preGenerateIntroAnnouncement generates an intro TTS for the first song
 // starting on an idle channel. Runs as a goroutine in parallel with loading.
-func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title string) {
+// Uses a generation counter to ensure the result is only stored if no newer
+// song has started playing (or been consumed by play()) in the meantime.
+func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title string, gen int64) {
 	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
 		return
 	}
@@ -1988,12 +1993,11 @@ func (p *GuildPlayer) preGenerateIntroAnnouncement(ctx context.Context, title st
 		return
 	}
 
-	done := make(chan struct{})
-	p.introAnnouncementMu.Lock()
-	p.introAnnouncement = &audio.TTSPlayback{Samples: samples}
-	p.introAnnouncementDone = done
-	p.introAnnouncementMu.Unlock()
-	close(done)
+	p.introMu.Lock()
+	defer p.introMu.Unlock()
+	if gen == p.introGen {
+		p.introAnnouncement = &audio.TTSPlayback{Samples: samples}
+	}
 }
 
 // sendNowPlayingCard creates and sends a now-playing embed
