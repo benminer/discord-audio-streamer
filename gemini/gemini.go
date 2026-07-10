@@ -428,11 +428,9 @@ Your task: Introduce the first song of the session. Build a little anticipation 
 
 Now write your intro:`, sc.NextSong)
 	case AnnouncementQueueEmpty:
-		taskPrompt = fmt.Sprintf(`%s
+		taskPrompt = `Your task: The queue just ran out. Let listeners know, and mention they can add songs with /queue or turn on non-stop music with /radio.
 
-Your task: The queue just ran out. Let listeners know, and mention they can add songs with /queue or turn on non-stop music with /radio.
-
-Now write your announcement:`, recentHistoryBlock(sc.RecentHistory))
+Now write your announcement:`
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""
@@ -456,10 +454,11 @@ func BuildTTSPrompt(script string) string {
 	return fmt.Sprintf(TTSAudioProfile, script)
 }
 
-// GenerateTTSAudio synthesizes speech from a script using Gemini's TTS model.
+// GenerateTTSAudio synthesizes speech from a prompt using Gemini's TTS model.
+// The prompt should include the audio profile and transcript (see BuildTTSPrompt).
 // Returns raw PCM audio data (16-bit 24kHz mono). The caller is responsible for
 // encoding or resampling before sending to Discord.
-func GenerateTTSAudio(ctx context.Context, script, voice, model string) ([]byte, error) {
+func GenerateTTSAudio(ctx context.Context, prompt, voice, model string) ([]byte, error) {
 	if defaultClient == nil {
 		return nil, fmt.Errorf("gemini client not initialized")
 	}
@@ -477,7 +476,7 @@ func GenerateTTSAudio(ctx context.Context, script, voice, model string) ([]byte,
 	span.SetTag("voice", voice)
 	defer span.Finish()
 
-	content := []*genai.Content{{Parts: []*genai.Part{{Text: script}}}}
+	content := []*genai.Content{{Parts: []*genai.Part{{Text: prompt}}}}
 	resp, err := defaultClient.Models.GenerateContent(ctx, model, content, &genai.GenerateContentConfig{
 		ResponseModalities: []string{"AUDIO"},
 		SpeechConfig: &genai.SpeechConfig{
