@@ -30,9 +30,10 @@ type YoutubeConfig struct {
 }
 
 type GeminiConfig struct {
-	Enabled bool
-	APIKey  string
-	Model   string
+	Enabled  bool
+	APIKey   string
+	Model    string
+	TTSModel string
 }
 
 type SpotifyConfig struct {
@@ -80,9 +81,10 @@ func NewConfig() {
 			PlaylistLimit: getYouTubePlaylistLimit(),
 		},
 		Gemini: GeminiConfig{
-			Enabled: os.Getenv("GEMINI_ENABLED") == "true",
-			APIKey:  os.Getenv("GEMINI_API_KEY"),
-			Model:   getGeminiModel(),
+			Enabled:  os.Getenv("GEMINI_ENABLED") == "true",
+			APIKey:   os.Getenv("GEMINI_API_KEY"),
+			Model:    getGeminiModel(),
+			TTSModel: getGeminiTTSModel(),
 		},
 		Spotify: SpotifyConfig{
 			ClientID:      os.Getenv("SPOTIFY_CLIENT_ID"),
@@ -161,6 +163,14 @@ func getGeminiModel() string {
 	model := os.Getenv("GEMINI_MODEL")
 	if model == "" {
 		return "gemini-2.5-flash"
+	}
+	return model
+}
+
+func getGeminiTTSModel() string {
+	model := os.Getenv("GEMINI_TTS_MODEL")
+	if model == "" {
+		return "gemini-2.5-flash-preview-tts"
 	}
 	return model
 }

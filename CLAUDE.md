@@ -183,6 +183,7 @@ Key vars in `.env`:
 - `GEMINI_API_KEY` - Google Gemini API key (optional)
 - `GEMINI_ENABLED` - Enable AI responses (default: false)
 - `GEMINI_MODEL` - Gemini model name (default: gemini-2.5-flash)
+- `GEMINI_TTS_MODEL` - Gemini TTS model name (default: gemini-2.5-flash-preview-tts)
 - `IDLE_TIMEOUT_MINUTES` - Idle disconnect timeout (default: 20)
 - `SENTRY_DSN` - Sentry error tracking (optional)
 
