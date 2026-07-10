@@ -56,7 +56,7 @@
 - Playlists and artist URLs not yet supported
 
 **`gemini/gemini.go`** - AI response generation
-- Uses `gemini-2.0-flash` model
+- Uses Gemini model (configurable via `GEMINI_MODEL`, default `gemini-2.5-flash`)
 - Generates sassy DJ personality responses for song announcements
 - Also used for help responses and idle disconnect messages
 
@@ -182,6 +182,7 @@ Key vars in `.env`:
 - `SPOTIFY_PLAYLIST_LIMIT` - Max tracks to fetch from playlists (default: 10, max: 50)
 - `GEMINI_API_KEY` - Google Gemini API key (optional)
 - `GEMINI_ENABLED` - Enable AI responses (default: false)
+- `GEMINI_MODEL` - Gemini model name (default: gemini-2.5-flash)
 - `IDLE_TIMEOUT_MINUTES` - Idle disconnect timeout (default: 20)
 - `SENTRY_DSN` - Sentry error tracking (optional)
 

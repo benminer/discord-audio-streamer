@@ -49,7 +49,7 @@ func generateResponse(ctx context.Context, prompt string) string {
 	// Start span for Gemini AI generation
 	span := sentry.StartSpan(ctx, "gemini.generate")
 	span.Description = "Generate AI response"
-	span.SetTag("model", "gemini-2.0-flash")
+	span.SetTag("model", config.Config.Gemini.Model)
 	defer span.Finish()
 
 	parts := []*genai.Part{
@@ -57,7 +57,7 @@ func generateResponse(ctx context.Context, prompt string) string {
 	}
 	content := []*genai.Content{{Parts: parts}}
 
-	resp, err := defaultClient.Models.GenerateContent(ctx, "gemini-2.0-flash", content, nil)
+	resp, err := defaultClient.Models.GenerateContent(ctx, config.Config.Gemini.Model, content, nil)
 	if err != nil {
 		log.Errorf("failed to generate content: %v", err)
 		sentry.CaptureException(err)
@@ -181,6 +181,7 @@ func GenerateSongRecommendation(ctx context.Context, recentSongs []string) strin
 	span := sentry.StartSpan(ctx, "gemini.song_recommendation")
 	span.Description = "Generate song recommendation query"
 	span.SetTag("num_songs", fmt.Sprintf("%d", len(recentSongs)))
+	span.SetTag("model", config.Config.Gemini.Model)
 	defer span.Finish()
 
 	if len(recentSongs) == 0 {
@@ -247,7 +248,7 @@ func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recen
 	// Start span for Gemini commentary generation
 	span := sentry.StartSpan(ctx, "gemini.now_playing_commentary")
 	span.Description = "Generate DJ commentary for now playing song"
-	span.SetTag("model", "gemini-2.0-flash")
+	span.SetTag("model", config.Config.Gemini.Model)
 	defer span.Finish()
 
 	// Build the recent history string
