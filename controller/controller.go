@@ -679,6 +679,11 @@ streamReady:
 		return
 	}
 
+	// Refresh transition TTS when a song is queued while something is playing
+	if p.Player.IsPlaying() {
+		go p.refreshTransitionTTS()
+	}
+
 	index := p.getIndexForItem(event.Item)
 	log.Tracef("song is %d in the queue", index)
 	if index == 0 {
@@ -1888,6 +1893,22 @@ func (p *GuildPlayer) sendRecoveryMessage(message string) {
 // preGenerateTTS generates TTS audio for the transition between the current
 // song and the next song in queue, then sets it on the player for crossfade.
 // Runs as a goroutine - errors are logged but never propagated.
+// refreshTransitionTTS regenerates the between-songs transition TTS based on
+// the current queue state. Call when the queue changes so the announcement
+// always reflects the actual next song.
+func (p *GuildPlayer) refreshTransitionTTS() {
+	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
+		return
+	}
+	p.currentItemMutex.RLock()
+	currentItem := p.CurrentItem
+	p.currentItemMutex.RUnlock()
+	if currentItem == nil {
+		return
+	}
+	p.preGenerateTTS(currentItem)
+}
+
 func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 	if !p.AnnounceEnabled || !config.Config.Gemini.Enabled {
 		return
@@ -1936,7 +1957,8 @@ func (p *GuildPlayer) preGenerateTTS(currentItem *GuildQueueItem) {
 	tts := &audio.TTSPlayback{Samples: samples}
 	p.Player.SetAnnouncement(tts)
 
-	log.Infof("TTS pre-generated for transition: %s → %s", currentSong, nextSong)
+	log.Infof("TTS pre-generated for transition: %s → %s (script=%d chars, audio=%d bytes, pcm=%d samples)",
+		currentSong, nextSong, len(script), len(audioBytes), len(samples))
 }
 
 // playNoMoreSongsMessage generates and plays a "no more songs" announcement

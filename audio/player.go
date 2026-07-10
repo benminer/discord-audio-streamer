@@ -150,7 +150,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				p.logger.Warnf("Error encoding during fade-out: %v", err)
 				sentry.CaptureException(err)
 			} else {
-				if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
+				frame := make([]byte, encoded)
+				copy(frame, opusBuffer[:encoded])
+				if !safeSendOpus(voiceChannel, frame) {
 					return nil
 				}
 			}
@@ -167,6 +169,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			// If fade-out completed and we have an announcement, play TTS solo
 			if p.fadeOutRemaining.Load() == 0 && !announcePlayed && pendingAnnounce != nil {
 				announcePlayed = true
+				frameCount := 0
+				expectedFrames := pendingAnnounce.Remaining() / (20 * time.Millisecond)
+				p.logger.Debugf("Playing inline announcement: %d expected frames", expectedFrames)
 				ttsBuf := make([]int16, 960*2)
 				ttsOpus := make([]byte, 960*4)
 				ttsTicker := time.NewTicker(20 * time.Millisecond)
@@ -180,9 +185,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					if !safeSendOpus(voiceChannel, frame) {
 						break
 					}
+					frameCount++
 					<-ttsTicker.C
 				}
 				ttsTicker.Stop()
+				p.logger.Debugf("Inline announcement played %d/%d frames", frameCount, expectedFrames)
 				pendingAnnounce = nil
 				// Drain remaining audio silently to keep the voice pipeline flowing
 				// without playing music over the announcement.
@@ -197,7 +204,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 					}
 					silenceEncoded, silErr := p.encoder.Encode(silenceFrame, opusBuffer)
 					if silErr == nil {
-						if !safeSendOpus(voiceChannel, opusBuffer[:silenceEncoded]) {
+						silFrame := make([]byte, silenceEncoded)
+						copy(silFrame, opusBuffer[:silenceEncoded])
+						if !safeSendOpus(voiceChannel, silFrame) {
 							break
 						}
 					}
@@ -345,7 +354,9 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			p.playbackPosition.Store(currentPos)
 		}
 
-		if !safeSendOpus(voiceChannel, opusBuffer[:encoded]) {
+		frame := make([]byte, encoded)
+		copy(frame, opusBuffer[:encoded])
+		if !safeSendOpus(voiceChannel, frame) {
 			p.logger.Debug("Playback stopped - voice channel closed or completed")
 			span.Status = sentry.SpanStatusCanceled
 			p.Notifications <- PlaybackNotification{
