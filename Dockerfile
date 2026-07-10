@@ -90,6 +90,7 @@ ENV RELEASE=true \
     GIN_MODE=release \
     ENFORCE_VOICE_CHANNEL="true" \
     GEMINI_ENABLED="true" \
+    GEMINI_MODEL="gemini-2.5-flash" \
     SENTRY_ENVIRONMENT="production"
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \

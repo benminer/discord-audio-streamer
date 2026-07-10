@@ -181,6 +181,7 @@ func GenerateSongRecommendation(ctx context.Context, recentSongs []string) strin
 	span := sentry.StartSpan(ctx, "gemini.song_recommendation")
 	span.Description = "Generate song recommendation query"
 	span.SetTag("num_songs", fmt.Sprintf("%d", len(recentSongs)))
+	span.SetTag("model", config.Config.Gemini.Model)
 	defer span.Finish()
 
 	if len(recentSongs) == 0 {
