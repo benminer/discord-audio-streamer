@@ -106,9 +106,12 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	p.playbackPosition.Store(0)
 	firstPacket := true
 	buffer := make([]int16, 960*2)
+	rawBuf := make([]byte, 960*2*2)
 	opusBuffer := make([]byte, 960*4)
 	var pendingAnnounce *TTSPlayback
 	var announcePlayed bool
+	var frameCount uint64
+	var maxEncodeNanos int64
 
 	// Prime the voice connection before streaming
 	p.logger.Debug("Setting Speaking(true) to prime voice connection")
@@ -121,7 +124,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 	for {
 		// Handle fade-out when pausing or stopping
 		if p.fadeOutRemaining.Load() > 0 {
-			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+			_, err := io.ReadFull(data.ffmpegOut, rawBuf)
 			if err != nil {
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
 					p.fadeOutRemaining.Store(0)
@@ -136,6 +139,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				sentry.CaptureException(err)
 				continue
 			}
+			binary.Decode(rawBuf, binary.LittleEndian, buffer)
 
 			// Apply fade-out multiplier (quartic fade — steeper than cubic,
 			// drops to ~0.4% on the last frame for near-silent TTS transition).
@@ -204,7 +208,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				// without playing music over the announcement.
 				silenceFrame := make([]int16, 960*2)
 				for {
-					err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+					_, err := io.ReadFull(data.ffmpegOut, rawBuf)
 					if err == io.EOF || err == io.ErrUnexpectedEOF {
 						break
 					}
@@ -251,7 +255,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 
 			// Drain buffer to prevent stale data buildup
-			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+			_, err := io.ReadFull(data.ffmpegOut, rawBuf)
 			if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 				p.logger.Warnf("Error draining buffer during pause: %v", err)
 				sentry.CaptureException(err)
@@ -279,7 +283,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 
 		var attempts int
 		for attempts < 3 {
-			err := binary.Read(data.ffmpegOut, binary.LittleEndian, &buffer)
+			_, err := io.ReadFull(data.ffmpegOut, rawBuf)
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				p.logger.Trace("Reached end of audio stream")
 				span.Status = sentry.SpanStatusOK
@@ -306,6 +310,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 			break
 		}
+		binary.Decode(rawBuf, binary.LittleEndian, buffer)
 
 		if firstPacket {
 			p.Notifications <- PlaybackNotification{
@@ -362,7 +367,12 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 			}
 		}
 
+		encStart := time.Now()
 		encoded, err := p.encoder.Encode(buffer, opusBuffer)
+		encNanos := time.Since(encStart).Nanoseconds()
+		if encNanos > maxEncodeNanos {
+			maxEncodeNanos = encNanos
+		}
 		if err != nil {
 			p.logger.Warnf("Error encoding to opus: %v", err)
 			sentry.CaptureException(err)
@@ -372,6 +382,14 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				Error:   &err,
 			}
 			continue
+		}
+
+		frameCount++
+		if frameCount%500 == 0 {
+			p.logger.Debugf("[frame-diag] frames=%d buf_depth=%d/%d encode_max_ns=%d pos=%s",
+				frameCount, len(voiceChannel.OpusSend), cap(voiceChannel.OpusSend),
+				maxEncodeNanos, p.GetPosition())
+			maxEncodeNanos = 0
 		}
 
 		// Update position tracking BEFORE sending (each opus frame is 20ms)
