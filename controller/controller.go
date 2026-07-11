@@ -122,6 +122,7 @@ type GuildPlayer struct {
 	loadListenerStop       chan struct{}
 	ttsWatcherStop         chan struct{}
 	RadioEnabled           bool
+	RadioTheme             string // user-provided vibe for radio picks, empty = history-based
 	radioMutex             sync.Mutex
 	radioQueueing          sync.Mutex // held while queueRadioSong is in-flight, prevents double-queue
 	radioStartAnnouncement *audio.TTSPlayback
@@ -1407,6 +1408,27 @@ func (p *GuildPlayer) IsRadioEnabled() bool {
 	return p.RadioEnabled
 }
 
+// SetRadioTheme sets a user-provided vibe/theme for radio song picking.
+func (p *GuildPlayer) SetRadioTheme(theme string) {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	p.RadioTheme = theme
+}
+
+// GetRadioTheme returns the current radio theme, empty if unset.
+func (p *GuildPlayer) GetRadioTheme() string {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioTheme
+}
+
+// ClearRadioTheme resets radio picking back to history-based mode.
+func (p *GuildPlayer) ClearRadioTheme() {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	p.RadioTheme = ""
+}
+
 func (p *GuildPlayer) ToggleLoop() bool {
 	p.loopMutex.Lock()
 	defer p.loopMutex.Unlock()
@@ -1559,102 +1581,163 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 	var picked *youtube.VideoResponse
 	var videos []youtube.VideoResponse
 
-	// Try YouTube Mix playlist first — uses YouTube's own recommendation engine
-	// seeded from the most recently played video. Genre-accurate without relying
-	// on title-based AI inference (which confuses "Microwave" emo vs "Microwave" rap).
-	if seedHistory := p.SongHistory.GetRecent(1); len(seedHistory) > 0 && seedHistory[0].VideoID != "" {
-		seedVideoID := seedHistory[0].VideoID
-		logger.Debugf("Trying YouTube Mix playlist for seed video: %s", seedVideoID)
+	theme := p.GetRadioTheme()
 
-		mixVideos, err := youtube.GetMixPlaylistVideos(ctx, seedVideoID)
-		if err != nil {
-			logger.Warnf("YouTube Mix playlist failed, falling through to Gemini: %v", err)
-		} else {
-			for i := range mixVideos {
-				if !historyIDs[mixVideos[i].VideoID] && !isRecentTitle(mixVideos[i].Title, recentTitles) {
-					picked = &mixVideos[i]
+	if theme != "" {
+		// Themed mode: YouTube Mix doesn't understand arbitrary vibes, so skip
+		// it entirely and go straight to Gemini with the user-provided theme.
+		if config.Config.Gemini.Enabled && len(recent) > 0 {
+			songTitles := make([]string, len(recent))
+			for i, song := range recent {
+				songTitles[i] = song.Title
+			}
+
+			logger.Debugf("Requesting themed Gemini song recommendation for theme: %s", theme)
+			query = gemini.GenerateThemedRecommendation(ctx, theme, songTitles)
+
+			if query != "" {
+				logger.Infof("Gemini recommended themed search query: %s", query)
+
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "radio",
+					Message:  "Gemini generated themed recommendation query",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id": p.GuildID,
+						"theme":    theme,
+						"query":    query,
+					},
+				})
+
+				videos = youtube.Query(ctx, query)
+				if len(videos) > 0 {
+					for i := range videos {
+						if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+							picked = &videos[i]
+							break
+						}
+					}
+				}
+			} else {
+				logger.Warn("Gemini themed recommendation returned empty query, falling back to direct theme search")
+			}
+		}
+
+		// Themed fallback: search YouTube directly with the theme string.
+		if picked == nil {
+			logger.Debugf("Searching YouTube directly for theme: %s", theme)
+
+			videos = youtube.Query(ctx, theme)
+			if len(videos) == 0 {
+				logger.Warn("radio: no YouTube results found for theme")
+				return nil
+			}
+
+			for i := range videos {
+				if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+					picked = &videos[i]
 					break
 				}
 			}
-			if picked != nil {
-				query = "youtube-mix:" + seedVideoID
-				logger.Infof("YouTube Mix picked: %s", picked.Title)
+		}
+	} else {
+		// Try YouTube Mix playlist first — uses YouTube's own recommendation engine
+		// seeded from the most recently played video. Genre-accurate without relying
+		// on title-based AI inference (which confuses "Microwave" emo vs "Microwave" rap).
+		if seedHistory := p.SongHistory.GetRecent(1); len(seedHistory) > 0 && seedHistory[0].VideoID != "" {
+			seedVideoID := seedHistory[0].VideoID
+			logger.Debugf("Trying YouTube Mix playlist for seed video: %s", seedVideoID)
+
+			mixVideos, err := youtube.GetMixPlaylistVideos(ctx, seedVideoID)
+			if err != nil {
+				logger.Warnf("YouTube Mix playlist failed, falling through to Gemini: %v", err)
 			} else {
-				logger.Debug("YouTube Mix results were all duplicates, falling through to Gemini")
+				for i := range mixVideos {
+					if !historyIDs[mixVideos[i].VideoID] && !isRecentTitle(mixVideos[i].Title, recentTitles) {
+						picked = &mixVideos[i]
+						break
+					}
+				}
+				if picked != nil {
+					query = "youtube-mix:" + seedVideoID
+					logger.Infof("YouTube Mix picked: %s", picked.Title)
+				} else {
+					logger.Debug("YouTube Mix results were all duplicates, falling through to Gemini")
+				}
 			}
 		}
-	}
 
-	// Try Gemini-powered recommendation if YouTube Mix came up empty
-	if picked == nil && config.Config.Gemini.Enabled && len(recent) >= 3 {
-		songTitles := make([]string, len(recent))
-		for i, song := range recent {
-			songTitles[i] = song.Title
+		// Try Gemini-powered recommendation if YouTube Mix came up empty
+		if picked == nil && config.Config.Gemini.Enabled && len(recent) >= 3 {
+			songTitles := make([]string, len(recent))
+			for i, song := range recent {
+				songTitles[i] = song.Title
+			}
+
+			logger.Debug("Requesting Gemini song recommendation based on recent history")
+			query = gemini.GenerateSongRecommendation(ctx, songTitles)
+
+			if query != "" {
+				logger.Infof("Gemini recommended search query: %s", query)
+
+				sentry.AddBreadcrumb(&sentry.Breadcrumb{
+					Category: "radio",
+					Message:  "Gemini generated recommendation query",
+					Level:    sentry.LevelInfo,
+					Data: map[string]interface{}{
+						"guild_id": p.GuildID,
+						"query":    query,
+					},
+				})
+
+				videos = youtube.Query(ctx, query)
+				if len(videos) > 0 {
+					for i := range videos {
+						if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+							picked = &videos[i]
+							break
+						}
+					}
+				}
+			} else {
+				logger.Warn("Gemini recommendation returned empty query, falling back to legacy method")
+			}
 		}
 
-		logger.Debug("Requesting Gemini song recommendation based on recent history")
-		query = gemini.GenerateSongRecommendation(ctx, songTitles)
+		if picked == nil {
+			logger.Debug("Using fallback legacy search method")
 
-		if query != "" {
-			logger.Infof("Gemini recommended search query: %s", query)
+			idx := rand.Intn(len(recent))
+			artist := ExtractArtist(recent[idx].Title)
+			query = artist + " music"
 
-			sentry.AddBreadcrumb(&sentry.Breadcrumb{
-				Category: "radio",
-				Message:  "Gemini generated recommendation query",
-				Level:    sentry.LevelInfo,
-				Data: map[string]interface{}{
-					"guild_id": p.GuildID,
-					"query":    query,
-				},
-			})
+			logger.Infof("Radio searching for: %s", query)
 
 			videos = youtube.Query(ctx, query)
-			if len(videos) > 0 {
+			if len(videos) == 0 {
+				logger.Warn("radio: no YouTube results found")
+				return nil
+			}
+
+			for i := range videos {
+				if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+					picked = &videos[i]
+					break
+				}
+			}
+
+			if picked == nil {
+				logger.Info("radio: all search results already in history, trying broader query")
+				fallbackIdx := (idx + 1) % len(recent)
+				fallbackArtist := ExtractArtist(recent[fallbackIdx].Title)
+				fallbackQuery := fallbackArtist + " songs"
+
+				videos = youtube.Query(ctx, fallbackQuery)
 				for i := range videos {
 					if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
 						picked = &videos[i]
 						break
 					}
-				}
-			}
-		} else {
-			logger.Warn("Gemini recommendation returned empty query, falling back to legacy method")
-		}
-	}
-
-	if picked == nil {
-		logger.Debug("Using fallback legacy search method")
-
-		idx := rand.Intn(len(recent))
-		artist := ExtractArtist(recent[idx].Title)
-		query = artist + " music"
-
-		logger.Infof("Radio searching for: %s", query)
-
-		videos = youtube.Query(ctx, query)
-		if len(videos) == 0 {
-			logger.Warn("radio: no YouTube results found")
-			return nil
-		}
-
-		for i := range videos {
-			if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
-				picked = &videos[i]
-				break
-			}
-		}
-
-		if picked == nil {
-			logger.Info("radio: all search results already in history, trying broader query")
-			fallbackIdx := (idx + 1) % len(recent)
-			fallbackArtist := ExtractArtist(recent[fallbackIdx].Title)
-			fallbackQuery := fallbackArtist + " songs"
-
-			videos = youtube.Query(ctx, fallbackQuery)
-			for i := range videos {
-				if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
-					picked = &videos[i]
-					break
 				}
 			}
 		}
