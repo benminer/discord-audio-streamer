@@ -122,7 +122,28 @@
   {
     "name": "radio",
     "type": 1,
-    "description": "Toggle radio mode - automatically queues similar songs when the queue is empty"
+    "description": "Toggle radio mode - automatically queues similar songs. Add a vibe to guide the picks.",
+    "options": [
+      {
+        "name": "vibe",
+        "description": "A mood, artist, or genre to guide radio picks (e.g. 'chill indie', '90s hip hop')",
+        "type": 3,
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "request",
+    "type": 1,
+    "description": "Ask the DJ to rework the queue with a suggestion",
+    "options": [
+      {
+        "name": "suggestion",
+        "description": "What you want to hear (e.g. 'something chill', 'more punk', 'Radiohead deep cuts')",
+        "type": 3,
+        "required": true
+      }
+    ]
   },
   {
     "name": "loop",
