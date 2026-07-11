@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     unzip \
     && rm -rf /var/lib/apt/lists/* \
     && GO_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
-    && curl -fsSL "https://go.dev/dl/go1.25.0.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz \
+    && curl -fsSL "https://go.dev/dl/go1.26.5.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 
