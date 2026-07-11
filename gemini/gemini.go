@@ -270,6 +270,111 @@ Now generate your recommendation:`, songList))
 	return query
 }
 
+// GenerateThemedRecommendation is like GenerateSongRecommendation but driven primarily
+// by a user-provided theme (e.g. "chill indie", "90s hip hop", "Radiohead deep cuts"),
+// with recent song history as secondary context. Returns an empty string if Gemini is
+// disabled or on error.
+func GenerateThemedRecommendation(ctx context.Context, theme string, recentSongs []string) string {
+	if !config.Config.Gemini.Enabled || defaultClient == nil {
+		return ""
+	}
+
+	// Start span for Gemini themed recommendation generation
+	span := sentry.StartSpan(ctx, "gemini.themed_recommendation")
+	span.Description = "Generate themed song recommendation query"
+	span.SetTag("model", config.Config.Gemini.Model)
+	defer span.Finish()
+
+	songList := "No recent songs played yet."
+	if len(recentSongs) > 0 {
+		songList = strings.Join(recentSongs, "\n")
+	}
+
+	instructions := buildPrompt(fmt.Sprintf(`The listener wants: %s
+
+Their recent songs for context:
+%s
+
+Suggest ONE song that matches the requested vibe. Return ONLY a YouTube search query like "Artist - Song Title". Don't repeat anything from the list.`, theme, songList))
+
+	response := generateResponse(ctx, instructions)
+	if response == "" {
+		span.Status = sentry.SpanStatusInternalError
+		return ""
+	}
+
+	// Clean up the response (remove any extra formatting or explanations)
+	query := strings.TrimSpace(response)
+	// Remove quotes if present
+	query = strings.Trim(query, "\"'`")
+
+	span.Status = sentry.SpanStatusOK
+	span.SetData("query", query)
+
+	log.WithFields(log.Fields{
+		"module": "gemini",
+		"theme":  theme,
+		"query":  query,
+	}).Debug("Generated themed recommendation query")
+
+	return query
+}
+
+// GenerateRequestQueries generates 3-5 YouTube search queries matching a user's
+// free-text song/artist/vibe request, used by the /request command. Returns nil
+// if Gemini is disabled or on error.
+func GenerateRequestQueries(ctx context.Context, suggestion string, recentSongs []string) []string {
+	if !config.Config.Gemini.Enabled || defaultClient == nil {
+		return nil
+	}
+
+	// Start span for Gemini request query generation
+	span := sentry.StartSpan(ctx, "gemini.request_queries")
+	span.Description = "Generate request search queries"
+	span.SetTag("model", config.Config.Gemini.Model)
+	defer span.Finish()
+
+	songList := "No recent songs played yet."
+	if len(recentSongs) > 0 {
+		songList = strings.Join(recentSongs, "\n")
+	}
+
+	instructions := buildPrompt(fmt.Sprintf(`The listener is requesting: %s
+
+Their recent songs for context:
+%s
+
+Suggest 3-5 songs that match the request. Return each as a YouTube search query (e.g. "Artist - Song Title"), one per line. Don't repeat anything from the list. Don't number the lines.`, suggestion, songList))
+
+	response := generateResponse(ctx, instructions)
+	if response == "" {
+		span.Status = sentry.SpanStatusInternalError
+		return nil
+	}
+
+	lines := strings.Split(response, "\n")
+	queries := make([]string, 0, len(lines))
+	for _, line := range lines {
+		query := strings.TrimSpace(line)
+		query = strings.Trim(query, "\"'`")
+		if query == "" {
+			continue
+		}
+		queries = append(queries, query)
+	}
+
+	span.Status = sentry.SpanStatusOK
+	span.SetData("num_queries", fmt.Sprintf("%d", len(queries)))
+
+	log.WithFields(log.Fields{
+		"module":     "gemini",
+		"suggestion": suggestion,
+		"queries":    queries,
+	}).Debug("Generated request search queries")
+
+	return queries
+}
+
 // GenerateNowPlayingCommentary creates conversational DJ commentary for the current song
 // based on the song history and whether it was auto-queued by radio mode.
 func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recentHistory []string, isRadioPick bool) string {
