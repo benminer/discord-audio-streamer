@@ -1329,6 +1329,11 @@ func (p *GuildPlayer) startIdleChecker() {
 						p.Player.Stop()
 					}
 
+					// Player.Stop() does not emit PlaybackStopped, so the
+					// now-playing ticker won't self-terminate. Stop it explicitly.
+					p.stopNowPlayingUpdates()
+					p.clearNowPlayingCard()
+
 					// Stop voice monitoring before cleanup
 					p.stopVoiceConnectionMonitor()
 
@@ -2067,6 +2072,9 @@ func (p *GuildPlayer) handleVoiceRecoveryFailure() {
 	if p.Player != nil {
 		p.Player.Stop()
 	}
+
+	p.stopNowPlayingUpdates()
+	p.clearNowPlayingCard()
 
 	p.VoiceChannelMutex.Lock()
 	p.VoiceConnection = nil
