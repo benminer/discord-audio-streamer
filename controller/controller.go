@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sentry "github.com/getsentry/sentry-go"
@@ -146,6 +147,7 @@ type GuildPlayer struct {
 	nowPlayingMutex       sync.Mutex
 	nowPlayingUpdateStop  chan struct{}
 	nowPlayingCurrentItem *GuildQueueItem
+	permFallbackSent      atomic.Bool // prevents per-song spam of the reinstall notice
 
 	// Player-scoped context: cancelled by Reset() to stop all ad-hoc goroutines
 	// (e.g. voice recovery retries) that don't have a dedicated stop channel.
@@ -2410,7 +2412,9 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	if err != nil {
 		log.Errorf("Failed to send now-playing card: %v", err)
 		if discord.IsMissingPermissions(err) {
-			discord.SendPermissionErrorFallback(textCh)
+			if p.permFallbackSent.CompareAndSwap(false, true) {
+				discord.SendPermissionErrorFallback(textCh)
+			}
 		} else {
 			sentry.CaptureException(err)
 		}

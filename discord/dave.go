@@ -13,11 +13,13 @@ import (
 // This is needed because godave uses defined types (UserID, ChannelID, Codec)
 // while discordgo.DaveSession uses primitive types (string, uint64, int).
 //
-// mu serializes all calls that touch the libdave C state machine. discordgo's
-// wsListen spawns a goroutine per message, so MLS ops (Init, ProcessProposals,
-// etc.) can race on the underlying DAVESessionHandle without this lock.
+// mu serializes calls that mutate libdave state (MLS session and encryptor
+// key transitions). discordgo's wsListen spawns a goroutine per message, so
+// Init/ProcessProposals/SetKeyRatchet can race on the same C handle without
+// this lock. Encrypt holds only an RLock so concurrent audio frames are not
+// serialized against each other, only against key-ratchet rotations.
 type daveSessionAdapter struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	session godave.Session
 }
 
@@ -32,14 +34,20 @@ func (a *daveSessionAdapter) SetChannelID(channelID uint64) {
 }
 
 func (a *daveSessionAdapter) AssignSsrcToCodec(ssrc uint32, codec int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.session.AssignSsrcToCodec(ssrc, godave.Codec(codec))
 }
 
 func (a *daveSessionAdapter) MaxEncryptedFrameSize(frameSize int) int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.session.MaxEncryptedFrameSize(frameSize)
 }
 
 func (a *daveSessionAdapter) Encrypt(ssrc uint32, frame []byte, encryptedFrame []byte) (int, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.session.Encrypt(ssrc, frame, encryptedFrame)
 }
 

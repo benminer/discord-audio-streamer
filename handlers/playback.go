@@ -534,6 +534,11 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 	encoder.SetBitrateToMax() // Explicit bitrate
 	encoder.SetComplexity(10)
 
+	if player.Player.IsPlaying() {
+		manager.SendError(interaction, "Stop the music before previewing a voice", true)
+		return
+	}
+
 	// Play TTS frames through the voice connection
 	vc.Speaking(true)
 	time.Sleep(50 * time.Millisecond)
