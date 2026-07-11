@@ -2199,11 +2199,18 @@ func (p *GuildPlayer) resolveQueuedBy(item *GuildQueueItem) string {
 func (p *GuildPlayer) syncNextFromQueue() {
 	next := p.GetNext()
 	if next != nil {
+		currentNext := p.playbackState.Next()
+		queuedBy := p.resolveQueuedBy(next)
+		if currentNext != nil && currentNext.VideoID == next.Video.VideoID &&
+			currentNext.IsRadioPick == next.IsRadioPick &&
+			currentNext.QueuedBy == queuedBy {
+			return
+		}
 		p.playbackState.SetNext(&SongInfo{
 			Title:       next.Video.Title,
 			VideoID:     next.Video.VideoID,
 			IsRadioPick: next.IsRadioPick,
-			QueuedBy:    p.resolveQueuedBy(next),
+			QueuedBy:    queuedBy,
 		})
 	} else {
 		p.playbackState.ClearNext()
