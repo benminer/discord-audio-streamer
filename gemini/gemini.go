@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"beatbot/config"
@@ -11,6 +12,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/genai"
 )
+
+var leadingNumberRe = regexp.MustCompile(`^\d+\.\s*`)
 
 // defaultClient is the package-level Gemini client, initialized once by Init().
 // Creating a new HTTP client + TLS session on every call was wasteful.
@@ -357,6 +360,7 @@ Suggest 3-5 songs that match the request. Return each as a YouTube search query 
 	for _, line := range lines {
 		query := strings.TrimSpace(line)
 		query = strings.Trim(query, "\"'`")
+		query = leadingNumberRe.ReplaceAllString(query, "")
 		if query == "" {
 			continue
 		}

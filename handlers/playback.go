@@ -158,21 +158,19 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 	}
 
 	wasEnabled := player.IsRadioEnabled()
+	oldTheme := player.GetRadioTheme()
 
 	var enabled bool
 	if vibe != "" {
-		// A vibe was supplied: always turn radio on (never toggle off) and steer it.
 		enabled = true
 		if !wasEnabled {
 			player.ToggleRadio()
 		}
 		player.SetRadioTheme(vibe)
 	} else if wasEnabled {
-		// No vibe, radio already on: toggle off and drop any theme.
 		enabled = player.ToggleRadio()
 		player.ClearRadioTheme()
 	} else {
-		// No vibe, radio off: enable with plain history-based picking.
 		enabled = player.ToggleRadio()
 	}
 
@@ -180,9 +178,9 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 		voiceState, _ := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
 		if voiceState == nil {
 			if !wasEnabled {
-				player.ToggleRadio() // undo
+				player.ToggleRadio()
 			}
-			player.ClearRadioTheme()
+			player.SetRadioTheme(oldTheme) // restore previous theme, not blank
 			return Response{
 				Type: 4,
 				Data: ResponseData{
@@ -193,9 +191,9 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 		if player.ShouldJoinVoice(voiceState.ChannelID) {
 			if err := player.JoinVoiceChannel(interaction.Member.User.ID); err != nil {
 				if !wasEnabled {
-					player.ToggleRadio() // undo
+					player.ToggleRadio()
 				}
-				player.ClearRadioTheme()
+				player.SetRadioTheme(oldTheme) // restore previous theme, not blank
 				return Response{
 					Type: 4,
 					Data: ResponseData{
@@ -296,31 +294,38 @@ func (manager *Manager) handleRequest(ctx context.Context, transaction *sentry.S
 		return
 	}
 
-	// Clear existing queue
-	player.Clear()
-
-	// Search YouTube and queue each result
-	var queued []string
+	// Search YouTube and collect results BEFORE clearing the queue,
+	// so the user doesn't end up with an empty queue if all searches fail.
+	type pickedVideo struct {
+		video youtube.VideoResponse
+	}
+	var picks []pickedVideo
 	historyIDs := player.SongHistory.GetAllVideoIDs()
 	for _, query := range queries {
 		videos := youtube.Query(ctx, query)
 		if len(videos) == 0 {
 			continue
 		}
-		// Pick first non-duplicate
 		for _, v := range videos {
 			if !historyIDs[v.VideoID] {
-				player.Add(ctx, v, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
-				queued = append(queued, v.Title)
-				historyIDs[v.VideoID] = true // prevent dupes within this batch
+				picks = append(picks, pickedVideo{video: v})
+				historyIDs[v.VideoID] = true
 				break
 			}
 		}
 	}
 
-	if len(queued) == 0 {
+	if len(picks) == 0 {
 		manager.SendFollowup(ctx, interaction, "", "Found nothing good for that. Try something else? 🎵", true)
 		return
+	}
+
+	// Now that we have confirmed results, clear the queue and add them.
+	player.Clear()
+	var queued []string
+	for _, p := range picks {
+		player.Add(ctx, p.video, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
+		queued = append(queued, p.video.Title)
 	}
 
 	// Set radio theme and enable radio so it keeps steering picks after the queue drains
