@@ -15,6 +15,7 @@ import (
 	"beatbot/gemini"
 	"beatbot/helpers"
 	"beatbot/sentryhelper"
+	"beatbot/youtube"
 
 	"github.com/bwmarrin/discordgo"
 	"gopkg.in/hraban/opus.v2"
@@ -148,16 +149,40 @@ func (manager *Manager) handleLoop(ctx context.Context, interaction *Interaction
 func (manager *Manager) handleRadio(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	// Before toggling on, make sure the bot is in voice
-	// (peek at the current state to know if we're enabling)
+	var vibe string
+	for _, opt := range interaction.Data.Options {
+		if opt.Name == "vibe" {
+			vibe = strings.TrimSpace(opt.Value)
+			break
+		}
+	}
+
 	wasEnabled := player.IsRadioEnabled()
 
-	enabled := player.ToggleRadio()
+	var enabled bool
+	if vibe != "" {
+		// A vibe was supplied: always turn radio on (never toggle off) and steer it.
+		enabled = true
+		if !wasEnabled {
+			player.ToggleRadio()
+		}
+		player.SetRadioTheme(vibe)
+	} else if wasEnabled {
+		// No vibe, radio already on: toggle off and drop any theme.
+		enabled = player.ToggleRadio()
+		player.ClearRadioTheme()
+	} else {
+		// No vibe, radio off: enable with plain history-based picking.
+		enabled = player.ToggleRadio()
+	}
 
-	if enabled && !wasEnabled {
+	if enabled {
 		voiceState, _ := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
 		if voiceState == nil {
-			player.ToggleRadio() // undo
+			if !wasEnabled {
+				player.ToggleRadio() // undo
+			}
+			player.ClearRadioTheme()
 			return Response{
 				Type: 4,
 				Data: ResponseData{
@@ -167,7 +192,10 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 		}
 		if player.ShouldJoinVoice(voiceState.ChannelID) {
 			if err := player.JoinVoiceChannel(interaction.Member.User.ID); err != nil {
-				player.ToggleRadio() // undo
+				if !wasEnabled {
+					player.ToggleRadio() // undo
+				}
+				player.ClearRadioTheme()
 				return Response{
 					Type: 4,
 					Data: ResponseData{
@@ -186,8 +214,13 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 
 	var msg string
 	if enabled {
-		msg = "📻 Radio mode **enabled** — " + djResponse
-		if player.SongHistory.Len() == 0 {
+		theme := player.GetRadioTheme()
+		if theme != "" {
+			msg = fmt.Sprintf("📻 Radio mode **enabled** — vibing to *%s* — %s", theme, djResponse)
+		} else {
+			msg = "📻 Radio mode **enabled** — " + djResponse
+		}
+		if player.SongHistory.Len() == 0 && theme == "" {
 			msg += "\n*Queue a few songs first so I have something to go off of.*"
 		}
 	} else {
@@ -200,6 +233,110 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 			Content: msg + hint,
 		},
 	}
+}
+
+func (manager *Manager) handleRequest(ctx context.Context, transaction *sentry.Span, interaction *Interaction) {
+	defer func() {
+		if err := recover(); err != nil {
+			sentryhelper.CaptureException(ctx, fmt.Errorf("panic in handleRequest: %v", err))
+			transaction.Status = sentry.SpanStatusInternalError
+		}
+		transaction.Finish()
+	}()
+
+	var suggestion string
+	for _, opt := range interaction.Data.Options {
+		if opt.Name == "suggestion" {
+			suggestion = strings.TrimSpace(opt.Value)
+			break
+		}
+	}
+	if suggestion == "" {
+		manager.SendFollowup(ctx, interaction, "", "Tell me what you want to hear! 🎵", true)
+		return
+	}
+
+	voiceState, err := discord.GetMemberVoiceState(&interaction.Member.User.ID, &interaction.GuildID)
+	if err != nil {
+		log.Errorf("Error getting voice state: %v", err)
+		sentryhelper.CaptureException(ctx, err)
+		manager.SendError(interaction, "Error getting voice state: "+err.Error(), true)
+		return
+	}
+	if voiceState == nil {
+		manager.SendFollowup(ctx, interaction, "", "Join a voice channel first! 🎤", true)
+		return
+	}
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+	if player.ShouldJoinVoice(voiceState.ChannelID) {
+		if err := player.JoinVoiceChannel(interaction.Member.User.ID); err != nil {
+			errStr := err.Error()
+			if errStr == "voice state not found" {
+				manager.SendFollowup(ctx, interaction, "", "You gotta join a voice channel first!", true)
+				return
+			}
+			sentryhelper.CaptureException(ctx, err)
+			manager.SendError(interaction, "Error joining voice channel: "+errStr, true)
+			return
+		}
+	}
+
+	// Get recent history for context
+	recentEntries := player.SongHistory.GetRecent(5)
+	recentSongs := make([]string, len(recentEntries))
+	for i, e := range recentEntries {
+		recentSongs[i] = e.Title
+	}
+
+	// Generate search queries via Gemini
+	queries := gemini.GenerateRequestQueries(ctx, suggestion, recentSongs)
+	if len(queries) == 0 {
+		manager.SendFollowup(ctx, interaction, "", "Couldn't come up with anything for that. Try a different suggestion? 🤔", true)
+		return
+	}
+
+	// Clear existing queue
+	player.Clear()
+
+	// Search YouTube and queue each result
+	var queued []string
+	historyIDs := player.SongHistory.GetAllVideoIDs()
+	for _, query := range queries {
+		videos := youtube.Query(ctx, query)
+		if len(videos) == 0 {
+			continue
+		}
+		// Pick first non-duplicate
+		for _, v := range videos {
+			if !historyIDs[v.VideoID] {
+				player.Add(ctx, v, interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
+				queued = append(queued, v.Title)
+				historyIDs[v.VideoID] = true // prevent dupes within this batch
+				break
+			}
+		}
+	}
+
+	if len(queued) == 0 {
+		manager.SendFollowup(ctx, interaction, "", "Found nothing good for that. Try something else? 🎵", true)
+		return
+	}
+
+	// Set radio theme and enable radio so it keeps steering picks after the queue drains
+	player.SetRadioTheme(suggestion)
+	if !player.IsRadioEnabled() {
+		player.ToggleRadio()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🎧 **DJ Request:** *%s*\n\n", suggestion))
+	for i, title := range queued {
+		sb.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, title))
+	}
+	sb.WriteString("\n📻 Radio mode set to this vibe — I'll keep it going.")
+
+	manager.SendFollowup(ctx, interaction, "", sb.String(), false)
 }
 
 func (manager *Manager) handleAnnounce(ctx context.Context, interaction *Interaction) Response {

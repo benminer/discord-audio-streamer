@@ -40,6 +40,7 @@ func NewHints() *Hints {
 			"Pro tip: /lyrics shows lyrics for the currently playing song",
 			"Pro tip: /favorite saves the current song to your favorites",
 			"Pro tip: /announce toggles the DJ voice announcements between songs",
+			"Pro tip: Use /request to tell the DJ what vibe you're going for",
 		},
 	}
 }
