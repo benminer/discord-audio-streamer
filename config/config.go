@@ -6,13 +6,15 @@ import (
 )
 
 type ConfigStruct struct {
-	Discord DiscordConfig
-	Tunnel  TunnelConfig
-	Options Options
-	Youtube YoutubeConfig
-	Gemini  GeminiConfig
-	Spotify SpotifyConfig
-	Deezer  DeezerConfig
+	Discord     DiscordConfig
+	Tunnel      TunnelConfig
+	Options     Options
+	Youtube     YoutubeConfig
+	Gemini      GeminiConfig
+	Spotify     SpotifyConfig
+	Deezer      DeezerConfig
+	GrokTTS     GrokTTSConfig
+	TTSProvider string // "gemini" (default) or "grok"
 }
 
 type DiscordConfig struct {
@@ -47,6 +49,11 @@ type SpotifyConfig struct {
 type DeezerConfig struct {
 	Enabled     bool
 	BPMMatching bool
+}
+
+type GrokTTSConfig struct {
+	APIKey string
+	Speed  float64
 }
 
 type Options struct {
@@ -102,6 +109,11 @@ func NewConfig() {
 			Enabled:     os.Getenv("DEEZER_ENABLED") != "false",
 			BPMMatching: os.Getenv("DEEZER_BPM_MATCHING") != "false",
 		},
+		GrokTTS: GrokTTSConfig{
+			APIKey: os.Getenv("GROK_TTS_API_KEY"),
+			Speed:  getGrokTTSSpeed(),
+		},
+		TTSProvider: getTTSProvider(),
 	}
 
 	Config = config
@@ -183,4 +195,24 @@ func getGeminiTTSModel() string {
 		return "gemini-3.1-flash-tts-preview"
 	}
 	return model
+}
+
+func getTTSProvider() string {
+	p := os.Getenv("TTS_PROVIDER")
+	if p == "" {
+		return "gemini"
+	}
+	return p
+}
+
+func getGrokTTSSpeed() float64 {
+	s := os.Getenv("GROK_TTS_SPEED")
+	if s == "" {
+		return 1.0
+	}
+	speed, err := strconv.ParseFloat(s, 64)
+	if err != nil || speed < 0.7 || speed > 1.5 {
+		return 1.0
+	}
+	return speed
 }

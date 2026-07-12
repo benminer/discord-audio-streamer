@@ -17,6 +17,7 @@ import (
 	"beatbot/gemini"
 	"beatbot/helpers"
 	"beatbot/sentryhelper"
+	"beatbot/tts"
 	"beatbot/youtube"
 
 	"github.com/bwmarrin/discordgo"
@@ -396,17 +397,13 @@ func (manager *Manager) handleAnnounce(ctx context.Context, interaction *Interac
 	}
 
 	if voiceOption != "" {
-		// Validate voice name against gemini.AvailableVoices (case-insensitive)
-		var matchedVoice string
-		for _, v := range gemini.AvailableVoices {
-			if strings.EqualFold(v, voiceOption) {
-				matchedVoice = v
-				break
+		matchedVoice, valid := tts.ValidateVoice(voiceOption)
+		if !valid {
+			provider := tts.Get()
+			var voiceList string
+			if provider != nil {
+				voiceList = strings.Join(provider.Voices(), ", ")
 			}
-		}
-
-		if matchedVoice == "" {
-			voiceList := strings.Join(gemini.AvailableVoices, ", ")
 			return Response{
 				Type: 4,
 				Data: ResponseData{
@@ -521,7 +518,11 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		}
 	}
 	if voice == "" {
-		voice = "Aoede"
+		if provider := tts.Get(); provider != nil {
+			voice = provider.DefaultVoice()
+		} else {
+			voice = "Aoede"
+		}
 	}
 
 	// Generate a short demo script via Gemini
@@ -531,7 +532,12 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 	}
 
 	// Generate TTS audio
-	audioBytes, err := gemini.GenerateTTSAudio(ctx, script, voice, "")
+	provider := tts.Get()
+	if provider == nil {
+		manager.SendError(interaction, "TTS provider not configured", true)
+		return
+	}
+	audioBytes, err := provider.Synthesize(ctx, script, voice)
 	if err != nil {
 		log.Errorf("TTS generation failed: %v", err)
 		sentryhelper.CaptureException(ctx, err)
@@ -613,6 +619,17 @@ func (manager *Manager) handleVoices(interaction *Interaction) Response {
 	guildID := interaction.GuildID
 	player := manager.Controller.GetPlayer(guildID)
 
+	provider := tts.Get()
+	if provider == nil {
+		return Response{
+			Type: 4,
+			Data: ResponseData{
+				Content: "TTS provider not configured.",
+				Flags:   64,
+			},
+		}
+	}
+
 	currentVoice := player.GetAnnounceVoice()
 	if currentVoice == "" && player.DB != nil {
 		if v, _ := player.DB.GetGuildSetting(guildID, "announce_voice"); v != "" {
@@ -620,13 +637,13 @@ func (manager *Manager) handleVoices(interaction *Interaction) Response {
 		}
 	}
 	if currentVoice == "" {
-		currentVoice = "Aoede"
+		currentVoice = provider.DefaultVoice()
 	}
 
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("🎙️ **Available TTS Voices** (current: **%s**)\n", currentVoice))
-	for i, v := range gemini.AvailableVoices {
-		if v == currentVoice {
+	msg.WriteString(fmt.Sprintf("🎙️ **Available TTS Voices** — %s (current: **%s**)\n", provider.Name(), currentVoice))
+	for i, v := range provider.Voices() {
+		if strings.EqualFold(v, currentVoice) {
 			msg.WriteString(fmt.Sprintf("`%2d.` **%s** ← active\n", i+1, v))
 		} else {
 			msg.WriteString(fmt.Sprintf("`%2d.` %s\n", i+1, v))

@@ -25,6 +25,7 @@ import (
 	"beatbot/gemini"
 	"beatbot/handlers"
 	"beatbot/pages"
+	"beatbot/tts"
 	"beatbot/youtube"
 )
 
@@ -76,6 +77,11 @@ func run(ctx context.Context) error {
 	// Initialize the Gemini client once at startup (no-op when disabled).
 	if err := gemini.Init(); err != nil {
 		log.Warnf("Failed to initialize Gemini client (AI features disabled): %v", err)
+	}
+
+	// Initialize TTS provider (uses Gemini client if provider=gemini).
+	if err := tts.Init(); err != nil {
+		log.Warnf("Failed to initialize TTS provider (voice announcements disabled): %v", err)
 	}
 
 	controller, err := controller.NewController(db)
