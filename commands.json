@@ -129,6 +129,18 @@
         "description": "A mood, artist, or genre to guide radio picks (e.g. 'chill indie', '90s hip hop')",
         "type": 3,
         "required": false
+      },
+      {
+        "name": "genre",
+        "description": "Lock radio to a genre station (e.g. 'rock', 'electronic', 'jazz')",
+        "type": 3,
+        "required": false
+      },
+      {
+        "name": "artist",
+        "description": "Seed radio from a specific artist (e.g. 'Daft Punk', 'Radiohead')",
+        "type": 3,
+        "required": false
       }
     ]
   },
@@ -245,5 +257,18 @@
     "name": "voices",
     "type": 1,
     "description": "List available TTS voices for DJ announcements"
+  },
+  {
+    "name": "charts",
+    "type": 1,
+    "description": "Show what's trending right now",
+    "options": [
+      {
+        "name": "play",
+        "description": "Queue the top tracks instead of just displaying them (true/false)",
+        "type": 3,
+        "required": false
+      }
+    ]
   }
 ]

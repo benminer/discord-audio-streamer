@@ -277,6 +277,10 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		return Response{Type: 5}
 	case "voices":
 		return manager.handleVoices(interaction)
+	case "charts":
+		finishTransaction = false
+		go manager.handleCharts(ctx, transaction, interaction)
+		return Response{Type: 5}
 	// case "purge":
 	// 	return manager.handlePurge(interaction)
 	default:
