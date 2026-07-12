@@ -254,14 +254,11 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				continue
 			}
 
-			// Drain buffer to prevent stale data buildup
-			_, err := io.ReadFull(data.ffmpegOut, rawBuf)
-			if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-				p.logger.Warnf("Error draining buffer during pause: %v", err)
-				sentry.CaptureException(err)
-			}
-
-			// Send silence frame to maintain stream continuity
+			// Send silence frame to maintain stream continuity.
+			// Do NOT read from the audio buffer here - the song is fully
+			// memory-buffered, so there's no pipe backpressure to relieve.
+			// Reading during pause desynchronizes position tracking from
+			// actual buffer state, causing TTS transitions to never trigger.
 			encoded, err := p.encoder.Encode(p.silenceBuffer, p.silenceOpus)
 			if err != nil {
 				p.logger.Warnf("Error encoding silence during pause: %v", err)
@@ -277,7 +274,7 @@ func (p *Player) Play(ctx context.Context, data *LoadResult, voiceChannel *disco
 				}
 			}
 
-			time.Sleep(20 * time.Millisecond) // ~50 frames per second
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 
