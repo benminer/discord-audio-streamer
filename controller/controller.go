@@ -1639,7 +1639,7 @@ func (p *GuildPlayer) startRadioMode() {
 		if script != "" {
 			ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 			defer ttsCancel()
-			audioBytes, err := tts.Get().Synthesize(ttsCtx, script, p.GetAnnounceVoice())
+			audioBytes, err := tts.Get().Synthesize(ttsCtx, script, tts.ResolveVoice(p.GetAnnounceVoice()))
 			if err != nil {
 				log.Errorf("Radio start TTS generation failed: %v", err)
 				sentry.CaptureException(err)
@@ -2747,7 +2747,7 @@ func (p *GuildPlayer) generateTransitionTTS() {
 
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 	defer ttsCancel()
-	audioBytes, err := tts.Get().Synthesize(ttsCtx, script, p.GetAnnounceVoice())
+	audioBytes, err := tts.Get().Synthesize(ttsCtx, script, tts.ResolveVoice(p.GetAnnounceVoice()))
 	if err != nil {
 		log.Errorf("TTS generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2786,7 +2786,7 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 	defer ttsCancel()
-	audioBytes, err := tts.Get().Synthesize(ttsCtx, script, p.GetAnnounceVoice())
+	audioBytes, err := tts.Get().Synthesize(ttsCtx, script, tts.ResolveVoice(p.GetAnnounceVoice()))
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
 		sentry.CaptureException(err)
