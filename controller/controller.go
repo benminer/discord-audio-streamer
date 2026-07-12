@@ -127,7 +127,12 @@ type GuildPlayer struct {
 	ttsWatcherStop         chan struct{}
 	RadioEnabled           bool
 	RadioTheme             string // user-provided vibe for radio picks, empty = history-based
+	RadioGenre             string // user-provided genre for radio picks, empty = not genre mode
+	RadioArtistName        string // resolved Deezer artist name for artist radio mode
+	RadioArtistID          int    // resolved Deezer artist ID for artist radio mode
 	radioMutex             sync.Mutex
+	radioCandidatePool     []deezer.Track // buffered Deezer tracks for genre/artist radio modes
+	radioCandidatesMu      sync.Mutex
 	radioQueueing          sync.Mutex // held while queueRadioSong is in-flight, prevents double-queue
 	radioStartAnnouncement *audio.TTSPlayback
 	radioStartMu           sync.Mutex
@@ -1435,6 +1440,72 @@ func (p *GuildPlayer) ClearRadioTheme() {
 	p.RadioTheme = ""
 }
 
+// clearCandidatePool drops any buffered Deezer tracks left over from a
+// previous genre/artist radio mode so a mode switch doesn't leak stale
+// candidates from the old station/artist into the new one.
+func (p *GuildPlayer) clearCandidatePool() {
+	p.radioCandidatesMu.Lock()
+	p.radioCandidatePool = nil
+	p.radioCandidatesMu.Unlock()
+}
+
+// SetRadioGenre locks radio picking to a Deezer genre station, clearing any
+// vibe/artist mode since only one radio mode can be active at a time.
+func (p *GuildPlayer) SetRadioGenre(genre string) {
+	p.radioMutex.Lock()
+	p.RadioGenre = genre
+	p.RadioTheme = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
+}
+
+// SetRadioArtist locks radio picking to a resolved Deezer artist, clearing
+// any vibe/genre mode since only one radio mode can be active at a time.
+func (p *GuildPlayer) SetRadioArtist(name string, id int) {
+	p.radioMutex.Lock()
+	p.RadioArtistName = name
+	p.RadioArtistID = id
+	p.RadioTheme = ""
+	p.RadioGenre = ""
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
+}
+
+// GetRadioGenre returns the current radio genre, empty if unset.
+func (p *GuildPlayer) GetRadioGenre() string {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioGenre
+}
+
+// GetRadioArtistID returns the current radio artist's Deezer ID, 0 if unset.
+func (p *GuildPlayer) GetRadioArtistID() int {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioArtistID
+}
+
+// GetRadioArtistName returns the current radio artist's name, empty if unset.
+func (p *GuildPlayer) GetRadioArtistName() string {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioArtistName
+}
+
+// ClearRadioMode resets radio picking back to history-based mode, clearing
+// vibe, genre, and artist modes.
+func (p *GuildPlayer) ClearRadioMode() {
+	p.radioMutex.Lock()
+	p.RadioTheme = ""
+	p.RadioGenre = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
+}
+
 func (p *GuildPlayer) ToggleLoop() bool {
 	p.loopMutex.Lock()
 	defer p.loopMutex.Unlock()
@@ -1587,6 +1658,70 @@ func scoreRadioCandidates(candidates []radioCandidate, currentBPM float64, bpmEn
 	return candidates
 }
 
+// pickFromDeezerPool picks the next song for genre or artist radio mode from
+// a buffered pool of Deezer tracks, refilling the pool from Deezer when it
+// runs dry. Exactly one of genre/artistID should be set by the caller.
+// Returns nil if Deezer has nothing left to offer or everything in the pool
+// is a duplicate of recent/history plays.
+func (p *GuildPlayer) pickFromDeezerPool(ctx context.Context, genre string, artistID int, historyIDs map[string]bool, recentTitles []string, logger *log.Entry) *youtube.VideoResponse {
+	p.radioCandidatesMu.Lock()
+
+	if len(p.radioCandidatePool) == 0 {
+		p.radioCandidatesMu.Unlock()
+		var tracks []deezer.Track
+		if genre != "" {
+			stations, err := deezer.SearchRadioStation(ctx, genre)
+			if err == nil && len(stations) > 0 {
+				tracks, _ = deezer.GetStationTracks(ctx, stations[0].ID)
+			}
+		} else if artistID > 0 {
+			var err error
+			tracks, err = deezer.GetArtistRadio(ctx, artistID)
+			if err != nil || len(tracks) == 0 {
+				related, relErr := deezer.GetRelatedArtists(ctx, artistID)
+				if relErr == nil && len(related) > 0 {
+					tracks, _ = deezer.GetArtistRadio(ctx, related[0].ID)
+				}
+			}
+		}
+		if len(tracks) == 0 {
+			return nil
+		}
+		p.radioCandidatesMu.Lock()
+		p.radioCandidatePool = tracks
+	}
+
+	// Work through the pool finding a viable candidate
+	for len(p.radioCandidatePool) > 0 {
+		t := p.radioCandidatePool[0]
+		p.radioCandidatePool = p.radioCandidatePool[1:]
+		p.radioCandidatesMu.Unlock()
+
+		searchKey := strings.ToLower(t.Artist.Name + " - " + t.TitleShort)
+		if isRecentTitle(searchKey, recentTitles) {
+			p.radioCandidatesMu.Lock()
+			continue
+		}
+
+		searchQuery := t.Artist.Name + " - " + t.TitleShort
+		videos := youtube.Query(ctx, searchQuery)
+		for i := range videos {
+			if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+				source := "genre:" + genre
+				if artistID > 0 {
+					source = "artist:" + p.GetRadioArtistName()
+				}
+				logger.Infof("Deezer pool picked: %s (source=%s)", videos[i].Title, source)
+				return &videos[i]
+			}
+		}
+		p.radioCandidatesMu.Lock()
+	}
+
+	p.radioCandidatesMu.Unlock()
+	return nil
+}
+
 // pickRadioSong uses Gemini recommendations and YouTube search to find a song
 // similar to recent listening history. Returns the picked video, or nil if
 // nothing suitable was found. Does NOT queue the song.
@@ -1628,6 +1763,22 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 		historyIDs[item.Video.VideoID] = true
 	}
 	p.Queue.Mutex.Unlock()
+
+	// Genre radio mode
+	if genre := p.GetRadioGenre(); genre != "" && config.Config.Deezer.Enabled {
+		picked := p.pickFromDeezerPool(ctx, genre, 0, historyIDs, recentTitles, logger)
+		if picked != nil {
+			return picked
+		}
+	}
+
+	// Artist radio mode
+	if artistID := p.GetRadioArtistID(); artistID > 0 && config.Config.Deezer.Enabled {
+		picked := p.pickFromDeezerPool(ctx, "", artistID, historyIDs, recentTitles, logger)
+		if picked != nil {
+			return picked
+		}
+	}
 
 	var query string
 	var picked *youtube.VideoResponse
