@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
@@ -379,9 +380,26 @@ Suggest 3-5 songs that match the request. Return each as a YouTube search query 
 	return queries
 }
 
+// SongContext carries optional Deezer-derived metadata (and radio-mode state)
+// used to give GenerateNowPlayingCommentary more to work with than the bare
+// title/history. All fields are best-effort — nil/zero values are simply
+// omitted from the prompt.
+type SongContext struct {
+	Genre          string
+	BPM            float64
+	AlbumName      string
+	AlbumYear      string
+	Popularity     int
+	RelatedArtists []string
+	PreviousBPM    float64
+	RadioMode      string
+}
+
 // GenerateNowPlayingCommentary creates conversational DJ commentary for the current song
 // based on the song history and whether it was auto-queued by radio mode.
-func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recentHistory []string, isRadioPick bool) string {
+// songCtx is optional (may be nil) and adds Deezer-derived metadata (genre, BPM,
+// album) to the prompt when available.
+func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recentHistory []string, isRadioPick bool, songCtx *SongContext) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
@@ -445,6 +463,35 @@ Rules:
 - If you don't know something specific, be vague rather than invent facts
 
 Now write your commentary:`, currentSong, historyStr, radioStr))
+
+	if songCtx != nil {
+		instructions += "\n\nAdditional context about the current song:"
+		if songCtx.Genre != "" {
+			instructions += fmt.Sprintf("\n- Genre: %s", songCtx.Genre)
+		}
+		if songCtx.BPM > 0 {
+			instructions += fmt.Sprintf("\n- BPM: %.0f", songCtx.BPM)
+		}
+		if songCtx.AlbumName != "" {
+			year := ""
+			if songCtx.AlbumYear != "" {
+				year = " (" + songCtx.AlbumYear + ")"
+			}
+			instructions += fmt.Sprintf("\n- Album: %s%s", songCtx.AlbumName, year)
+		}
+		if songCtx.PreviousBPM > 0 && songCtx.BPM > 0 {
+			diff := math.Abs(songCtx.BPM - songCtx.PreviousBPM)
+			if diff <= 5 {
+				instructions += "\n- Note: smooth tempo match with previous song"
+			} else if diff > 30 {
+				instructions += "\n- Note: significant tempo shift from previous song"
+			}
+		}
+		if songCtx.RadioMode != "" {
+			instructions += fmt.Sprintf("\n- Radio mode: %s", songCtx.RadioMode)
+		}
+		instructions += "\n\nUse this context naturally — mention genre, tempo, or album era IF it adds to the commentary. Don't force it."
+	}
 
 	response := generateResponse(ctx, instructions)
 	if response == "" {

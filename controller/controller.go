@@ -1223,6 +1223,34 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						// Send now-playing card
 						go p.sendNowPlayingCard(queueItem)
 
+						// Resolve Deezer metadata (BPM, genre, album art) in the background.
+						// Best-effort: the now-playing card and DJ commentary render fine
+						// without it, and pick up the enrichment on their next update once
+						// this completes.
+						if config.Config.Deezer.Enabled {
+							go func(item *GuildQueueItem) {
+								resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 8*time.Second)
+								defer resolveCancel()
+
+								artist := ExtractArtist(item.Video.Title)
+								title := extractTitlePart(item.Video.Title)
+								meta := deezer.ResolveTrackMeta(resolveCtx, artist, title)
+								if meta != nil {
+									p.currentItemMutex.Lock()
+									item.DeezerMeta = meta
+									p.currentItemMutex.Unlock()
+
+									log.WithFields(log.Fields{
+										"module": "controller",
+										"method": "deezerResolve",
+										"song":   item.Video.Title,
+										"bpm":    meta.BPM,
+										"genre":  meta.Genre,
+									}).Debug("Deezer metadata resolved")
+								}
+							}(queueItem)
+						}
+
 						// Record in song history for radio mode
 						p.SongHistory.Add(SongHistoryEntry{
 							VideoID: queueItem.Video.VideoID,
@@ -1524,6 +1552,28 @@ func (p *GuildPlayer) IsLoopEnabled() bool {
 // Delegates to discord.ExtractArtistFromTitle — single source of truth.
 func ExtractArtist(title string) string {
 	return discord.ExtractArtistFromTitle(title)
+}
+
+// extractTitlePart strips common YouTube video-title suffixes (e.g. "(Official Video)")
+// and, when the title follows the "Artist - Song" convention, returns just the song
+// portion. Used to build a cleaner query for Deezer track search.
+func extractTitlePart(videoTitle string) string {
+	cleaned := videoTitle
+	suffixes := []string{
+		"(Official Video)", "(Official Music Video)", "(Official Audio)",
+		"(Lyrics)", "(Lyric Video)", "(Audio)", "(Visualizer)",
+		"[Official Video]", "[Official Music Video]", "[Official Audio]",
+	}
+	for _, suffix := range suffixes {
+		cleaned = strings.Replace(cleaned, suffix, "", 1)
+	}
+	cleaned = strings.TrimSpace(cleaned)
+
+	parts := strings.SplitN(cleaned, " - ", 2)
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[1])
+	}
+	return cleaned
 }
 
 // isRecentTitle returns true if the candidate title fuzzy-matches any entry in recentTitles.
@@ -2701,6 +2751,36 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	}
 }
 
+// enrichNowPlayingMetadata layers Deezer enrichment (genre, BPM, album, artist,
+// artwork) onto an already-built NowPlayingMetadata when available. DeezerMeta
+// resolves in the background (see PlaybackStarted handling), so it's typically
+// nil on the initial card and only populated by the time of a later update
+// (periodic refresh or the commentary update).
+func (p *GuildPlayer) enrichNowPlayingMetadata(metadata *discord.NowPlayingMetadata, queueItem *GuildQueueItem) {
+	p.currentItemMutex.RLock()
+	dm := queueItem.DeezerMeta
+	p.currentItemMutex.RUnlock()
+
+	if dm == nil {
+		return
+	}
+
+	metadata.Genre = dm.Genre
+	metadata.BPM = dm.BPM
+	metadata.Album = dm.AlbumName
+	metadata.AlbumYear = dm.AlbumYear
+	if dm.AlbumYear != "" {
+		metadata.Album = dm.AlbumName + " (" + dm.AlbumYear + ")"
+	}
+	metadata.Popularity = dm.Popularity
+	if dm.AlbumArtURL != "" {
+		metadata.ThumbnailURL = dm.AlbumArtURL
+	}
+	if dm.ArtistName != "" {
+		metadata.Artist = dm.ArtistName
+	}
+}
+
 // sendNowPlayingCard creates and sends a now-playing embed
 func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	textCh := p.GetLastTextChannelID()
@@ -2733,6 +2813,7 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 		GuildID:         p.GuildID,
 		Commentary:      "", // Will be populated async by Gemini
 	}
+	p.enrichNowPlayingMetadata(metadata, queueItem)
 
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
@@ -2780,9 +2861,31 @@ func (p *GuildPlayer) generateAndUpdateCommentary(queueItem *GuildQueueItem) {
 		recentSongs[i] = entry.Title
 	}
 
+	// Build Deezer-derived context for Gemini when metadata has resolved by now.
+	var songCtx *gemini.SongContext
+	p.currentItemMutex.RLock()
+	dm := queueItem.DeezerMeta
+	p.currentItemMutex.RUnlock()
+	if dm != nil {
+		songCtx = &gemini.SongContext{
+			Genre:      dm.Genre,
+			BPM:        dm.BPM,
+			AlbumName:  dm.AlbumName,
+			AlbumYear:  dm.AlbumYear,
+			Popularity: dm.Popularity,
+		}
+		if genre := p.GetRadioGenre(); genre != "" {
+			songCtx.RadioMode = "genre:" + genre
+		} else if artist := p.GetRadioArtistName(); artist != "" {
+			songCtx.RadioMode = "artist:" + artist
+		} else if theme := p.GetRadioTheme(); theme != "" {
+			songCtx.RadioMode = "vibe:" + theme
+		}
+	}
+
 	// Generate commentary using Gemini
 	ctx := context.Background()
-	commentary := gemini.GenerateNowPlayingCommentary(ctx, queueItem.Video.Title, recentSongs, queueItem.IsRadioPick)
+	commentary := gemini.GenerateNowPlayingCommentary(ctx, queueItem.Video.Title, recentSongs, queueItem.IsRadioPick, songCtx)
 
 	if commentary == "" {
 		log.Debug("No commentary generated by Gemini, skipping update")
@@ -2828,6 +2931,7 @@ func (p *GuildPlayer) generateAndUpdateCommentary(queueItem *GuildQueueItem) {
 		GuildID:         p.GuildID,
 		Commentary:      commentary,
 	}
+	p.enrichNowPlayingMetadata(metadata, queueItem)
 
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
@@ -2873,6 +2977,7 @@ func (p *GuildPlayer) updateNowPlayingCard(queueItem *GuildQueueItem) error {
 		GuildID:         p.GuildID,
 		Commentary:      queueItem.Commentary, // Preserve any generated commentary
 	}
+	p.enrichNowPlayingMetadata(metadata, queueItem)
 
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
