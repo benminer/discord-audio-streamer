@@ -330,6 +330,15 @@ func (manager *Manager) handleRequest(ctx context.Context, transaction *sentry.S
 	}
 	var picks []pickedVideo
 	historyIDs := player.SongHistory.GetAllVideoIDs()
+
+	// Merge never-play blocked videos so they are excluded from request picks.
+	if db := manager.Controller.GetDB(); db != nil {
+		if blocked, err := db.GetBlockedVideoIDs(interaction.GuildID); err == nil {
+			for id := range blocked {
+				historyIDs[id] = true
+			}
+		}
+	}
 	for _, query := range queries {
 		videos := youtube.Query(ctx, query)
 		if len(videos) == 0 {

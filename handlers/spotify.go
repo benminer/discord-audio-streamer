@@ -131,6 +131,9 @@ func (manager *Manager) handleSpotifyCollection(ctx context.Context, interaction
 		}
 	}
 
+	// Filter never-play blocked videos before duplicate/queue checks.
+	foundVideos = manager.filterBlocked(interaction.GuildID, foundVideos)
+
 	// Check for duplicates in queue
 	var videosToQueue []youtube.VideoResponse
 	var duplicateCount int

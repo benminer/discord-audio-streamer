@@ -270,5 +270,10 @@
         "required": false
       }
     ]
+  },
+  {
+    "name": "neverplay",
+    "type": 1,
+    "description": "Block the current song from ever playing again and skip it"
   }
 ]

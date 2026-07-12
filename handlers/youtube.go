@@ -79,6 +79,9 @@ func (manager *Manager) handleYouTubePlaylist(ctx context.Context, interaction *
 		})
 	}
 
+	// Filter never-play blocked videos before duplicate/queue checks.
+	videos = manager.filterBlocked(interaction.GuildID, videos)
+
 	// Check for duplicates against current queue
 	var videosToQueue []youtube.VideoResponse
 	var duplicateCount int

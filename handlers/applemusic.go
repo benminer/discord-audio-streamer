@@ -75,6 +75,14 @@ func (manager *Manager) handleAppleMusicTrack(ctx context.Context, interaction *
 		return
 	}
 
+	videos = manager.filterBlocked(interaction.GuildID, videos)
+	if len(videos) == 0 {
+		manager.SendFollowup(ctx, interaction, "",
+			fmt.Sprintf("**%s** by **%s** is blocked from playing.", trackInfo.Title, artistsStr),
+			true)
+		return
+	}
+
 	video := videos[0]
 	fallbacks := fallbackSlice(videos, 2)
 	log.Debugf("Found YouTube match: %s (ID: %s)", video.Title, video.VideoID)
@@ -301,6 +309,9 @@ func (manager *Manager) handleAppleMusicCollection(ctx context.Context, interact
 
 	log.Debugf("Found %d/%d tracks on YouTube for Apple Music %s '%s'",
 		len(foundVideos), len(collection.Tracks), collection.Type, collection.Name)
+
+	// Filter never-play blocked videos before queuing.
+	foundVideos = manager.filterBlocked(interaction.GuildID, foundVideos)
 
 	if len(foundVideos) == 0 {
 		manager.SendFollowup(ctx, interaction, "",
