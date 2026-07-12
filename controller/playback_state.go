@@ -15,6 +15,7 @@ type SongInfo struct {
 	VideoID     string
 	IsRadioPick bool
 	QueuedBy    string // display name of user who queued, empty for radio picks
+	ChannelName string // YouTube channel/uploader name for disambiguation
 }
 
 // PlaybackState is the authoritative single-source-of-truth for what is
