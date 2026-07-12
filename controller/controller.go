@@ -9,6 +9,7 @@ import (
 	"beatbot/gemini"
 	"beatbot/sentryhelper"
 	"beatbot/spotify"
+	"beatbot/tts"
 	"beatbot/youtube"
 	"context"
 	"errors"
@@ -1196,7 +1197,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 
 					// If queue is still empty, radio is off, and announcements are enabled, play "no more songs" TTS.
 					// Skip when radio is on since it will queue something.
-					if p.IsEmpty() && !p.IsRadioEnabled() && p.GetAnnounceEnabled() && config.Config.Gemini.Enabled {
+					if p.IsEmpty() && !p.IsRadioEnabled() && p.GetAnnounceEnabled() && config.Config.Gemini.Enabled && tts.Get() != nil {
 						go p.playNoMoreSongsMessage()
 					}
 				case audio.PlaybackStarted:
@@ -1622,7 +1623,7 @@ func (p *GuildPlayer) startRadioMode() {
 	}
 
 	// 2. Generate TTS announcement BEFORE queuing, so it's ready when play() starts.
-	if p.GetAnnounceEnabled() && config.Config.Gemini.Enabled {
+	if p.GetAnnounceEnabled() && config.Config.Gemini.Enabled && tts.Get() != nil {
 		ctx := context.Background()
 		scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer scriptCancel()
@@ -1632,10 +1633,9 @@ func (p *GuildPlayer) startRadioMode() {
 			NextChannelName: picked.ChannelName,
 		})
 		if script != "" {
-			ttsPrompt := gemini.BuildTTSPrompt(script)
 			ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 			defer ttsCancel()
-			audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
+			audioBytes, err := tts.Get().Synthesize(ttsCtx, script, p.GetAnnounceVoice())
 			if err != nil {
 				log.Errorf("Radio start TTS generation failed: %v", err)
 				sentry.CaptureException(err)
@@ -2680,7 +2680,7 @@ func (p *GuildPlayer) startTTSWatcher() {
 // based on the current and next songs in PlaybackState. Called serially by
 // the TTS watcher goroutine — never call this concurrently.
 func (p *GuildPlayer) generateTransitionTTS() {
-	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled {
+	if !p.GetAnnounceEnabled() || !config.Config.Gemini.Enabled || tts.Get() == nil {
 		return
 	}
 
@@ -2741,10 +2741,9 @@ func (p *GuildPlayer) generateTransitionTTS() {
 		return
 	}
 
-	ttsPrompt := gemini.BuildTTSPrompt(script)
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
+	audioBytes, err := tts.Get().Synthesize(ttsCtx, script, p.GetAnnounceVoice())
 	if err != nil {
 		log.Errorf("TTS generation failed: %v", err)
 		sentry.CaptureException(err)
@@ -2758,8 +2757,8 @@ func (p *GuildPlayer) generateTransitionTTS() {
 		return
 	}
 
-	tts := &audio.TTSPlayback{Samples: samples}
-	if p.playbackState.SetTTSBuffer(gen, tts) {
+	ttsPlayback := &audio.TTSPlayback{Samples: samples}
+	if p.playbackState.SetTTSBuffer(gen, ttsPlayback) {
 		log.Infof("TTS generated for transition: %s → %s (script=%d chars, audio=%d bytes, pcm=%d samples)",
 			current.Title, next.Title, len(script), len(audioBytes), len(samples))
 	} else {
@@ -2781,10 +2780,9 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 		script = "That's all for now. Hit up /radio and I'll keep the vibes going based on what we've been playing. Or queue something specific with /play."
 	}
 
-	ttsPrompt := gemini.BuildTTSPrompt(script)
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 	defer ttsCancel()
-	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
+	audioBytes, err := tts.Get().Synthesize(ttsCtx, script, p.GetAnnounceVoice())
 	if err != nil {
 		log.Errorf("No-more-songs TTS generation failed: %v", err)
 		sentry.CaptureException(err)
