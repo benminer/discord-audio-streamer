@@ -15,6 +15,7 @@ func (g *geminiProvider) Synthesize(ctx context.Context, script string, voice st
 	return gemini.GenerateTTSAudio(ctx, prompt, voice, "")
 }
 
-func (g *geminiProvider) Voices() []string     { return gemini.AvailableVoices }
-func (g *geminiProvider) DefaultVoice() string { return "Aoede" }
-func (g *geminiProvider) Name() string         { return "gemini" }
+func (g *geminiProvider) Voices() []string          { return gemini.AvailableVoices }
+func (g *geminiProvider) DefaultVoice() string      { return "Aoede" }
+func (g *geminiProvider) Name() string              { return "gemini" }
+func (g *geminiProvider) AcceptsCustomVoices() bool { return false }

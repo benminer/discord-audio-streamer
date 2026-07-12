@@ -24,6 +24,10 @@ type Provider interface {
 
 	// Name returns the provider identifier ("gemini" or "grok").
 	Name() string
+
+	// AcceptsCustomVoices returns true if the provider supports voice IDs
+	// beyond its built-in list (e.g. xAI custom/cloned voices).
+	AcceptsCustomVoices() bool
 }
 
 var defaultProvider Provider
@@ -52,6 +56,7 @@ func Get() Provider { return defaultProvider }
 
 // ValidateVoice checks if a voice name is valid for the active provider.
 // Returns the canonical name (proper casing) and true, or ("", false).
+// For providers that accept custom voices, any non-empty name is valid.
 func ValidateVoice(name string) (string, bool) {
 	p := Get()
 	if p == nil {
@@ -61,6 +66,9 @@ func ValidateVoice(name string) (string, bool) {
 		if strings.EqualFold(v, name) {
 			return v, true
 		}
+	}
+	if p.AcceptsCustomVoices() && name != "" {
+		return name, true
 	}
 	return "", false
 }

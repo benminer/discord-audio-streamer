@@ -160,9 +160,10 @@ func (g *grokProvider) Synthesize(ctx context.Context, script string, voice stri
 	return nil, fmt.Errorf("Grok TTS exhausted retries: %w", lastErr)
 }
 
-func (g *grokProvider) Voices() []string     { return grokBuiltinVoices }
-func (g *grokProvider) DefaultVoice() string { return "Carina" }
-func (g *grokProvider) Name() string         { return "grok" }
+func (g *grokProvider) Voices() []string          { return grokBuiltinVoices }
+func (g *grokProvider) DefaultVoice() string      { return "carina" }
+func (g *grokProvider) Name() string              { return "grok" }
+func (g *grokProvider) AcceptsCustomVoices() bool { return true }
 
 // buildGrokTTSText wraps the DJ script with xAI speech tags for delivery.
 // Uses <slow> for the laid-back late-night feel and [pause] for natural pacing.
