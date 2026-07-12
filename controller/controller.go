@@ -1492,8 +1492,9 @@ func (p *GuildPlayer) startRadioMode() {
 		scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer scriptCancel()
 		script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-			Type:     gemini.AnnouncementRadioStart,
-			NextSong: picked.Title,
+			Type:            gemini.AnnouncementRadioStart,
+			NextSong:        picked.Title,
+			NextChannelName: picked.ChannelName,
 		})
 		if script != "" {
 			ttsPrompt := gemini.BuildTTSPrompt(script)
@@ -2288,13 +2289,15 @@ func (p *GuildPlayer) generateTransitionTTS() {
 	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer scriptCancel()
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type:            gemini.AnnouncementTransition,
-		CurrentSong:     current.Title,
-		NextSong:        next.Title,
-		RecentHistory:   recentHistory,
-		IsRadioPick:     next.IsRadioPick,
-		CurrentQueuedBy: current.QueuedBy,
-		NextQueuedBy:    next.QueuedBy,
+		Type:               gemini.AnnouncementTransition,
+		CurrentSong:        current.Title,
+		CurrentChannelName: current.ChannelName,
+		NextSong:           next.Title,
+		NextChannelName:    next.ChannelName,
+		RecentHistory:      recentHistory,
+		IsRadioPick:        next.IsRadioPick,
+		CurrentQueuedBy:    current.QueuedBy,
+		NextQueuedBy:       next.QueuedBy,
 	})
 	if script == "" {
 		return
