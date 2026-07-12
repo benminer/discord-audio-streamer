@@ -4,6 +4,7 @@ import (
 	"beatbot/audio"
 	"beatbot/config"
 	"beatbot/database"
+	"beatbot/deezer"
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/sentryhelper"
@@ -12,7 +13,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,6 +178,7 @@ type GuildQueueItem struct {
 	Commentary     string                  // AI-generated commentary for this song
 	IsRadioPick    bool                    // Whether this song was auto-queued by radio mode
 	FallbackVideos []youtube.VideoResponse // Alternate candidates to try if primary is age-restricted (search results only)
+	DeezerMeta     *deezer.TrackMeta       // Deezer enrichment metadata (BPM, genre, album art, etc.)
 }
 
 type GuildQueue struct {
@@ -1537,6 +1541,52 @@ func (p *GuildPlayer) tryQueueRadioSong() string {
 	return p.queueRadioSong()
 }
 
+// radioCandidate represents a single candidate song for radio auto-queue,
+// gathered from one of several sources (YouTube Mix, Deezer artist radio,
+// Gemini) and scored so the sources can be blended into one ranked pool.
+type radioCandidate struct {
+	Title    string
+	Artist   string
+	VideoID  string // set if from YouTube Mix or Gemini (already resolved)
+	DeezerID int    // set if from Deezer (needs YouTube resolution)
+	BPM      float64
+	Score    int
+	Source   string // "youtube-mix", "deezer", "gemini"
+}
+
+// scoreRadioCandidates sorts candidates by score descending, then applies a
+// BPM-proximity bonus to the top 5 candidates (if BPM matching is enabled
+// and we know the currently-playing track's BPM) and re-sorts.
+func scoreRadioCandidates(candidates []radioCandidate, currentBPM float64, bpmEnabled bool) []radioCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Score > candidates[j].Score
+	})
+	// Apply BPM bonus to top 5 only
+	if bpmEnabled && currentBPM > 0 {
+		limit := 5
+		if len(candidates) < limit {
+			limit = len(candidates)
+		}
+		for i := 0; i < limit; i++ {
+			if candidates[i].BPM > 0 {
+				diff := math.Abs(candidates[i].BPM - currentBPM)
+				if diff <= 10 {
+					candidates[i].Score += 2
+				} else if diff <= 20 {
+					candidates[i].Score += 1
+				}
+			}
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Score > candidates[j].Score
+		})
+	}
+	return candidates
+}
+
 // pickRadioSong uses Gemini recommendations and YouTube search to find a song
 // similar to recent listening history. Returns the picked video, or nil if
 // nothing suitable was found. Does NOT queue the song.
@@ -1643,71 +1693,206 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 			}
 		}
 	} else {
-		// Try YouTube Mix playlist first — uses YouTube's own recommendation engine
-		// seeded from the most recently played video. Genre-accurate without relying
-		// on title-based AI inference (which confuses "Microwave" emo vs "Microwave" rap).
-		if seedHistory := p.SongHistory.GetRecent(1); len(seedHistory) > 0 && seedHistory[0].VideoID != "" {
-			seedVideoID := seedHistory[0].VideoID
-			logger.Debugf("Trying YouTube Mix playlist for seed video: %s", seedVideoID)
+		// Blended mode: fetch YouTube Mix, Deezer artist radio, and a Gemini
+		// recommendation in parallel, then score and merge the candidates
+		// into one ranked pool. This makes Deezer a weighted signal rather
+		// than a sequential fallback, and lets sources reinforce each other
+		// (a track surfaced by two sources gets a convergence bonus).
+		type fetchResult struct {
+			youtubeVideos []youtube.VideoResponse
+			deezerTracks  []deezer.Track
+			geminiQuery   string
+		}
+		result := &fetchResult{}
+		var wg sync.WaitGroup
 
-			mixVideos, err := youtube.GetMixPlaylistVideos(ctx, seedVideoID)
-			if err != nil {
-				logger.Warnf("YouTube Mix playlist failed, falling through to Gemini: %v", err)
-			} else {
-				for i := range mixVideos {
-					if !historyIDs[mixVideos[i].VideoID] && !isRecentTitle(mixVideos[i].Title, recentTitles) {
-						picked = &mixVideos[i]
+		// YouTube Mix (use recent[0].VideoID as seed)
+		if recent[0].VideoID != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				mixVideos, err := youtube.GetMixPlaylistVideos(fetchCtx, recent[0].VideoID)
+				if err != nil {
+					logger.Debugf("YouTube Mix failed: %v", err)
+					return
+				}
+				result.youtubeVideos = mixVideos
+			}()
+		}
+
+		// Deezer artist radio
+		if config.Config.Deezer.Enabled {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				artistName := ExtractArtist(recent[0].Title)
+				artist, err := deezer.SearchArtist(fetchCtx, artistName)
+				if err != nil || artist == nil {
+					logger.Debugf("Deezer artist search failed for %q: %v", artistName, err)
+					return
+				}
+				tracks, err := deezer.GetArtistRadio(fetchCtx, artist.ID)
+				if err != nil {
+					logger.Debugf("Deezer artist radio failed: %v", err)
+					return
+				}
+				result.deezerTracks = tracks
+			}()
+		}
+
+		// Gemini recommendation
+		if config.Config.Gemini.Enabled && len(recent) >= 3 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				songTitles := make([]string, len(recent))
+				for i, song := range recent {
+					songTitles[i] = song.Title
+				}
+				result.geminiQuery = gemini.GenerateSongRecommendation(fetchCtx, songTitles)
+			}()
+		}
+
+		wg.Wait()
+
+		// Build candidate pool with scores
+		var candidates []radioCandidate
+
+		// YouTube Mix candidates (score: 2)
+		for _, v := range result.youtubeVideos {
+			if historyIDs[v.VideoID] || isRecentTitle(v.Title, recentTitles) {
+				continue
+			}
+			candidates = append(candidates, radioCandidate{
+				Title:   v.Title,
+				Artist:  ExtractArtist(v.Title),
+				VideoID: v.VideoID,
+				Score:   2,
+				Source:  "youtube-mix",
+			})
+		}
+
+		// Deezer candidates (score: 3, convergence bonus: +1)
+		for _, t := range result.deezerTracks {
+			searchKey := strings.ToLower(t.Artist.Name + " - " + t.TitleShort)
+			if isRecentTitle(searchKey, recentTitles) {
+				continue
+			}
+			candidate := radioCandidate{
+				Title:    t.TitleShort,
+				Artist:   t.Artist.Name,
+				DeezerID: t.ID,
+				Score:    3,
+				Source:   "deezer",
+			}
+			// Convergence check: if this track also appears in YouTube Mix, bonus
+			for i := range candidates {
+				if candidates[i].Source == "youtube-mix" && strings.Contains(
+					strings.ToLower(candidates[i].Title), strings.ToLower(t.TitleShort),
+				) {
+					candidates[i].Score += 1
+					candidate.Score += 1
+					break
+				}
+			}
+			candidates = append(candidates, candidate)
+		}
+
+		// Gemini candidate (score: 1) - resolve to video first
+		var geminiResolved []youtube.VideoResponse
+		if result.geminiQuery != "" {
+			logger.Infof("Gemini recommended search query: %s", result.geminiQuery)
+
+			sentry.AddBreadcrumb(&sentry.Breadcrumb{
+				Category: "radio",
+				Message:  "Gemini generated recommendation query",
+				Level:    sentry.LevelInfo,
+				Data: map[string]interface{}{
+					"guild_id": p.GuildID,
+					"query":    result.geminiQuery,
+				},
+			})
+
+			geminiResolved = youtube.Query(ctx, result.geminiQuery)
+			for _, v := range geminiResolved {
+				if historyIDs[v.VideoID] || isRecentTitle(v.Title, recentTitles) {
+					continue
+				}
+				candidate := radioCandidate{
+					Title:   v.Title,
+					Artist:  ExtractArtist(v.Title),
+					VideoID: v.VideoID,
+					Score:   1,
+					Source:  "gemini",
+				}
+				// Boost if matches a Deezer track
+				for i := range candidates {
+					if candidates[i].Source == "deezer" && strings.Contains(
+						strings.ToLower(v.Title), strings.ToLower(candidates[i].Title),
+					) {
+						candidates[i].Score += 1
+						candidate.Score += 1
 						break
 					}
 				}
-				if picked != nil {
-					query = "youtube-mix:" + seedVideoID
-					logger.Infof("YouTube Mix picked: %s", picked.Title)
-				} else {
-					logger.Debug("YouTube Mix results were all duplicates, falling through to Gemini")
-				}
+				candidates = append(candidates, candidate)
+				break // only first valid Gemini result
 			}
 		}
 
-		// Try Gemini-powered recommendation if YouTube Mix came up empty
-		if picked == nil && config.Config.Gemini.Enabled && len(recent) >= 3 {
-			songTitles := make([]string, len(recent))
-			for i, song := range recent {
-				songTitles[i] = song.Title
-			}
+		// Get current BPM for scoring
+		var currentBPM float64
+		p.currentItemMutex.RLock()
+		if p.CurrentItem != nil && p.CurrentItem.DeezerMeta != nil {
+			currentBPM = p.CurrentItem.DeezerMeta.BPM
+		}
+		p.currentItemMutex.RUnlock()
 
-			logger.Debug("Requesting Gemini song recommendation based on recent history")
-			query = gemini.GenerateSongRecommendation(ctx, songTitles)
+		// Score and sort candidates
+		candidates = scoreRadioCandidates(candidates, currentBPM, config.Config.Deezer.BPMMatching)
 
-			if query != "" {
-				logger.Infof("Gemini recommended search query: %s", query)
+		// Build lookup map for resolved videos
+		resolvedVideos := make(map[string]youtube.VideoResponse)
+		for _, v := range result.youtubeVideos {
+			resolvedVideos[v.VideoID] = v
+		}
+		for _, v := range geminiResolved {
+			resolvedVideos[v.VideoID] = v
+		}
 
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "radio",
-					Message:  "Gemini generated recommendation query",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id": p.GuildID,
-						"query":    query,
-					},
-				})
-
-				videos = youtube.Query(ctx, query)
-				if len(videos) > 0 {
-					for i := range videos {
-						if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
-							picked = &videos[i]
-							break
-						}
-					}
+		// Pick highest-scored candidate
+		for _, c := range candidates {
+			if c.VideoID != "" {
+				if v, ok := resolvedVideos[c.VideoID]; ok {
+					vCopy := v
+					picked = &vCopy
 				}
 			} else {
-				logger.Warn("Gemini recommendation returned empty query, falling back to legacy method")
+				// Deezer track: resolve via YouTube search
+				searchQuery := c.Artist + " - " + c.Title
+				videos = youtube.Query(ctx, searchQuery)
+				for i := range videos {
+					if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+						picked = &videos[i]
+						break
+					}
+				}
+			}
+			if picked != nil {
+				logger.Infof("Radio picked: %s (source=%s, score=%d)", picked.Title, c.Source, c.Score)
+				break
 			}
 		}
 
+		// Legacy fallback if blending produced nothing
 		if picked == nil {
-			logger.Debug("Using fallback legacy search method")
+			logger.Debug("Blended candidate pool produced nothing, using fallback legacy search method")
 
 			idx := rand.Intn(len(recent))
 			artist := ExtractArtist(recent[idx].Title)
