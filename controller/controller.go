@@ -503,9 +503,10 @@ func (p *GuildPlayer) loadNext() {
 			ctx = context.Background()
 		}
 		go p.Loader.Load(ctx, audio.LoadJob{
-			URL:     next.Stream.StreamURL,
-			VideoID: next.Video.VideoID,
-			Title:   next.Video.Title,
+			URL:      next.Stream.StreamURL,
+			VideoID:  next.Video.VideoID,
+			Title:    next.Video.Title,
+			Duration: next.Video.Duration,
 		})
 	}
 }

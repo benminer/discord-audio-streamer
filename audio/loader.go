@@ -22,9 +22,10 @@ type Loader struct {
 }
 
 type LoadJob struct {
-	URL     string
-	VideoID string
-	Title   string
+	URL      string
+	VideoID  string
+	Title    string
+	Duration time.Duration
 }
 
 type LoadResult struct {
@@ -145,6 +146,17 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 		done <- result{&buf, err}
 	}()
 
+	// Scale timeout with video length: at least 60s, or 1/4 of the video duration.
+	// Falls back to 3 minutes for unknown-length content (Duration == 0).
+	loadTimeout := 3 * time.Minute
+	if job.Duration > 0 {
+		scaled := job.Duration / 4
+		if scaled < 60*time.Second {
+			scaled = 60 * time.Second
+		}
+		loadTimeout = scaled
+	}
+
 	// Wait for FFmpeg to complete, handle cancellation or timeout
 	select {
 	case <-l.canceled:
@@ -229,8 +241,8 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 		log.Tracef("sent loaded event for %s", job.VideoID)
 		return
 
-	case <-time.After(30 * time.Second):
-		errMsg := "ffmpeg timed out after 30 seconds"
+	case <-time.After(loadTimeout):
+		errMsg := "ffmpeg timed out after " + loadTimeout.Round(time.Second).String()
 		if stderr.Len() > 0 {
 			errMsg += " | ffmpeg stderr: " + stderr.String()
 		}
