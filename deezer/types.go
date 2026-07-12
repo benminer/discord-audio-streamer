@@ -81,7 +81,6 @@ type listResponse[T any] struct {
 type TrackMeta struct {
 	DeezerID       int
 	BPM            float64
-	Genre          string
 	AlbumName      string
 	AlbumYear      string
 	AlbumArtURL    string

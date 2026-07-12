@@ -1246,7 +1246,6 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 										"method": "deezerResolve",
 										"song":   item.Video.Title,
 										"bpm":    meta.BPM,
-										"genre":  meta.Genre,
 									}).Debug("Deezer metadata resolved")
 								}
 							}(queueItem)
@@ -2066,8 +2065,29 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 		}
 		p.currentItemMutex.RUnlock()
 
-		// Score and sort candidates
-		candidates = scoreRadioCandidates(candidates, currentBPM, config.Config.Deezer.BPMMatching)
+		// Score and sort candidates (initial pass without BPM data)
+		candidates = scoreRadioCandidates(candidates, currentBPM, false)
+
+		// Fetch BPM for top 5 Deezer candidates to enable tempo-aware re-ranking
+		if config.Config.Deezer.BPMMatching && currentBPM > 0 && config.Config.Deezer.Enabled {
+			fetched := 0
+			for i := range candidates {
+				if fetched >= 5 {
+					break
+				}
+				if candidates[i].DeezerID > 0 && candidates[i].BPM == 0 {
+					bpmCtx, bpmCancel := context.WithTimeout(ctx, 2*time.Second)
+					detail, err := deezer.GetTrack(bpmCtx, candidates[i].DeezerID)
+					bpmCancel()
+					if err == nil && detail.BPM > 0 {
+						candidates[i].BPM = detail.BPM
+					}
+					fetched++
+				}
+			}
+			// Re-score with BPM data now populated
+			candidates = scoreRadioCandidates(candidates, currentBPM, true)
+		}
 
 		// Build lookup map for resolved videos
 		resolvedVideos := make(map[string]youtube.VideoResponse)
@@ -2793,7 +2813,6 @@ func (p *GuildPlayer) enrichNowPlayingMetadata(metadata *discord.NowPlayingMetad
 		return
 	}
 
-	metadata.Genre = dm.Genre
 	metadata.BPM = dm.BPM
 	metadata.Album = dm.AlbumName
 	metadata.AlbumYear = dm.AlbumYear
@@ -2897,7 +2916,6 @@ func (p *GuildPlayer) generateAndUpdateCommentary(queueItem *GuildQueueItem) {
 	if dm != nil {
 		songCtx = &gemini.SongContext{
 			ArtistName: dm.ArtistName,
-			Genre:      dm.Genre,
 			BPM:        dm.BPM,
 			AlbumName:  dm.AlbumName,
 			AlbumYear:  dm.AlbumYear,

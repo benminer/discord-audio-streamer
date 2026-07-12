@@ -24,7 +24,6 @@ type NowPlayingMetadata struct {
 	Volume          int
 	GuildID         string
 	Commentary      string // AI-generated commentary to display in the embed
-	Genre           string // Deezer genre, empty if unresolved
 	BPM             float64
 	AlbumYear       string
 	Popularity      int
@@ -60,9 +59,6 @@ func BuildNowPlayingEmbed(metadata *NowPlayingMetadata) *discordgo.MessageEmbed 
 	}
 	if metadata.Album != "" {
 		desc.WriteString(fmt.Sprintf("**Album:** %s\n", metadata.Album))
-	}
-	if metadata.Genre != "" {
-		desc.WriteString(fmt.Sprintf("**Genre:** %s\n", metadata.Genre))
 	}
 	// Add AI-generated commentary if available
 	if metadata.Commentary != "" {

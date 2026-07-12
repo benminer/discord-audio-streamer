@@ -390,7 +390,6 @@ Suggest 3-5 songs that match the request. Return each as a YouTube search query 
 // omitted from the prompt.
 type SongContext struct {
 	ArtistName     string
-	Genre          string
 	BPM            float64
 	AlbumName      string
 	AlbumYear      string
@@ -480,9 +479,6 @@ Now write your commentary:`, currentSong, artistLine, historyStr, radioStr))
 
 	if songCtx != nil {
 		instructions += "\n\nAdditional context about the current song:"
-		if songCtx.Genre != "" {
-			instructions += fmt.Sprintf("\n- Genre: %s", songCtx.Genre)
-		}
 		if songCtx.BPM > 0 {
 			instructions += fmt.Sprintf("\n- BPM: %.0f", songCtx.BPM)
 		}
