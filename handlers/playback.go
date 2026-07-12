@@ -537,7 +537,7 @@ func (manager *Manager) handleVoiceDemo(ctx context.Context, transaction *sentry
 		manager.SendError(interaction, "TTS provider not configured", true)
 		return
 	}
-	audioBytes, err := provider.Synthesize(ctx, script, voice)
+	audioBytes, err := provider.Synthesize(ctx, script, tts.ResolveVoice(voice))
 	if err != nil {
 		log.Errorf("TTS generation failed: %v", err)
 		sentryhelper.CaptureException(ctx, err)

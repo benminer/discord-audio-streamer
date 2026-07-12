@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"beatbot/config"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Provider abstracts TTS audio synthesis so the bot can swap between
@@ -30,7 +32,12 @@ type Provider interface {
 	AcceptsCustomVoices() bool
 }
 
-var defaultProvider Provider
+var (
+	defaultProvider Provider
+	// staleVoices holds built-in voices from inactive providers, used by
+	// ResolveVoice to detect voices left over after a provider switch.
+	staleVoices []string
+)
 
 // Init initializes the TTS provider based on config.Config.TTSProvider.
 // Must be called after config.NewConfig() and gemini.Init().
@@ -42,8 +49,10 @@ func Init() error {
 			return fmt.Errorf("grok TTS init: %w", err)
 		}
 		defaultProvider = p
+		staleVoices = (&geminiProvider{}).Voices()
 	case "gemini", "":
 		defaultProvider = newGeminiProvider()
+		staleVoices = grokBuiltinVoices
 	default:
 		return fmt.Errorf("unknown TTS_PROVIDER: %q (valid: gemini, grok)", config.Config.TTSProvider)
 	}
@@ -71,4 +80,45 @@ func ValidateVoice(name string) (string, bool) {
 		return name, true
 	}
 	return "", false
+}
+
+// ResolveVoice validates a stored guild voice against the active provider,
+// falling back to the provider's default when the voice is stale (e.g. a
+// Gemini voice left in the DB after switching to Grok).
+func ResolveVoice(stored string) string {
+	p := Get()
+	if p == nil {
+		return stored
+	}
+	if stored == "" {
+		return p.DefaultVoice()
+	}
+	// Current provider's built-in list — use canonical casing
+	for _, v := range p.Voices() {
+		if strings.EqualFold(v, stored) {
+			return v
+		}
+	}
+	// For custom-voice providers: distinguish legitimate custom voices
+	// from stale voices left after a provider switch
+	if p.AcceptsCustomVoices() {
+		for _, v := range staleVoices {
+			if strings.EqualFold(v, stored) {
+				log.WithFields(log.Fields{
+					"module":   "tts",
+					"stored":   stored,
+					"fallback": p.DefaultVoice(),
+				}).Warn("Stored voice belongs to another provider, using default")
+				return p.DefaultVoice()
+			}
+		}
+		return stored
+	}
+	// Not valid for current provider
+	log.WithFields(log.Fields{
+		"module":   "tts",
+		"stored":   stored,
+		"fallback": p.DefaultVoice(),
+	}).Warn("Stored voice not valid for current provider, using default")
+	return p.DefaultVoice()
 }
