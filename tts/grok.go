@@ -18,10 +18,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Built-in xAI voices. The user's configured voice (e.g. "carina") may also
-// be a custom/cloned voice not in this list, which we pass through as-is.
+// grokBuiltinVoices lists the built-in xAI TTS voices. Custom/cloned voices
+// (created via the xAI console or Custom Voices API) are passed through as-is
+// even if they're not in this list.
 var grokBuiltinVoices = []string{
-	"Ara", "Carina", "Eve", "Leo", "Rex", "Sal",
+	"Ara", "Eve", "Leo", "Rex", "Sal",
 }
 
 type grokProvider struct {
