@@ -12,17 +12,20 @@ import (
 func GetCharts(ctx context.Context) (*ChartResponse, error) {
 	span := sentry.StartSpan(ctx, "deezer.get_charts")
 	span.Description = "Get charts from Deezer API"
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	body, err := get(ctx, "/chart", nil)
 	if err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: get charts: %w", err))
 		return nil, fmt.Errorf("deezer: get charts failed: %w", err)
 	}
 
 	var charts ChartResponse
 	if err := json.Unmarshal(body, &charts); err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: decode charts: %w", err))
 		return nil, fmt.Errorf("deezer: failed to decode charts response: %w", err)
 	}
 

@@ -100,6 +100,7 @@ func get(ctx context.Context, path string, params url.Values) ([]byte, error) {
 
 	span := sentry.StartSpan(ctx, "http.client", sentry.WithDescription("GET "+path))
 	span.SetTag("deezer.path", path)
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -124,26 +125,31 @@ func get(ctx context.Context, path string, params url.Values) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		statusErr := fmt.Errorf("deezer: unexpected status %d for %s", resp.StatusCode, path)
 		log.WithFields(log.Fields{
 			"path":   path,
 			"status": resp.StatusCode,
 		}).Warn("deezer: non-200 response")
+		sentry.CaptureException(statusErr)
 		span.Status = sentry.SpanStatusInternalError
-		return nil, fmt.Errorf("deezer: unexpected status %d", resp.StatusCode)
+		return nil, statusErr
 	}
 
 	// Deezer reports errors as HTTP 200 with an "error" object in the body,
 	// so a status-code check alone isn't sufficient.
 	var apiErr apiError
 	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {
+		apiErrWrapped := fmt.Errorf("deezer: API error (%s) on %s: %s", apiErr.Error.Type, path, apiErr.Error.Message)
 		log.WithFields(log.Fields{
 			"path":    path,
 			"code":    apiErr.Error.Code,
 			"type":    apiErr.Error.Type,
 			"message": apiErr.Error.Message,
 		}).Warn("deezer: API-level error")
+		sentry.CaptureException(apiErrWrapped)
 		span.Status = sentry.SpanStatusInternalError
-		return nil, fmt.Errorf("deezer: API error (%s): %s", apiErr.Error.Type, apiErr.Error.Message)
+		span.SetTag("deezer.error_type", apiErr.Error.Type)
+		return nil, apiErrWrapped
 	}
 
 	span.Status = sentry.SpanStatusOK

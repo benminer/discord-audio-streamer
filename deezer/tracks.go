@@ -16,17 +16,20 @@ func GetTrack(ctx context.Context, trackID int) (*TrackDetail, error) {
 	span := sentry.StartSpan(ctx, "deezer.get_track")
 	span.Description = "Get track from Deezer API"
 	span.SetTag("track_id", strconv.Itoa(trackID))
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	body, err := get(ctx, fmt.Sprintf("/track/%d", trackID), nil)
 	if err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: get track %d: %w", trackID, err))
 		return nil, fmt.Errorf("deezer: get track failed: %w", err)
 	}
 
 	var track TrackDetail
 	if err := json.Unmarshal(body, &track); err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: decode track %d: %w", trackID, err))
 		return nil, fmt.Errorf("deezer: failed to decode track response: %w", err)
 	}
 
@@ -44,6 +47,7 @@ func ResolveTrackMeta(ctx context.Context, artist, title string) *TrackMeta {
 	span.Description = "Resolve track metadata from Deezer API"
 	span.SetTag("artist", artist)
 	span.SetTag("title", title)
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	track, err := SearchTrack(ctx, artist, title)

@@ -40,18 +40,21 @@ func SearchArtist(ctx context.Context, name string) (*Artist, error) {
 	span := sentry.StartSpan(ctx, "deezer.search_artist")
 	span.Description = "Search Deezer for artist"
 	span.SetTag("query", name)
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	params := url.Values{"q": {name}, "limit": {"1"}}
 	body, err := get(ctx, "/search/artist", params)
 	if err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: search artist %q: %w", name, err))
 		return nil, fmt.Errorf("deezer: search artist failed: %w", err)
 	}
 
 	var results listResponse[Artist]
 	if err := json.Unmarshal(body, &results); err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: decode artist search for %q: %w", name, err))
 		return nil, fmt.Errorf("deezer: failed to decode artist search response: %w", err)
 	}
 
@@ -102,6 +105,7 @@ func SearchTrack(ctx context.Context, artist, title string) (*Track, error) {
 	span.Description = "Search Deezer for track"
 	span.SetTag("artist", artist)
 	span.SetTag("title", title)
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	advancedQuery := fmt.Sprintf(`artist:"%s" track:"%s"`, artist, title)
@@ -154,18 +158,21 @@ func SearchRadioStation(ctx context.Context, query string) ([]RadioStation, erro
 	span := sentry.StartSpan(ctx, "deezer.search_radio")
 	span.Description = "Search Deezer for radio station"
 	span.SetTag("query", query)
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	params := url.Values{"q": {query}}
 	body, err := get(ctx, "/search/radio", params)
 	if err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: search radio %q: %w", query, err))
 		return nil, fmt.Errorf("deezer: search radio failed: %w", err)
 	}
 
 	var results listResponse[RadioStation]
 	if err := json.Unmarshal(body, &results); err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: decode radio search for %q: %w", query, err))
 		return nil, fmt.Errorf("deezer: failed to decode radio search response: %w", err)
 	}
 
@@ -180,17 +187,20 @@ func GetRelatedArtists(ctx context.Context, artistID int) ([]Artist, error) {
 	span := sentry.StartSpan(ctx, "deezer.get_related_artists")
 	span.Description = "Get related artists from Deezer API"
 	span.SetTag("artist_id", strconv.Itoa(artistID))
+	span.SetTag("area", "deezer")
 	defer span.Finish()
 
 	body, err := get(ctx, fmt.Sprintf("/artist/%d/related", artistID), nil)
 	if err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: get related artists for %d: %w", artistID, err))
 		return nil, fmt.Errorf("deezer: get related artists failed: %w", err)
 	}
 
 	var results listResponse[Artist]
 	if err := json.Unmarshal(body, &results); err != nil {
 		span.Status = sentry.SpanStatusInternalError
+		sentry.CaptureException(fmt.Errorf("deezer: decode related artists for %d: %w", artistID, err))
 		return nil, fmt.Errorf("deezer: failed to decode related artists response: %w", err)
 	}
 
