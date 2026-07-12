@@ -503,9 +503,10 @@ func (p *GuildPlayer) loadNext() {
 			ctx = context.Background()
 		}
 		go p.Loader.Load(ctx, audio.LoadJob{
-			URL:     next.Stream.StreamURL,
-			VideoID: next.Video.VideoID,
-			Title:   next.Video.Title,
+			URL:      next.Stream.StreamURL,
+			VideoID:  next.Video.VideoID,
+			Title:    next.Video.Title,
+			Duration: next.Video.Duration,
 		})
 	}
 }
@@ -543,9 +544,10 @@ func (p *GuildPlayer) playNext() {
 			// load the stream
 			// playback will start when the loader has finished
 			go p.Loader.Load(ctx, audio.LoadJob{
-				URL:     next.Stream.StreamURL,
-				VideoID: next.Video.VideoID,
-				Title:   next.Video.Title,
+				URL:      next.Stream.StreamURL,
+				VideoID:  next.Video.VideoID,
+				Title:    next.Video.Title,
+				Duration: next.Video.Duration,
 			})
 		} else {
 			// if song has already been loaded, play it
@@ -684,9 +686,10 @@ streamReady:
 			nextCtx = context.Background()
 		}
 		go p.Loader.Load(nextCtx, audio.LoadJob{
-			URL:     next.Stream.StreamURL,
-			VideoID: next.Video.VideoID,
-			Title:   next.Video.Title,
+			URL:      next.Stream.StreamURL,
+			VideoID:  next.Video.VideoID,
+			Title:    next.Video.Title,
+			Duration: next.Video.Duration,
 		})
 		return
 	}
