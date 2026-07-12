@@ -1450,8 +1450,12 @@ func (p *GuildPlayer) IsRadioEnabled() bool {
 // SetRadioTheme sets a user-provided vibe/theme for radio song picking.
 func (p *GuildPlayer) SetRadioTheme(theme string) {
 	p.radioMutex.Lock()
-	defer p.radioMutex.Unlock()
 	p.RadioTheme = theme
+	p.RadioGenre = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
 }
 
 // GetRadioTheme returns the current radio theme, empty if unset.
@@ -1464,8 +1468,12 @@ func (p *GuildPlayer) GetRadioTheme() string {
 // ClearRadioTheme resets radio picking back to history-based mode.
 func (p *GuildPlayer) ClearRadioTheme() {
 	p.radioMutex.Lock()
-	defer p.radioMutex.Unlock()
 	p.RadioTheme = ""
+	p.RadioGenre = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
 }
 
 // clearCandidatePool drops any buffered Deezer tracks left over from a
