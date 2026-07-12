@@ -12,6 +12,7 @@ type ConfigStruct struct {
 	Youtube YoutubeConfig
 	Gemini  GeminiConfig
 	Spotify SpotifyConfig
+	Deezer  DeezerConfig
 }
 
 type DiscordConfig struct {
@@ -41,6 +42,11 @@ type SpotifyConfig struct {
 	ClientSecret  string
 	Enabled       bool
 	PlaylistLimit int
+}
+
+type DeezerConfig struct {
+	Enabled     bool
+	BPMMatching bool
 }
 
 type Options struct {
@@ -91,6 +97,10 @@ func NewConfig() {
 			ClientSecret:  os.Getenv("SPOTIFY_CLIENT_SECRET"),
 			Enabled:       os.Getenv("SPOTIFY_ENABLED") == "true",
 			PlaylistLimit: getPlaylistLimit(),
+		},
+		Deezer: DeezerConfig{
+			Enabled:     os.Getenv("DEEZER_ENABLED") != "false",
+			BPMMatching: os.Getenv("DEEZER_BPM_MATCHING") != "false",
 		},
 	}
 
