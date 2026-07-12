@@ -18,14 +18,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var grokVoices = []string{
-	"Alloy", "Ash", "Ballad", "Coral", "Echo",
-	"Fable", "Nova", "Onyx", "Sage", "Shimmer",
+// Built-in xAI voices. The user's configured voice (e.g. "carina") may also
+// be a custom/cloned voice not in this list, which we pass through as-is.
+var grokBuiltinVoices = []string{
+	"Ara", "Carina", "Eve", "Leo", "Rex", "Sal",
 }
 
 type grokProvider struct {
 	apiKey string
-	model  string
 	speed  float64
 	client *http.Client
 }
@@ -35,57 +35,58 @@ func newGrokProvider() (*grokProvider, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("GROK_TTS_API_KEY is required when TTS_PROVIDER=grok")
 	}
-	model := cfg.Model
-	if model == "" {
-		model = "grok-3-mini-tts"
-	}
 	speed := cfg.Speed
 	if speed == 0 {
 		speed = 1.0
 	}
 	return &grokProvider{
 		apiKey: cfg.APIKey,
-		model:  model,
 		speed:  speed,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}, nil
+}
+
+// outputFormat configures xAI to return WAV at 48kHz so FFmpeg only needs to
+// upmix mono→stereo without resampling. WAV is lossless and already handled
+// by audio.ConvertTTSToDiscord.
+type outputFormat struct {
+	Codec      string `json:"codec"`
+	SampleRate int    `json:"sample_rate"`
+	BitRate    int    `json:"bit_rate,omitempty"`
+}
+
+type ttsRequest struct {
+	Text         string       `json:"text"`
+	VoiceID      string       `json:"voice_id"`
+	Language     string       `json:"language"`
+	OutputFormat outputFormat `json:"output_format"`
+	Speed        float64      `json:"speed"`
 }
 
 func (g *grokProvider) Synthesize(ctx context.Context, script string, voice string) ([]byte, error) {
 	if voice == "" {
 		voice = g.DefaultVoice()
 	}
-
-	// Validate voice; fall back to default if the stored voice is from another provider
-	valid := false
-	for _, v := range grokVoices {
-		if strings.EqualFold(v, voice) {
-			voice = strings.ToLower(v)
-			valid = true
-			break
-		}
-	}
-	if !valid {
-		log.WithFields(log.Fields{
-			"module":          "grok_tts",
-			"requested_voice": voice,
-			"fallback":        g.DefaultVoice(),
-		}).Warn("Unknown voice for Grok provider, using default")
-		voice = strings.ToLower(g.DefaultVoice())
-	}
+	// xAI voice IDs are case-insensitive; lowercase for consistency
+	voice = strings.ToLower(voice)
 
 	span := sentry.StartSpan(ctx, "grok.tts")
-	span.Description = "Generate TTS audio via Grok"
-	span.SetTag("model", g.model)
+	span.Description = "Generate TTS audio via xAI"
 	span.SetTag("voice", voice)
 	defer span.Finish()
 
-	payload := map[string]any{
-		"model":           g.model,
-		"input":           script,
-		"voice":           voice,
-		"response_format": "wav",
-		"speed":           g.speed,
+	// Wrap with xAI speech tags for late-night DJ delivery style
+	text := buildGrokTTSText(script)
+
+	payload := ttsRequest{
+		Text:     text,
+		VoiceID:  voice,
+		Language: "en",
+		OutputFormat: outputFormat{
+			Codec:      "wav",
+			SampleRate: 48000,
+		},
+		Speed: g.speed,
 	}
 	jsonBody, _ := json.Marshal(payload)
 
@@ -106,7 +107,7 @@ func (g *grokProvider) Synthesize(ctx context.Context, script string, voice stri
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.x.ai/v1/audio/speech", bytes.NewReader(jsonBody))
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.x.ai/v1/tts", bytes.NewReader(jsonBody))
 		if err != nil {
 			span.Status = sentry.SpanStatusInternalError
 			return nil, fmt.Errorf("failed to create Grok TTS request: %w", err)
@@ -158,9 +159,15 @@ func (g *grokProvider) Synthesize(ctx context.Context, script string, voice stri
 	return nil, fmt.Errorf("Grok TTS exhausted retries: %w", lastErr)
 }
 
-func (g *grokProvider) Voices() []string     { return grokVoices }
-func (g *grokProvider) DefaultVoice() string { return "Alloy" }
+func (g *grokProvider) Voices() []string     { return grokBuiltinVoices }
+func (g *grokProvider) DefaultVoice() string { return "Carina" }
 func (g *grokProvider) Name() string         { return "grok" }
+
+// buildGrokTTSText wraps the DJ script with xAI speech tags for delivery.
+// Uses <slow> for the laid-back late-night feel and [pause] for natural pacing.
+func buildGrokTTSText(script string) string {
+	return "<slow>" + script + "</slow>"
+}
 
 func isRetryableGrokErr(err error) bool {
 	var netErr net.Error

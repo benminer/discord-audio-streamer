@@ -53,7 +53,6 @@ type DeezerConfig struct {
 
 type GrokTTSConfig struct {
 	APIKey string
-	Model  string
 	Speed  float64
 }
 
@@ -112,7 +111,6 @@ func NewConfig() {
 		},
 		GrokTTS: GrokTTSConfig{
 			APIKey: os.Getenv("GROK_TTS_API_KEY"),
-			Model:  getGrokTTSModel(),
 			Speed:  getGrokTTSSpeed(),
 		},
 		TTSProvider: getTTSProvider(),
@@ -207,21 +205,13 @@ func getTTSProvider() string {
 	return p
 }
 
-func getGrokTTSModel() string {
-	model := os.Getenv("GROK_TTS_MODEL")
-	if model == "" {
-		return "grok-3-mini-tts"
-	}
-	return model
-}
-
 func getGrokTTSSpeed() float64 {
 	s := os.Getenv("GROK_TTS_SPEED")
 	if s == "" {
 		return 1.0
 	}
 	speed, err := strconv.ParseFloat(s, 64)
-	if err != nil || speed < 0.25 || speed > 4.0 {
+	if err != nil || speed < 0.7 || speed > 1.5 {
 		return 1.0
 	}
 	return speed
