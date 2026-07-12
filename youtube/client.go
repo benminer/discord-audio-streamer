@@ -26,9 +26,10 @@ import (
 var ErrAgeRestricted = errors.New("age restricted")
 
 type VideoResponse struct {
-	Title    string        `json:"title"`
-	VideoID  string        `json:"video_id"`
-	Duration time.Duration `json:"duration"`
+	Title       string        `json:"title"`
+	VideoID     string        `json:"video_id"`
+	Duration    time.Duration `json:"duration"`
+	ChannelName string        `json:"channel_name"`
 }
 
 type YoutubeStream struct {
@@ -39,9 +40,10 @@ type YoutubeStream struct {
 
 // PlaylistVideoInfo represents a video within a YouTube playlist
 type PlaylistVideoInfo struct {
-	VideoID  string
-	Title    string
-	Position int
+	VideoID     string
+	Title       string
+	ChannelName string
+	Position    int
 }
 
 // PlaylistResult contains playlist metadata and videos
@@ -112,8 +114,9 @@ func GetVideoByID(ctx context.Context, videoID string) (VideoResponse, error) {
 	if len(response.Items) > 0 {
 		log.Tracef("video found: %v", response.Items[0].Snippet.Title)
 		return VideoResponse{
-			Title:   response.Items[0].Snippet.Title,
-			VideoID: videoID,
+			Title:       response.Items[0].Snippet.Title,
+			VideoID:     videoID,
+			ChannelName: response.Items[0].Snippet.ChannelTitle,
 		}, nil
 	}
 
@@ -192,9 +195,10 @@ func GetPlaylistVideos(ctx context.Context, playlistID string, limit int) (*Play
 		}
 
 		videos = append(videos, PlaylistVideoInfo{
-			VideoID:  videoID,
-			Title:    html.UnescapeString(item.Snippet.Title),
-			Position: i,
+			VideoID:     videoID,
+			Title:       html.UnescapeString(item.Snippet.Title),
+			ChannelName: html.UnescapeString(item.Snippet.ChannelTitle),
+			Position:    i,
 		})
 	}
 
@@ -278,6 +282,7 @@ func fetchMixViaAPI(ctx context.Context, playlistID, seedVideoID string, logger 
 
 	videoIDs := make([]string, 0, len(itemsResp.Items))
 	titleMap := make(map[string]string)
+	channelMap := make(map[string]string)
 	for _, item := range itemsResp.Items {
 		vid := item.Snippet.ResourceId.VideoId
 		if vid == "" || vid == seedVideoID {
@@ -285,6 +290,7 @@ func fetchMixViaAPI(ctx context.Context, playlistID, seedVideoID string, logger 
 		}
 		videoIDs = append(videoIDs, vid)
 		titleMap[vid] = html.UnescapeString(item.Snippet.Title)
+		channelMap[vid] = html.UnescapeString(item.Snippet.ChannelTitle)
 	}
 
 	if len(videoIDs) == 0 {
@@ -301,9 +307,10 @@ func fetchMixViaAPI(ctx context.Context, playlistID, seedVideoID string, logger 
 		dur := parseYoutubeDuration(item.ContentDetails.Duration)
 		if dur > 0 && dur <= 12*time.Minute {
 			videos = append(videos, VideoResponse{
-				Title:    titleMap[item.Id],
-				VideoID:  item.Id,
-				Duration: dur,
+				Title:       titleMap[item.Id],
+				VideoID:     item.Id,
+				Duration:    dur,
+				ChannelName: channelMap[item.Id],
 			})
 		}
 	}
@@ -360,9 +367,10 @@ func fetchMixViaYtdlp(ctx context.Context, seedVideoID string, logger *log.Entry
 		dur := parseYoutubeDuration(item.ContentDetails.Duration)
 		if dur > 0 && dur <= 12*time.Minute {
 			videos = append(videos, VideoResponse{
-				Title:    html.UnescapeString(item.Snippet.Title),
-				VideoID:  item.Id,
-				Duration: dur,
+				Title:       html.UnescapeString(item.Snippet.Title),
+				VideoID:     item.Id,
+				Duration:    dur,
+				ChannelName: html.UnescapeString(item.Snippet.ChannelTitle),
 			})
 		}
 	}
@@ -410,11 +418,13 @@ func Query(ctx context.Context, query string) []VideoResponse {
 	// Collect all video IDs for batch request
 	videoIDs := make([]string, 0)
 	videoMap := make(map[string]string)
+	channelMap := make(map[string]string)
 
 	for _, item := range response.Items {
 		if item.Id.Kind == "youtube#video" {
 			videoIDs = append(videoIDs, item.Id.VideoId)
 			videoMap[item.Id.VideoId] = html.UnescapeString(item.Snippet.Title)
+			channelMap[item.Id.VideoId] = html.UnescapeString(item.Snippet.ChannelTitle)
 		}
 	}
 
@@ -438,9 +448,10 @@ func Query(ctx context.Context, query string) []VideoResponse {
 		ytDuration := parseYoutubeDuration(durationISO)
 		if ytDuration <= 12*time.Minute {
 			videos = append(videos, VideoResponse{
-				Title:    videoMap[item.Id],
-				VideoID:  item.Id,
-				Duration: ytDuration,
+				Title:       videoMap[item.Id],
+				VideoID:     item.Id,
+				Duration:    ytDuration,
+				ChannelName: channelMap[item.Id],
 			})
 		}
 	}
