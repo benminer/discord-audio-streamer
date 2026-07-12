@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"beatbot/config"
@@ -68,8 +67,6 @@ func (g *grokProvider) Synthesize(ctx context.Context, script string, voice stri
 	if voice == "" {
 		voice = g.DefaultVoice()
 	}
-	// xAI voice IDs are case-insensitive; lowercase for consistency
-	voice = strings.ToLower(voice)
 
 	span := sentry.StartSpan(ctx, "grok.tts")
 	span.Description = "Generate TTS audio via xAI"
@@ -89,7 +86,11 @@ func (g *grokProvider) Synthesize(ctx context.Context, script string, voice stri
 		},
 		Speed: g.speed,
 	}
-	jsonBody, _ := json.Marshal(payload)
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		span.Status = sentry.SpanStatusInternalError
+		return nil, fmt.Errorf("failed to marshal Grok TTS request: %w", err)
+	}
 
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {

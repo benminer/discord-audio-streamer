@@ -328,7 +328,11 @@ func (c *Controller) GetPlayer(guildID string) *GuildPlayer {
 	if val, _ := c.db.GetGuildSetting(guildID, "announce_voice"); val != "" {
 		session.SetAnnounceVoice(val)
 	} else {
-		session.SetAnnounceVoice("Aoede")
+		defaultVoice := "Aoede"
+		if provider := tts.Get(); provider != nil {
+			defaultVoice = provider.DefaultVoice()
+		}
+		session.SetAnnounceVoice(defaultVoice)
 	}
 
 	session.listenForQueueEvents()
