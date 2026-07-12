@@ -64,6 +64,8 @@ A simple bot implementation for playing audio in Discord voice channels using [y
    # Optional - Gemini AI
    GEMINI_ENABLED=false
    GEMINI_API_KEY=your_gemini_api_key
+   GEMINI_MODEL=gemini-2.5-flash
+   GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview
 
    # Optional - Idle timeout (minutes before disconnecting from empty channel)
    IDLE_TIMEOUT_MINUTES=20
@@ -134,6 +136,7 @@ A simple bot implementation for playing audio in Discord voice channels using [y
       -e YOUTUBE_API_KEY=$YOUTUBE_API_KEY \
       -e GEMINI_API_KEY=$GEMINI_API_KEY \
       -e GEMINI_ENABLED=$GEMINI_ENABLED \
+      -e GEMINI_TTS_MODEL=$GEMINI_TTS_MODEL \
       -e SPOTIFY_CLIENT_ID=$SPOTIFY_CLIENT_ID \
       -e SPOTIFY_CLIENT_SECRET=$SPOTIFY_CLIENT_SECRET \
       -e SPOTIFY_ENABLED=$SPOTIFY_ENABLED \
@@ -249,10 +252,19 @@ Parses Spotify track, playlist, and album URLs and searches YouTube for the corr
 
 ### Gemini AI
 
-Generates personality-driven responses for song announcements, help messages, and idle disconnect farewells. Configured as a sassy DJ personality.
+Enables two things: text responses and live DJ voice announcements between songs.
+
+**Text responses** — personality-driven replies for song queues, help messages, and idle disconnect farewells. Configured as a sassy, understated DJ persona.
+
+**DJ voice announcements (TTS)** — the bot speaks between tracks directly in the voice channel. It announces what just played and what's coming up next, with natural phrasing and audio cues tailored to the moment (transitions, first song of the session, queue empty, radio mode start). Uses Gemini's TTS API to synthesize speech, then resamples from 24kHz mono to 48kHz stereo for Discord via FFmpeg.
 
 - Get an API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
 - Set `GEMINI_ENABLED=true` and configure `GEMINI_API_KEY`
+- Announcements are on by default when Gemini is enabled — toggle with `/announce` in Discord
+- Use `/voices` to see available DJ voices, `/voice-demo` to preview one in your current voice channel
+- Change the active voice with `/announce voice:<name>` — persisted per server
+- Set `GEMINI_TTS_MODEL` to override the TTS model (default: `gemini-3.1-flash-tts-preview`)
+- Set `GEMINI_MODEL` to override the text model (default: `gemini-2.5-flash`)
 
 ## Development
 
