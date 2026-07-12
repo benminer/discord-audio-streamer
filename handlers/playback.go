@@ -11,6 +11,8 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"beatbot/audio"
+	"beatbot/config"
+	"beatbot/deezer"
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/helpers"
@@ -149,27 +151,30 @@ func (manager *Manager) handleLoop(ctx context.Context, interaction *Interaction
 func (manager *Manager) handleRadio(ctx context.Context, interaction *Interaction) Response {
 	player := manager.Controller.GetPlayer(interaction.GuildID)
 
-	var vibe string
+	var vibe, genre, artistOpt string
 	for _, opt := range interaction.Data.Options {
-		if opt.Name == "vibe" {
+		switch opt.Name {
+		case "vibe":
 			vibe = strings.TrimSpace(opt.Value)
-			break
+		case "genre":
+			genre = strings.TrimSpace(opt.Value)
+		case "artist":
+			artistOpt = strings.TrimSpace(opt.Value)
 		}
 	}
+	modeRequested := vibe != "" || genre != "" || artistOpt != ""
 
 	wasEnabled := player.IsRadioEnabled()
-	oldTheme := player.GetRadioTheme()
 
 	var enabled bool
-	if vibe != "" {
+	if modeRequested {
 		enabled = true
 		if !wasEnabled {
 			player.ToggleRadio()
 		}
-		player.SetRadioTheme(vibe)
 	} else if wasEnabled {
 		enabled = player.ToggleRadio()
-		player.ClearRadioTheme()
+		player.ClearRadioMode()
 	} else {
 		enabled = player.ToggleRadio()
 	}
@@ -180,7 +185,6 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 			if !wasEnabled {
 				player.ToggleRadio()
 			}
-			player.SetRadioTheme(oldTheme) // restore previous theme, not blank
 			return Response{
 				Type: 4,
 				Data: ResponseData{
@@ -193,7 +197,6 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 				if !wasEnabled {
 					player.ToggleRadio()
 				}
-				player.SetRadioTheme(oldTheme) // restore previous theme, not blank
 				return Response{
 					Type: 4,
 					Data: ResponseData{
@@ -201,6 +204,27 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 					},
 				}
 			}
+		}
+
+		// Voice checks passed, now it's safe to commit the requested radio mode.
+		if genre != "" {
+			player.SetRadioGenre(genre)
+		} else if artistOpt != "" {
+			var artist *deezer.Artist
+			if config.Config.Deezer.Enabled {
+				resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				artist, _ = deezer.SearchArtist(resolveCtx, artistOpt)
+				cancel()
+			}
+			if artist != nil {
+				player.SetRadioArtist(artist.Name, artist.ID)
+			} else {
+				// Deezer disabled or artist not found: fall back to themed mode
+				// so the request still guides picks via Gemini.
+				player.SetRadioTheme(artistOpt)
+			}
+		} else if vibe != "" {
+			player.SetRadioTheme(vibe)
 		}
 	}
 
@@ -213,12 +237,17 @@ func (manager *Manager) handleRadio(ctx context.Context, interaction *Interactio
 	var msg string
 	if enabled {
 		theme := player.GetRadioTheme()
-		if theme != "" {
+		switch {
+		case genre != "":
+			msg = fmt.Sprintf("📻 Radio mode **enabled** — genre: *%s* — %s", genre, djResponse)
+		case artistOpt != "":
+			msg = fmt.Sprintf("📻 Radio mode **enabled** — artist: *%s* — %s", artistOpt, djResponse)
+		case theme != "":
 			msg = fmt.Sprintf("📻 Radio mode **enabled** — vibing to *%s* — %s", theme, djResponse)
-		} else {
+		default:
 			msg = "📻 Radio mode **enabled** — " + djResponse
 		}
-		if player.SongHistory.Len() == 0 && theme == "" {
+		if player.SongHistory.Len() == 0 && !modeRequested {
 			msg += "\n*Queue a few songs first so I have something to go off of.*"
 		}
 	} else {

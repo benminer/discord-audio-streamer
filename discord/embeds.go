@@ -24,6 +24,9 @@ type NowPlayingMetadata struct {
 	Volume          int
 	GuildID         string
 	Commentary      string // AI-generated commentary to display in the embed
+	BPM             float64
+	AlbumYear       string
+	Popularity      int
 }
 
 // BuildNowPlayingEmbed creates a rich embed for now-playing
@@ -101,6 +104,18 @@ func BuildNowPlayingEmbed(metadata *NowPlayingMetadata) *discordgo.MessageEmbed 
 			Value:  "⏸️ Paused",
 			Inline: true,
 		})
+	}
+
+	if metadata.BPM > 0 {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   "BPM",
+			Value:  fmt.Sprintf("%.0f", metadata.BPM),
+			Inline: true,
+		})
+	}
+
+	if metadata.Popularity > 800000 {
+		embed.Footer.Text += " • Popular"
 	}
 
 	return embed

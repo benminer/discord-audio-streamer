@@ -73,8 +73,9 @@ func (manager *Manager) handleYouTubePlaylist(ctx context.Context, interaction *
 	videos := make([]youtube.VideoResponse, 0, len(playlistResult.Videos))
 	for _, v := range playlistResult.Videos {
 		videos = append(videos, youtube.VideoResponse{
-			Title:   v.Title,
-			VideoID: v.VideoID,
+			Title:       v.Title,
+			VideoID:     v.VideoID,
+			ChannelName: v.ChannelName,
 		})
 	}
 

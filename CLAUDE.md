@@ -60,6 +60,13 @@
 - Generates sassy DJ personality responses for song announcements
 - Also used for help responses and idle disconnect messages
 
+**`deezer/`** - Deezer music intelligence API client
+- No authentication required (public endpoints)
+- Artist radio, genre stations, track metadata (BPM), charts
+- In-memory artist ID cache (sync.Map)
+- Rate limited at 50 req/5s via token bucket
+- Never on critical path - all call sites have fallbacks
+
 ### Important Architectural Decisions
 
 #### Audio Memory Buffering
@@ -114,6 +121,13 @@
 - Configurable via `IDLE_TIMEOUT_MINUTES` env var
 - Sends Gemini-generated farewell message if Gemini is enabled
 - Implemented via `startIdleChecker()` goroutine per guild
+
+#### Deezer Integration (Music Intelligence Layer)
+- **Blended recommendation scoring**: Deezer artist radio (+3), YouTube Mix (+2), Gemini (+1), convergence bonus (+1), BPM match (+2/+1)
+- **Why weighted scoring**: Deezer's artist radio is purpose-built for "similar tracks" so it gets the highest base weight, but convergence across multiple signals indicates high-confidence picks
+- **Genre/artist radio modes**: Use Deezer's curated stations as candidate pools, pick one at a time, resolve each via YouTube search
+- **Background metadata resolution**: On PlaybackStarted, resolves current song on Deezer for BPM/genre/album in a goroutine. Non-blocking, enriches now-playing embed and DJ prompts when available
+- **No auth required**: All Deezer endpoints used are public. Feature enabled by default with no setup cost.
 
 ## Discord Voice Setup
 
@@ -184,6 +198,8 @@ Key vars in `.env`:
 - `GEMINI_ENABLED` - Enable AI responses (default: false)
 - `GEMINI_MODEL` - Gemini model name (default: gemini-2.5-flash)
 - `GEMINI_TTS_MODEL` - Gemini TTS model name (default: gemini-2.5-flash-preview-tts)
+- `DEEZER_ENABLED` - Enable Deezer integration (default: true, no API key needed)
+- `DEEZER_BPM_MATCHING` - Enable BPM-aware radio song selection (default: true)
 - `IDLE_TIMEOUT_MINUTES` - Idle disconnect timeout (default: 20)
 - `SENTRY_DSN` - Sentry error tracking (optional)
 

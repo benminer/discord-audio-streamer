@@ -4,6 +4,7 @@ import (
 	"beatbot/audio"
 	"beatbot/config"
 	"beatbot/database"
+	"beatbot/deezer"
 	"beatbot/discord"
 	"beatbot/gemini"
 	"beatbot/sentryhelper"
@@ -12,7 +13,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,7 +127,12 @@ type GuildPlayer struct {
 	ttsWatcherStop         chan struct{}
 	RadioEnabled           bool
 	RadioTheme             string // user-provided vibe for radio picks, empty = history-based
+	RadioGenre             string // user-provided genre for radio picks, empty = not genre mode
+	RadioArtistName        string // resolved Deezer artist name for artist radio mode
+	RadioArtistID          int    // resolved Deezer artist ID for artist radio mode
 	radioMutex             sync.Mutex
+	radioCandidatePool     []deezer.Track // buffered Deezer tracks for genre/artist radio modes
+	radioCandidatesMu      sync.Mutex
 	radioQueueing          sync.Mutex // held while queueRadioSong is in-flight, prevents double-queue
 	radioStartAnnouncement *audio.TTSPlayback
 	radioStartMu           sync.Mutex
@@ -175,6 +183,7 @@ type GuildQueueItem struct {
 	Commentary     string                  // AI-generated commentary for this song
 	IsRadioPick    bool                    // Whether this song was auto-queued by radio mode
 	FallbackVideos []youtube.VideoResponse // Alternate candidates to try if primary is age-restricted (search results only)
+	DeezerMeta     *deezer.TrackMeta       // Deezer enrichment metadata (BPM, genre, album art, etc.)
 }
 
 type GuildQueue struct {
@@ -1195,6 +1204,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							VideoID:     queueItem.Video.VideoID,
 							IsRadioPick: queueItem.IsRadioPick,
 							QueuedBy:    p.resolveQueuedBy(queueItem),
+							ChannelName: queueItem.Video.ChannelName,
 						})
 						p.currentItemMutex.Lock()
 						p.CurrentItem = queueItem
@@ -1214,10 +1224,38 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 						// Send now-playing card
 						go p.sendNowPlayingCard(queueItem)
 
+						// Resolve Deezer metadata (BPM, genre, album art) in the background.
+						// Best-effort: the now-playing card and DJ commentary render fine
+						// without it, and pick up the enrichment on their next update once
+						// this completes.
+						if config.Config.Deezer.Enabled {
+							go func(item *GuildQueueItem) {
+								resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 8*time.Second)
+								defer resolveCancel()
+
+								artist := ExtractArtist(item.Video.Title)
+								title := extractTitlePart(item.Video.Title)
+								meta := deezer.ResolveTrackMeta(resolveCtx, artist, title)
+								if meta != nil {
+									p.currentItemMutex.Lock()
+									item.DeezerMeta = meta
+									p.currentItemMutex.Unlock()
+
+									log.WithFields(log.Fields{
+										"module": "controller",
+										"method": "deezerResolve",
+										"song":   item.Video.Title,
+										"bpm":    meta.BPM,
+									}).Debug("Deezer metadata resolved")
+								}
+							}(queueItem)
+						}
+
 						// Record in song history for radio mode
 						p.SongHistory.Add(SongHistoryEntry{
-							VideoID: queueItem.Video.VideoID,
-							Title:   queueItem.Video.Title,
+							VideoID:     queueItem.Video.VideoID,
+							Title:       queueItem.Video.Title,
+							ChannelName: queueItem.Video.ChannelName,
 						})
 
 						// Record play in database
@@ -1413,8 +1451,12 @@ func (p *GuildPlayer) IsRadioEnabled() bool {
 // SetRadioTheme sets a user-provided vibe/theme for radio song picking.
 func (p *GuildPlayer) SetRadioTheme(theme string) {
 	p.radioMutex.Lock()
-	defer p.radioMutex.Unlock()
 	p.RadioTheme = theme
+	p.RadioGenre = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
 }
 
 // GetRadioTheme returns the current radio theme, empty if unset.
@@ -1427,8 +1469,78 @@ func (p *GuildPlayer) GetRadioTheme() string {
 // ClearRadioTheme resets radio picking back to history-based mode.
 func (p *GuildPlayer) ClearRadioTheme() {
 	p.radioMutex.Lock()
-	defer p.radioMutex.Unlock()
 	p.RadioTheme = ""
+	p.RadioGenre = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
+}
+
+// clearCandidatePool drops any buffered Deezer tracks left over from a
+// previous genre/artist radio mode so a mode switch doesn't leak stale
+// candidates from the old station/artist into the new one.
+func (p *GuildPlayer) clearCandidatePool() {
+	p.radioCandidatesMu.Lock()
+	p.radioCandidatePool = nil
+	p.radioCandidatesMu.Unlock()
+}
+
+// SetRadioGenre locks radio picking to a Deezer genre station, clearing any
+// vibe/artist mode since only one radio mode can be active at a time.
+func (p *GuildPlayer) SetRadioGenre(genre string) {
+	p.radioMutex.Lock()
+	p.RadioGenre = genre
+	p.RadioTheme = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
+}
+
+// SetRadioArtist locks radio picking to a resolved Deezer artist, clearing
+// any vibe/genre mode since only one radio mode can be active at a time.
+func (p *GuildPlayer) SetRadioArtist(name string, id int) {
+	p.radioMutex.Lock()
+	p.RadioArtistName = name
+	p.RadioArtistID = id
+	p.RadioTheme = ""
+	p.RadioGenre = ""
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
+}
+
+// GetRadioGenre returns the current radio genre, empty if unset.
+func (p *GuildPlayer) GetRadioGenre() string {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioGenre
+}
+
+// GetRadioArtistID returns the current radio artist's Deezer ID, 0 if unset.
+func (p *GuildPlayer) GetRadioArtistID() int {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioArtistID
+}
+
+// GetRadioArtistName returns the current radio artist's name, empty if unset.
+func (p *GuildPlayer) GetRadioArtistName() string {
+	p.radioMutex.Lock()
+	defer p.radioMutex.Unlock()
+	return p.RadioArtistName
+}
+
+// ClearRadioMode resets radio picking back to history-based mode, clearing
+// vibe, genre, and artist modes.
+func (p *GuildPlayer) ClearRadioMode() {
+	p.radioMutex.Lock()
+	p.RadioTheme = ""
+	p.RadioGenre = ""
+	p.RadioArtistName = ""
+	p.RadioArtistID = 0
+	p.radioMutex.Unlock()
+	p.clearCandidatePool()
 }
 
 func (p *GuildPlayer) ToggleLoop() bool {
@@ -1449,6 +1561,28 @@ func (p *GuildPlayer) IsLoopEnabled() bool {
 // Delegates to discord.ExtractArtistFromTitle — single source of truth.
 func ExtractArtist(title string) string {
 	return discord.ExtractArtistFromTitle(title)
+}
+
+// extractTitlePart strips common YouTube video-title suffixes (e.g. "(Official Video)")
+// and, when the title follows the "Artist - Song" convention, returns just the song
+// portion. Used to build a cleaner query for Deezer track search.
+func extractTitlePart(videoTitle string) string {
+	cleaned := videoTitle
+	suffixes := []string{
+		"(Official Video)", "(Official Music Video)", "(Official Audio)",
+		"(Lyrics)", "(Lyric Video)", "(Audio)", "(Visualizer)",
+		"[Official Video]", "[Official Music Video]", "[Official Audio]",
+	}
+	for _, suffix := range suffixes {
+		cleaned = strings.Replace(cleaned, suffix, "", 1)
+	}
+	cleaned = strings.TrimSpace(cleaned)
+
+	parts := strings.SplitN(cleaned, " - ", 2)
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[1])
+	}
+	return cleaned
 }
 
 // isRecentTitle returns true if the candidate title fuzzy-matches any entry in recentTitles.
@@ -1490,8 +1624,9 @@ func (p *GuildPlayer) startRadioMode() {
 		scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer scriptCancel()
 		script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-			Type:     gemini.AnnouncementRadioStart,
-			NextSong: picked.Title,
+			Type:            gemini.AnnouncementRadioStart,
+			NextSong:        picked.Title,
+			NextChannelName: picked.ChannelName,
 		})
 		if script != "" {
 			ttsPrompt := gemini.BuildTTSPrompt(script)
@@ -1537,6 +1672,116 @@ func (p *GuildPlayer) tryQueueRadioSong() string {
 	return p.queueRadioSong()
 }
 
+// radioCandidate represents a single candidate song for radio auto-queue,
+// gathered from one of several sources (YouTube Mix, Deezer artist radio,
+// Gemini) and scored so the sources can be blended into one ranked pool.
+type radioCandidate struct {
+	Title    string
+	Artist   string
+	VideoID  string // set if from YouTube Mix or Gemini (already resolved)
+	DeezerID int    // set if from Deezer (needs YouTube resolution)
+	BPM      float64
+	Score    int
+	Source   string // "youtube-mix", "deezer", "gemini"
+}
+
+// scoreRadioCandidates sorts candidates by score descending, then applies a
+// BPM-proximity bonus to the top 5 candidates (if BPM matching is enabled
+// and we know the currently-playing track's BPM) and re-sorts.
+func scoreRadioCandidates(candidates []radioCandidate, currentBPM float64, bpmEnabled bool) []radioCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Score > candidates[j].Score
+	})
+	// Apply BPM bonus to top 5 only
+	if bpmEnabled && currentBPM > 0 {
+		limit := 5
+		if len(candidates) < limit {
+			limit = len(candidates)
+		}
+		for i := 0; i < limit; i++ {
+			if candidates[i].BPM > 0 {
+				diff := math.Abs(candidates[i].BPM - currentBPM)
+				if diff <= 10 {
+					candidates[i].Score += 2
+				} else if diff <= 20 {
+					candidates[i].Score += 1
+				}
+			}
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Score > candidates[j].Score
+		})
+	}
+	return candidates
+}
+
+// pickFromDeezerPool picks the next song for genre or artist radio mode from
+// a buffered pool of Deezer tracks, refilling the pool from Deezer when it
+// runs dry. Exactly one of genre/artistID should be set by the caller.
+// Returns nil if Deezer has nothing left to offer or everything in the pool
+// is a duplicate of recent/history plays.
+func (p *GuildPlayer) pickFromDeezerPool(ctx context.Context, genre string, artistID int, historyIDs map[string]bool, recentTitles []string, logger *log.Entry) *youtube.VideoResponse {
+	p.radioCandidatesMu.Lock()
+
+	if len(p.radioCandidatePool) == 0 {
+		p.radioCandidatesMu.Unlock()
+		var tracks []deezer.Track
+		if genre != "" {
+			stations, err := deezer.SearchRadioStation(ctx, genre)
+			if err == nil && len(stations) > 0 {
+				tracks, _ = deezer.GetStationTracks(ctx, stations[0].ID)
+			}
+		} else if artistID > 0 {
+			var err error
+			tracks, err = deezer.GetArtistRadio(ctx, artistID)
+			if err != nil || len(tracks) == 0 {
+				related, relErr := deezer.GetRelatedArtists(ctx, artistID)
+				if relErr == nil && len(related) > 0 {
+					tracks, _ = deezer.GetArtistRadio(ctx, related[0].ID)
+				}
+			}
+		}
+		if len(tracks) == 0 {
+			return nil
+		}
+		p.radioCandidatesMu.Lock()
+		p.radioCandidatePool = tracks
+	}
+
+	// Work through the pool finding a viable candidate
+	for len(p.radioCandidatePool) > 0 {
+		t := p.radioCandidatePool[0]
+		p.radioCandidatePool = p.radioCandidatePool[1:]
+		p.radioCandidatesMu.Unlock()
+
+		searchKey := strings.ToLower(t.Artist.Name + " - " + t.TitleShort)
+		if isRecentTitle(searchKey, recentTitles) {
+			p.radioCandidatesMu.Lock()
+			continue
+		}
+
+		searchQuery := t.Artist.Name + " - " + t.TitleShort
+		videos := youtube.Query(ctx, searchQuery)
+		for i := range videos {
+			if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+				source := "genre:" + genre
+				if artistID > 0 {
+					source = "artist:" + p.GetRadioArtistName()
+				}
+				logger.Infof("Deezer pool picked: %s (source=%s)", videos[i].Title, source)
+				return &videos[i]
+			}
+		}
+		p.radioCandidatesMu.Lock()
+	}
+
+	p.radioCandidatesMu.Unlock()
+	return nil
+}
+
 // pickRadioSong uses Gemini recommendations and YouTube search to find a song
 // similar to recent listening history. Returns the picked video, or nil if
 // nothing suitable was found. Does NOT queue the song.
@@ -1578,6 +1823,22 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 		historyIDs[item.Video.VideoID] = true
 	}
 	p.Queue.Mutex.Unlock()
+
+	// Genre radio mode
+	if genre := p.GetRadioGenre(); genre != "" && config.Config.Deezer.Enabled {
+		picked := p.pickFromDeezerPool(ctx, genre, 0, historyIDs, recentTitles, logger)
+		if picked != nil {
+			return picked
+		}
+	}
+
+	// Artist radio mode
+	if artistID := p.GetRadioArtistID(); artistID > 0 && config.Config.Deezer.Enabled {
+		picked := p.pickFromDeezerPool(ctx, "", artistID, historyIDs, recentTitles, logger)
+		if picked != nil {
+			return picked
+		}
+	}
 
 	var query string
 	var picked *youtube.VideoResponse
@@ -1643,71 +1904,227 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 			}
 		}
 	} else {
-		// Try YouTube Mix playlist first — uses YouTube's own recommendation engine
-		// seeded from the most recently played video. Genre-accurate without relying
-		// on title-based AI inference (which confuses "Microwave" emo vs "Microwave" rap).
-		if seedHistory := p.SongHistory.GetRecent(1); len(seedHistory) > 0 && seedHistory[0].VideoID != "" {
-			seedVideoID := seedHistory[0].VideoID
-			logger.Debugf("Trying YouTube Mix playlist for seed video: %s", seedVideoID)
+		// Blended mode: fetch YouTube Mix, Deezer artist radio, and a Gemini
+		// recommendation in parallel, then score and merge the candidates
+		// into one ranked pool. This makes Deezer a weighted signal rather
+		// than a sequential fallback, and lets sources reinforce each other
+		// (a track surfaced by two sources gets a convergence bonus).
+		type fetchResult struct {
+			youtubeVideos []youtube.VideoResponse
+			deezerTracks  []deezer.Track
+			geminiQuery   string
+		}
+		result := &fetchResult{}
+		var wg sync.WaitGroup
 
-			mixVideos, err := youtube.GetMixPlaylistVideos(ctx, seedVideoID)
-			if err != nil {
-				logger.Warnf("YouTube Mix playlist failed, falling through to Gemini: %v", err)
-			} else {
-				for i := range mixVideos {
-					if !historyIDs[mixVideos[i].VideoID] && !isRecentTitle(mixVideos[i].Title, recentTitles) {
-						picked = &mixVideos[i]
+		// YouTube Mix (use recent[0].VideoID as seed)
+		if recent[0].VideoID != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				mixVideos, err := youtube.GetMixPlaylistVideos(fetchCtx, recent[0].VideoID)
+				if err != nil {
+					logger.Debugf("YouTube Mix failed: %v", err)
+					return
+				}
+				result.youtubeVideos = mixVideos
+			}()
+		}
+
+		// Deezer artist radio
+		if config.Config.Deezer.Enabled {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				artistName := ExtractArtist(recent[0].Title)
+				artist, err := deezer.SearchArtist(fetchCtx, artistName)
+				if err != nil || artist == nil {
+					logger.Debugf("Deezer artist search failed for %q: %v", artistName, err)
+					return
+				}
+				tracks, err := deezer.GetArtistRadio(fetchCtx, artist.ID)
+				if err != nil {
+					logger.Debugf("Deezer artist radio failed: %v", err)
+					return
+				}
+				result.deezerTracks = tracks
+			}()
+		}
+
+		// Gemini recommendation
+		if config.Config.Gemini.Enabled && len(recent) >= 3 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				songTitles := make([]string, len(recent))
+				for i, song := range recent {
+					songTitles[i] = song.Title
+				}
+				result.geminiQuery = gemini.GenerateSongRecommendation(fetchCtx, songTitles)
+			}()
+		}
+
+		wg.Wait()
+
+		// Build candidate pool with scores
+		var candidates []radioCandidate
+
+		// YouTube Mix candidates (score: 2)
+		for _, v := range result.youtubeVideos {
+			if historyIDs[v.VideoID] || isRecentTitle(v.Title, recentTitles) {
+				continue
+			}
+			candidates = append(candidates, radioCandidate{
+				Title:   v.Title,
+				Artist:  ExtractArtist(v.Title),
+				VideoID: v.VideoID,
+				Score:   2,
+				Source:  "youtube-mix",
+			})
+		}
+
+		// Deezer candidates (score: 3, convergence bonus: +1)
+		for _, t := range result.deezerTracks {
+			searchKey := strings.ToLower(t.Artist.Name + " - " + t.TitleShort)
+			if isRecentTitle(searchKey, recentTitles) {
+				continue
+			}
+			candidate := radioCandidate{
+				Title:    t.TitleShort,
+				Artist:   t.Artist.Name,
+				DeezerID: t.ID,
+				Score:    3,
+				Source:   "deezer",
+			}
+			// Convergence check: if this track also appears in YouTube Mix, bonus
+			for i := range candidates {
+				if candidates[i].Source == "youtube-mix" && strings.Contains(
+					strings.ToLower(candidates[i].Title), strings.ToLower(t.TitleShort),
+				) {
+					candidates[i].Score += 1
+					candidate.Score += 1
+					break
+				}
+			}
+			candidates = append(candidates, candidate)
+		}
+
+		// Gemini candidate (score: 1) - resolve to video first
+		var geminiResolved []youtube.VideoResponse
+		if result.geminiQuery != "" {
+			logger.Infof("Gemini recommended search query: %s", result.geminiQuery)
+
+			sentry.AddBreadcrumb(&sentry.Breadcrumb{
+				Category: "radio",
+				Message:  "Gemini generated recommendation query",
+				Level:    sentry.LevelInfo,
+				Data: map[string]interface{}{
+					"guild_id": p.GuildID,
+					"query":    result.geminiQuery,
+				},
+			})
+
+			geminiResolved = youtube.Query(ctx, result.geminiQuery)
+			for _, v := range geminiResolved {
+				if historyIDs[v.VideoID] || isRecentTitle(v.Title, recentTitles) {
+					continue
+				}
+				candidate := radioCandidate{
+					Title:   v.Title,
+					Artist:  ExtractArtist(v.Title),
+					VideoID: v.VideoID,
+					Score:   1,
+					Source:  "gemini",
+				}
+				// Boost if matches a Deezer track
+				for i := range candidates {
+					if candidates[i].Source == "deezer" && strings.Contains(
+						strings.ToLower(v.Title), strings.ToLower(candidates[i].Title),
+					) {
+						candidates[i].Score += 1
+						candidate.Score += 1
 						break
 					}
 				}
-				if picked != nil {
-					query = "youtube-mix:" + seedVideoID
-					logger.Infof("YouTube Mix picked: %s", picked.Title)
-				} else {
-					logger.Debug("YouTube Mix results were all duplicates, falling through to Gemini")
-				}
+				candidates = append(candidates, candidate)
+				break // only first valid Gemini result
 			}
 		}
 
-		// Try Gemini-powered recommendation if YouTube Mix came up empty
-		if picked == nil && config.Config.Gemini.Enabled && len(recent) >= 3 {
-			songTitles := make([]string, len(recent))
-			for i, song := range recent {
-				songTitles[i] = song.Title
-			}
+		// Get current BPM for scoring
+		var currentBPM float64
+		p.currentItemMutex.RLock()
+		if p.CurrentItem != nil && p.CurrentItem.DeezerMeta != nil {
+			currentBPM = p.CurrentItem.DeezerMeta.BPM
+		}
+		p.currentItemMutex.RUnlock()
 
-			logger.Debug("Requesting Gemini song recommendation based on recent history")
-			query = gemini.GenerateSongRecommendation(ctx, songTitles)
+		// Score and sort candidates (initial pass without BPM data)
+		candidates = scoreRadioCandidates(candidates, currentBPM, false)
 
-			if query != "" {
-				logger.Infof("Gemini recommended search query: %s", query)
-
-				sentry.AddBreadcrumb(&sentry.Breadcrumb{
-					Category: "radio",
-					Message:  "Gemini generated recommendation query",
-					Level:    sentry.LevelInfo,
-					Data: map[string]interface{}{
-						"guild_id": p.GuildID,
-						"query":    query,
-					},
-				})
-
-				videos = youtube.Query(ctx, query)
-				if len(videos) > 0 {
-					for i := range videos {
-						if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
-							picked = &videos[i]
-							break
-						}
+		// Fetch BPM for top 5 Deezer candidates to enable tempo-aware re-ranking
+		if config.Config.Deezer.BPMMatching && currentBPM > 0 && config.Config.Deezer.Enabled {
+			fetched := 0
+			for i := range candidates {
+				if fetched >= 5 {
+					break
+				}
+				if candidates[i].DeezerID > 0 && candidates[i].BPM == 0 {
+					bpmCtx, bpmCancel := context.WithTimeout(ctx, 2*time.Second)
+					detail, err := deezer.GetTrack(bpmCtx, candidates[i].DeezerID)
+					bpmCancel()
+					if err == nil && detail.BPM > 0 {
+						candidates[i].BPM = detail.BPM
 					}
+					fetched++
+				}
+			}
+			// Re-score with BPM data now populated
+			candidates = scoreRadioCandidates(candidates, currentBPM, true)
+		}
+
+		// Build lookup map for resolved videos
+		resolvedVideos := make(map[string]youtube.VideoResponse)
+		for _, v := range result.youtubeVideos {
+			resolvedVideos[v.VideoID] = v
+		}
+		for _, v := range geminiResolved {
+			resolvedVideos[v.VideoID] = v
+		}
+
+		// Pick highest-scored candidate
+		for _, c := range candidates {
+			if c.VideoID != "" {
+				if v, ok := resolvedVideos[c.VideoID]; ok {
+					vCopy := v
+					picked = &vCopy
 				}
 			} else {
-				logger.Warn("Gemini recommendation returned empty query, falling back to legacy method")
+				// Deezer track: resolve via YouTube search
+				searchQuery := c.Artist + " - " + c.Title
+				videos = youtube.Query(ctx, searchQuery)
+				for i := range videos {
+					if !historyIDs[videos[i].VideoID] && !isRecentTitle(videos[i].Title, recentTitles) {
+						picked = &videos[i]
+						break
+					}
+				}
+			}
+			if picked != nil {
+				logger.Infof("Radio picked: %s (source=%s, score=%d)", picked.Title, c.Source, c.Score)
+				break
 			}
 		}
 
+		// Legacy fallback if blending produced nothing
 		if picked == nil {
-			logger.Debug("Using fallback legacy search method")
+			logger.Debug("Blended candidate pool produced nothing, using fallback legacy search method")
 
 			idx := rand.Intn(len(recent))
 			artist := ExtractArtist(recent[idx].Title)
@@ -1880,12 +2297,13 @@ func (p *GuildPlayer) Remove(index int) string {
 
 	// Snapshot next info before releasing queue lock so PlaybackState
 	// is updated without nesting two mutexes.
-	var nextTitle, nextVideoID, nextUserID string
+	var nextTitle, nextVideoID, nextChannelName, nextUserID string
 	var nextIsRadioPick, hasNext bool
 	if len(p.Queue.Items) > 0 {
 		hasNext = true
 		nextTitle = p.Queue.Items[0].Video.Title
 		nextVideoID = p.Queue.Items[0].Video.VideoID
+		nextChannelName = p.Queue.Items[0].Video.ChannelName
 		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
 		if p.Queue.Items[0].Interaction != nil {
 			nextUserID = p.Queue.Items[0].Interaction.UserID
@@ -1909,6 +2327,7 @@ func (p *GuildPlayer) Remove(index int) string {
 			VideoID:     nextVideoID,
 			IsRadioPick: nextIsRadioPick,
 			QueuedBy:    queuedBy,
+			ChannelName: nextChannelName,
 		})
 	} else if currentNext != nil {
 		p.playbackState.ClearNext()
@@ -1969,11 +2388,12 @@ func (p *GuildPlayer) Shuffle() int {
 	})
 
 	// Snapshot next info before releasing queue lock.
-	var nextTitle, nextVideoID string
+	var nextTitle, nextVideoID, nextChannelName string
 	var nextIsRadioPick bool
 	if len(p.Queue.Items) > 0 {
 		nextTitle = p.Queue.Items[0].Video.Title
 		nextVideoID = p.Queue.Items[0].Video.VideoID
+		nextChannelName = p.Queue.Items[0].Video.ChannelName
 		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
 	}
 	n := len(p.Queue.Items)
@@ -1985,6 +2405,7 @@ func (p *GuildPlayer) Shuffle() int {
 		Title:       nextTitle,
 		VideoID:     nextVideoID,
 		IsRadioPick: nextIsRadioPick,
+		ChannelName: nextChannelName,
 	})
 
 	return n
@@ -2213,6 +2634,7 @@ func (p *GuildPlayer) syncNextFromQueue() {
 			VideoID:     next.Video.VideoID,
 			IsRadioPick: next.IsRadioPick,
 			QueuedBy:    queuedBy,
+			ChannelName: next.Video.ChannelName,
 		})
 	} else {
 		p.playbackState.ClearNext()
@@ -2280,14 +2702,26 @@ func (p *GuildPlayer) generateTransitionTTS() {
 
 	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer scriptCancel()
+	// Use Deezer-resolved artist name for the current song when available
+	// (it's been playing for a while so resolution likely completed)
+	var currentArtist string
+	p.currentItemMutex.RLock()
+	if p.CurrentItem != nil && p.CurrentItem.DeezerMeta != nil {
+		currentArtist = p.CurrentItem.DeezerMeta.ArtistName
+	}
+	p.currentItemMutex.RUnlock()
+
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type:            gemini.AnnouncementTransition,
-		CurrentSong:     current.Title,
-		NextSong:        next.Title,
-		RecentHistory:   recentHistory,
-		IsRadioPick:     next.IsRadioPick,
-		CurrentQueuedBy: current.QueuedBy,
-		NextQueuedBy:    next.QueuedBy,
+		Type:               gemini.AnnouncementTransition,
+		CurrentSong:        current.Title,
+		CurrentChannelName: current.ChannelName,
+		CurrentArtistName:  currentArtist,
+		NextSong:           next.Title,
+		NextChannelName:    next.ChannelName,
+		RecentHistory:      recentHistory,
+		IsRadioPick:        next.IsRadioPick,
+		CurrentQueuedBy:    current.QueuedBy,
+		NextQueuedBy:       next.QueuedBy,
 	})
 	if script == "" {
 		return
@@ -2365,6 +2799,35 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	}
 }
 
+// enrichNowPlayingMetadata layers Deezer enrichment (genre, BPM, album, artist,
+// artwork) onto an already-built NowPlayingMetadata when available. DeezerMeta
+// resolves in the background (see PlaybackStarted handling), so it's typically
+// nil on the initial card and only populated by the time of a later update
+// (periodic refresh or the commentary update).
+func (p *GuildPlayer) enrichNowPlayingMetadata(metadata *discord.NowPlayingMetadata, queueItem *GuildQueueItem) {
+	p.currentItemMutex.RLock()
+	dm := queueItem.DeezerMeta
+	p.currentItemMutex.RUnlock()
+
+	if dm == nil {
+		return
+	}
+
+	metadata.BPM = dm.BPM
+	metadata.Album = dm.AlbumName
+	metadata.AlbumYear = dm.AlbumYear
+	if dm.AlbumYear != "" {
+		metadata.Album = dm.AlbumName + " (" + dm.AlbumYear + ")"
+	}
+	metadata.Popularity = dm.Popularity
+	if dm.AlbumArtURL != "" {
+		metadata.ThumbnailURL = dm.AlbumArtURL
+	}
+	if dm.ArtistName != "" {
+		metadata.Artist = dm.ArtistName
+	}
+}
+
 // sendNowPlayingCard creates and sends a now-playing embed
 func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 	textCh := p.GetLastTextChannelID()
@@ -2397,6 +2860,7 @@ func (p *GuildPlayer) sendNowPlayingCard(queueItem *GuildQueueItem) {
 		GuildID:         p.GuildID,
 		Commentary:      "", // Will be populated async by Gemini
 	}
+	p.enrichNowPlayingMetadata(metadata, queueItem)
 
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
@@ -2444,9 +2908,31 @@ func (p *GuildPlayer) generateAndUpdateCommentary(queueItem *GuildQueueItem) {
 		recentSongs[i] = entry.Title
 	}
 
+	// Build Deezer-derived context for Gemini when metadata has resolved by now.
+	var songCtx *gemini.SongContext
+	p.currentItemMutex.RLock()
+	dm := queueItem.DeezerMeta
+	p.currentItemMutex.RUnlock()
+	if dm != nil {
+		songCtx = &gemini.SongContext{
+			ArtistName: dm.ArtistName,
+			BPM:        dm.BPM,
+			AlbumName:  dm.AlbumName,
+			AlbumYear:  dm.AlbumYear,
+			Popularity: dm.Popularity,
+		}
+		if genre := p.GetRadioGenre(); genre != "" {
+			songCtx.RadioMode = "genre:" + genre
+		} else if artist := p.GetRadioArtistName(); artist != "" {
+			songCtx.RadioMode = "artist:" + artist
+		} else if theme := p.GetRadioTheme(); theme != "" {
+			songCtx.RadioMode = "vibe:" + theme
+		}
+	}
+
 	// Generate commentary using Gemini
 	ctx := context.Background()
-	commentary := gemini.GenerateNowPlayingCommentary(ctx, queueItem.Video.Title, recentSongs, queueItem.IsRadioPick)
+	commentary := gemini.GenerateNowPlayingCommentary(ctx, queueItem.Video.Title, queueItem.Video.ChannelName, recentSongs, queueItem.IsRadioPick, songCtx)
 
 	if commentary == "" {
 		log.Debug("No commentary generated by Gemini, skipping update")
@@ -2492,6 +2978,7 @@ func (p *GuildPlayer) generateAndUpdateCommentary(queueItem *GuildQueueItem) {
 		GuildID:         p.GuildID,
 		Commentary:      commentary,
 	}
+	p.enrichNowPlayingMetadata(metadata, queueItem)
 
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
@@ -2537,6 +3024,7 @@ func (p *GuildPlayer) updateNowPlayingCard(queueItem *GuildQueueItem) error {
 		GuildID:         p.GuildID,
 		Commentary:      queueItem.Commentary, // Preserve any generated commentary
 	}
+	p.enrichNowPlayingMetadata(metadata, queueItem)
 
 	// Build embed (no buttons - use commands instead)
 	embed := discord.BuildNowPlayingEmbed(metadata)
