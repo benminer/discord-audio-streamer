@@ -92,6 +92,10 @@ func (manager *Manager) handleCharts(ctx context.Context, transaction *sentry.Sp
 			if len(results) == 0 {
 				continue
 			}
+			results = manager.filterBlocked(interaction.GuildID, results)
+			if len(results) == 0 {
+				continue
+			}
 			player.Add(ctx, results[0], interaction.Member.User.ID, interaction.Token, manager.AppID, nil)
 			queued = append(queued, results[0].Title)
 		}

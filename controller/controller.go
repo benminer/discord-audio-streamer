@@ -1833,6 +1833,8 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 			for id := range blocked {
 				historyIDs[id] = true
 			}
+		} else {
+			logger.WithError(err).Warn("failed to fetch blocked video IDs for radio dedup")
 		}
 	}
 

@@ -223,6 +223,11 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 			return
 		}
 
+		if db := manager.Controller.GetDB(); db != nil && db.IsVideoBlocked(interaction.GuildID, videoResponse.VideoID) {
+			manager.SendFollowup(ctx, interaction, "", fmt.Sprintf("**%s** is blocked from playing.", videoResponse.Title), true)
+			return
+		}
+
 		video = videoResponse
 		// No fallbacks for direct URL requests — the user asked for a specific video
 	} else {

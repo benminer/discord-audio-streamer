@@ -117,13 +117,28 @@ func (manager *Manager) handleNeverPlay(interaction *Interaction) Response {
 	}
 
 	video := currentItem.Video
+
+	if db.IsVideoBlocked(interaction.GuildID, video.VideoID) {
+		return Response{Type: 4, Data: ResponseData{
+			Content: fmt.Sprintf("**%s** is already on the never-play list.", video.Title),
+			Flags:   64,
+		}}
+	}
+
 	videoURL := "https://www.youtube.com/watch?v=" + video.VideoID
 	if err := db.BlockVideo(interaction.GuildID, video.VideoID, video.Title, videoURL); err != nil {
 		log.Errorf("Error blocking video: %v", err)
 		return Response{Type: 4, Data: ResponseData{Content: "Failed to block song. Try again.", Flags: 64}}
 	}
 
-	go player.Skip()
+	// Only skip if the blocked song is still the active one; a natural end between
+	// the DB write and goroutine scheduling would otherwise kill the next innocent song.
+	blockedID := video.VideoID
+	go func() {
+		if item := player.GetCurrentItem(); item != nil && item.Video.VideoID == blockedID {
+			player.Skip()
+		}
+	}()
 
 	return Response{Type: 4, Data: ResponseData{
 		Content: fmt.Sprintf("🚫 **%s** has been blocked and will never play again.", video.Title),
@@ -139,7 +154,11 @@ func (manager *Manager) filterBlocked(guildID string, videos []youtube.VideoResp
 		return videos
 	}
 	blocked, err := db.GetBlockedVideoIDs(guildID)
-	if err != nil || len(blocked) == 0 {
+	if err != nil {
+		log.Warnf("filterBlocked: failed to fetch blocked video IDs for guild %s, returning unfiltered: %v", guildID, err)
+		return videos
+	}
+	if len(blocked) == 0 {
 		return videos
 	}
 	out := videos[:0]
@@ -291,6 +310,13 @@ func (manager *Manager) handleRecommend(ctx context.Context, transaction *sentry
 		songTitles = append(songTitles, r.Title)
 		if r.VideoID != "" {
 			historyVideoIDs[r.VideoID] = true
+		}
+	}
+
+	// Merge never-play blocked videos so they are excluded from recommendation picks.
+	if blocked, err := db.GetBlockedVideoIDs(interaction.GuildID); err == nil {
+		for id := range blocked {
+			historyVideoIDs[id] = true
 		}
 	}
 
