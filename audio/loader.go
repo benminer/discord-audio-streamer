@@ -146,13 +146,19 @@ func (l *Loader) Load(ctx context.Context, job LoadJob) {
 		done <- result{&buf, err}
 	}()
 
-	// Scale timeout with video length: at least 60s, or 1/4 of the video duration.
-	// Falls back to 3 minutes for unknown-length content (Duration == 0).
+	// Scale timeout with video length: at least 60s, or 1/4 of the video duration,
+	// capped at 30 minutes. Falls back to 3 minutes for unknown-length content.
+	// The cap matters because Load() holds l.mutex for its full duration — an
+	// unbounded timeout on a stalled multi-hour stream would block all subsequent
+	// loads for the guild.
 	loadTimeout := 3 * time.Minute
 	if job.Duration > 0 {
 		scaled := job.Duration / 4
 		if scaled < 60*time.Second {
 			scaled = 60 * time.Second
+		}
+		if scaled > 30*time.Minute {
+			scaled = 30 * time.Minute
 		}
 		loadTimeout = scaled
 	}
