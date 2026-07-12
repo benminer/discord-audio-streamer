@@ -2,16 +2,29 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"beatbot/config"
 
 	sentry "github.com/getsentry/sentry-go"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/genai"
+)
+
+const (
+	// TTSTimeout is the recommended context deadline for TTS generation calls.
+	// Budget: one full attempt (~20s) + retry delay (1s) + second attempt (~20s).
+	TTSTimeout = 45 * time.Second
+
+	ttsMaxAttempts = 2
+	ttsRetryDelay  = 1 * time.Second
 )
 
 var leadingNumberRe = regexp.MustCompile(`^\d+\.\s*`)
@@ -68,6 +81,9 @@ func Init() error {
 	c, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  config.Config.Gemini.APIKey,
 		Backend: genai.BackendGeminiAPI,
+		HTTPClient: &http.Client{
+			Timeout: 35 * time.Second,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create Gemini client: %w", err)
@@ -673,10 +689,31 @@ func BuildTTSPrompt(script string) string {
 	return fmt.Sprintf(TTSAudioProfile, script)
 }
 
+// isRetryableTTSError returns true for transient errors worth retrying.
+func isRetryableTTSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "503") || strings.Contains(msg, "unavailable") ||
+		strings.Contains(msg, "500") || strings.Contains(msg, "internal") {
+		return true
+	}
+	return false
+}
+
 // GenerateTTSAudio synthesizes speech from a prompt using Gemini's TTS model.
 // The prompt should include the audio profile and transcript (see BuildTTSPrompt).
 // Returns raw PCM audio data (16-bit 24kHz mono). The caller is responsible for
 // encoding or resampling before sending to Discord.
+// Retries once on transient failures (timeouts, 5xx).
 func GenerateTTSAudio(ctx context.Context, prompt, voice, model string) ([]byte, error) {
 	if defaultClient == nil {
 		return nil, fmt.Errorf("gemini client not initialized")
@@ -696,7 +733,7 @@ func GenerateTTSAudio(ctx context.Context, prompt, voice, model string) ([]byte,
 	defer span.Finish()
 
 	content := []*genai.Content{{Parts: []*genai.Part{{Text: prompt}}}}
-	resp, err := defaultClient.Models.GenerateContent(ctx, model, content, &genai.GenerateContentConfig{
+	cfg := &genai.GenerateContentConfig{
 		ResponseModalities: []string{"AUDIO"},
 		SpeechConfig: &genai.SpeechConfig{
 			VoiceConfig: &genai.VoiceConfig{
@@ -705,34 +742,63 @@ func GenerateTTSAudio(ctx context.Context, prompt, voice, model string) ([]byte,
 				},
 			},
 		},
-	})
-	if err != nil {
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= ttsMaxAttempts; attempt++ {
+		if attempt > 1 {
+			log.WithFields(log.Fields{
+				"module":  "gemini",
+				"attempt": attempt,
+				"error":   lastErr,
+			}).Warn("Retrying TTS generation after transient failure")
+
+			select {
+			case <-time.After(ttsRetryDelay):
+			case <-ctx.Done():
+				span.Status = sentry.SpanStatusDeadlineExceeded
+				return nil, fmt.Errorf("TTS generation cancelled during retry wait: %w", ctx.Err())
+			}
+		}
+
+		resp, err := defaultClient.Models.GenerateContent(ctx, model, content, cfg)
+		if err != nil {
+			lastErr = err
+			if attempt < ttsMaxAttempts && isRetryableTTSError(err) {
+				continue
+			}
+			log.WithFields(log.Fields{
+				"module":  "gemini",
+				"model":   model,
+				"voice":   voice,
+				"attempt": attempt,
+			}).Errorf("TTS generation failed: %v", err)
+			sentry.CaptureException(err)
+			span.Status = sentry.SpanStatusInternalError
+			return nil, fmt.Errorf("TTS generation failed: %w", err)
+		}
+
+		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil ||
+			len(resp.Candidates[0].Content.Parts) == 0 || resp.Candidates[0].Content.Parts[0].InlineData == nil {
+			err := fmt.Errorf("TTS response contained no audio data")
+			log.WithField("module", "gemini").Error(err)
+			sentry.CaptureException(err)
+			span.Status = sentry.SpanStatusInternalError
+			return nil, err
+		}
+
+		inlineData := resp.Candidates[0].Content.Parts[0].InlineData
 		log.WithFields(log.Fields{
-			"module": "gemini",
-			"model":  model,
-			"voice":  voice,
-		}).Errorf("TTS generation failed: %v", err)
-		sentry.CaptureException(err)
-		span.Status = sentry.SpanStatusInternalError
-		return nil, fmt.Errorf("TTS generation failed: %w", err)
+			"module":    "gemini",
+			"mime_type": inlineData.MIMEType,
+			"data_size": len(inlineData.Data),
+			"attempt":   attempt,
+		}).Debug("TTS audio received from Gemini")
+
+		span.Status = sentry.SpanStatusOK
+		return inlineData.Data, nil
 	}
 
-	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil ||
-		len(resp.Candidates[0].Content.Parts) == 0 || resp.Candidates[0].Content.Parts[0].InlineData == nil {
-		err := fmt.Errorf("TTS response contained no audio data")
-		log.WithField("module", "gemini").Error(err)
-		sentry.CaptureException(err)
-		span.Status = sentry.SpanStatusInternalError
-		return nil, err
-	}
-
-	inlineData := resp.Candidates[0].Content.Parts[0].InlineData
-	log.WithFields(log.Fields{
-		"module":    "gemini",
-		"mime_type": inlineData.MIMEType,
-		"data_size": len(inlineData.Data),
-	}).Debug("TTS audio received from Gemini")
-
-	span.Status = sentry.SpanStatusOK
-	return inlineData.Data, nil
+	span.Status = sentry.SpanStatusInternalError
+	return nil, fmt.Errorf("TTS generation exhausted retries: %w", lastErr)
 }

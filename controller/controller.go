@@ -1630,7 +1630,7 @@ func (p *GuildPlayer) startRadioMode() {
 		})
 		if script != "" {
 			ttsPrompt := gemini.BuildTTSPrompt(script)
-			ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+			ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 			defer ttsCancel()
 			audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 			if err != nil {
@@ -2728,7 +2728,7 @@ func (p *GuildPlayer) generateTransitionTTS() {
 	}
 
 	ttsPrompt := gemini.BuildTTSPrompt(script)
-	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 	defer ttsCancel()
 	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 	if err != nil {
@@ -2768,7 +2768,7 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	}
 
 	ttsPrompt := gemini.BuildTTSPrompt(script)
-	ttsCtx, ttsCancel := context.WithTimeout(ctx, 15*time.Second)
+	ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
 	defer ttsCancel()
 	audioBytes, err := gemini.GenerateTTSAudio(ttsCtx, ttsPrompt, p.GetAnnounceVoice(), "")
 	if err != nil {
