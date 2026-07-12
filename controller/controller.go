@@ -1195,6 +1195,7 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 							VideoID:     queueItem.Video.VideoID,
 							IsRadioPick: queueItem.IsRadioPick,
 							QueuedBy:    p.resolveQueuedBy(queueItem),
+							ChannelName: queueItem.Video.ChannelName,
 						})
 						p.currentItemMutex.Lock()
 						p.CurrentItem = queueItem
@@ -1216,8 +1217,9 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 
 						// Record in song history for radio mode
 						p.SongHistory.Add(SongHistoryEntry{
-							VideoID: queueItem.Video.VideoID,
-							Title:   queueItem.Video.Title,
+							VideoID:     queueItem.Video.VideoID,
+							Title:       queueItem.Video.Title,
+							ChannelName: queueItem.Video.ChannelName,
 						})
 
 						// Record play in database
@@ -1880,12 +1882,13 @@ func (p *GuildPlayer) Remove(index int) string {
 
 	// Snapshot next info before releasing queue lock so PlaybackState
 	// is updated without nesting two mutexes.
-	var nextTitle, nextVideoID, nextUserID string
+	var nextTitle, nextVideoID, nextChannelName, nextUserID string
 	var nextIsRadioPick, hasNext bool
 	if len(p.Queue.Items) > 0 {
 		hasNext = true
 		nextTitle = p.Queue.Items[0].Video.Title
 		nextVideoID = p.Queue.Items[0].Video.VideoID
+		nextChannelName = p.Queue.Items[0].Video.ChannelName
 		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
 		if p.Queue.Items[0].Interaction != nil {
 			nextUserID = p.Queue.Items[0].Interaction.UserID
@@ -1909,6 +1912,7 @@ func (p *GuildPlayer) Remove(index int) string {
 			VideoID:     nextVideoID,
 			IsRadioPick: nextIsRadioPick,
 			QueuedBy:    queuedBy,
+			ChannelName: nextChannelName,
 		})
 	} else if currentNext != nil {
 		p.playbackState.ClearNext()
@@ -1969,11 +1973,12 @@ func (p *GuildPlayer) Shuffle() int {
 	})
 
 	// Snapshot next info before releasing queue lock.
-	var nextTitle, nextVideoID string
+	var nextTitle, nextVideoID, nextChannelName string
 	var nextIsRadioPick bool
 	if len(p.Queue.Items) > 0 {
 		nextTitle = p.Queue.Items[0].Video.Title
 		nextVideoID = p.Queue.Items[0].Video.VideoID
+		nextChannelName = p.Queue.Items[0].Video.ChannelName
 		nextIsRadioPick = p.Queue.Items[0].IsRadioPick
 	}
 	n := len(p.Queue.Items)
@@ -1985,6 +1990,7 @@ func (p *GuildPlayer) Shuffle() int {
 		Title:       nextTitle,
 		VideoID:     nextVideoID,
 		IsRadioPick: nextIsRadioPick,
+		ChannelName: nextChannelName,
 	})
 
 	return n
@@ -2213,6 +2219,7 @@ func (p *GuildPlayer) syncNextFromQueue() {
 			VideoID:     next.Video.VideoID,
 			IsRadioPick: next.IsRadioPick,
 			QueuedBy:    queuedBy,
+			ChannelName: next.Video.ChannelName,
 		})
 	} else {
 		p.playbackState.ClearNext()
