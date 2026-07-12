@@ -104,6 +104,53 @@ func (manager *Manager) handleLeaderboard(interaction *Interaction) Response {
 	return Response{Type: 4, Data: ResponseData{Content: content}}
 }
 
+func (manager *Manager) handleNeverPlay(interaction *Interaction) Response {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Database is not available.", Flags: 64}}
+	}
+
+	player := manager.Controller.GetPlayer(interaction.GuildID)
+	currentItem := player.GetCurrentItem()
+	if currentItem == nil {
+		return Response{Type: 4, Data: ResponseData{Content: "Nothing is currently playing.", Flags: 64}}
+	}
+
+	video := currentItem.Video
+	videoURL := "https://www.youtube.com/watch?v=" + video.VideoID
+	if err := db.BlockVideo(interaction.GuildID, video.VideoID, video.Title, videoURL); err != nil {
+		log.Errorf("Error blocking video: %v", err)
+		return Response{Type: 4, Data: ResponseData{Content: "Failed to block song. Try again.", Flags: 64}}
+	}
+
+	go player.Skip()
+
+	return Response{Type: 4, Data: ResponseData{
+		Content: fmt.Sprintf("🚫 **%s** has been blocked and will never play again.", video.Title),
+		Flags:   64,
+	}}
+}
+
+// filterBlocked removes any videos whose IDs are on the guild's never-play list.
+// Returns the original slice unchanged if the DB is unavailable or has no blocks.
+func (manager *Manager) filterBlocked(guildID string, videos []youtube.VideoResponse) []youtube.VideoResponse {
+	db := manager.Controller.GetDB()
+	if db == nil {
+		return videos
+	}
+	blocked, err := db.GetBlockedVideoIDs(guildID)
+	if err != nil || len(blocked) == 0 {
+		return videos
+	}
+	out := videos[:0]
+	for _, v := range videos {
+		if !blocked[v.VideoID] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func (manager *Manager) handleFavorite(interaction *Interaction) Response {
 	db := manager.Controller.GetDB()
 	if db == nil {

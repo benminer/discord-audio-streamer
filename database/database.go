@@ -131,6 +131,14 @@ func (d *Database) migrate() error {
 			value TEXT NOT NULL,
 			PRIMARY KEY (guild_id, key)
 		)`,
+		`CREATE TABLE IF NOT EXISTS guild_blocked_videos (
+			guild_id   TEXT NOT NULL,
+			video_id   TEXT NOT NULL,
+			title      TEXT NOT NULL DEFAULT '',
+			url        TEXT NOT NULL DEFAULT '',
+			blocked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (guild_id, video_id)
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -492,6 +500,50 @@ func (d *Database) GetGuildSetting(guildID, key string) (string, error) {
 		return "", fmt.Errorf("failed to get guild setting %s/%s: %w", guildID, key, err)
 	}
 	return value, nil
+}
+
+// BlockVideo adds a guild-wide never-play block. Silently ignores duplicates.
+func (d *Database) BlockVideo(guildID, videoID, title, url string) error {
+	_, err := d.db.Exec(
+		`INSERT OR IGNORE INTO guild_blocked_videos (guild_id, video_id, title, url) VALUES (?, ?, ?, ?)`,
+		guildID, videoID, title, url,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to block video %s: %w", videoID, err)
+	}
+	return nil
+}
+
+// IsVideoBlocked returns true if the video is on the guild's never-play list.
+func (d *Database) IsVideoBlocked(guildID, videoID string) bool {
+	var count int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM guild_blocked_videos WHERE guild_id = ? AND video_id = ?`,
+		guildID, videoID,
+	).Scan(&count)
+	return err == nil && count > 0
+}
+
+// GetBlockedVideoIDs returns all blocked video IDs for a guild as a set for O(1) lookups.
+func (d *Database) GetBlockedVideoIDs(guildID string) (map[string]bool, error) {
+	rows, err := d.db.Query(
+		`SELECT video_id FROM guild_blocked_videos WHERE guild_id = ?`,
+		guildID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query blocked videos: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make(map[string]bool)
+	for rows.Next() {
+		var videoID string
+		if err := rows.Scan(&videoID); err != nil {
+			return nil, fmt.Errorf("failed to scan blocked video row: %w", err)
+		}
+		ids[videoID] = true
+	}
+	return ids, rows.Err()
 }
 
 // SetGuildSetting upserts a per-guild setting.

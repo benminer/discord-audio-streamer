@@ -1827,6 +1827,15 @@ func (p *GuildPlayer) pickRadioSong() *youtube.VideoResponse {
 	}
 	p.Queue.Mutex.Unlock()
 
+	// Merge guild-blocked videos so they are excluded from all radio candidate selection.
+	if p.DB != nil {
+		if blocked, err := p.DB.GetBlockedVideoIDs(p.GuildID); err == nil {
+			for id := range blocked {
+				historyIDs[id] = true
+			}
+		}
+	}
+
 	// Genre radio mode
 	if genre := p.GetRadioGenre(); genre != "" && config.Config.Deezer.Enabled {
 		picked := p.pickFromDeezerPool(ctx, genre, 0, historyIDs, recentTitles, logger)

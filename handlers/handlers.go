@@ -263,6 +263,8 @@ func (manager *Manager) HandleInteraction(interaction *Interaction) (response Re
 		finishTransaction = false
 		go manager.handleRequest(ctx, transaction, interaction)
 		return Response{Type: 5}
+	case "neverplay":
+		return manager.handleNeverPlay(interaction)
 	case "favorite":
 		return manager.handleFavorite(interaction)
 	case "favorites":

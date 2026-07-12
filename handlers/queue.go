@@ -133,6 +133,14 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 			return
 		}
 
+		videos = manager.filterBlocked(interaction.GuildID, videos)
+		if len(videos) == 0 {
+			manager.SendFollowup(ctx, interaction, "",
+				fmt.Sprintf("**%s** by **%s** is blocked from playing.", trackInfo.Title, artistsStr),
+				true)
+			return
+		}
+
 		video := videos[0]
 		fallbacks := fallbackSlice(videos, 2)
 		log.Debugf("Found YouTube match: %s (ID: %s)", video.Title, video.VideoID)
@@ -222,6 +230,12 @@ func (manager *Manager) QueryAndQueue(ctx context.Context, transaction *sentry.S
 
 		if len(videos) == 0 {
 			manager.SendFollowup(ctx, interaction, "There wasn't anything found for "+query, "No videos found for the given query", true)
+			return
+		}
+
+		videos = manager.filterBlocked(interaction.GuildID, videos)
+		if len(videos) == 0 {
+			manager.SendFollowup(ctx, interaction, "No unblocked results found for "+query, "All results are blocked", true)
 			return
 		}
 
