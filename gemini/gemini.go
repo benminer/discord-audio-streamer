@@ -583,6 +583,38 @@ func channelLabel(name string) string {
 	return name
 }
 
+var youtubeSuffixes = []string{
+	"(Official Music Video)", "[Official Music Video]",
+	"(Official Video)", "[Official Video]",
+	"(Official Audio)", "[Official Audio]",
+	"(Official Lyric Video)", "[Official Lyric Video]",
+	"(Official Visualizer)", "[Official Visualizer]",
+	"(Lyric Video)", "[Lyric Video]",
+	"(Lyrics)", "[Lyrics]",
+	"(Audio)", "[Audio]",
+	"(Video)", "[Video]",
+	"(Visualizer)", "[Visualizer]",
+	"(Official)", "[Official]",
+	"(MV)", "[MV]",
+	"(HQ)", "[HQ]",
+	"(HD)", "[HD]",
+	"(4K)", "[4K]",
+}
+
+func cleanTitle(title string) string {
+	cleaned := strings.TrimSpace(title)
+	for {
+		prev := cleaned
+		for _, suffix := range youtubeSuffixes {
+			cleaned = strings.TrimSpace(strings.TrimSuffix(cleaned, suffix))
+		}
+		if cleaned == prev {
+			break
+		}
+	}
+	return cleaned
+}
+
 // GenerateDJScript generates a short spoken-word DJ script — with inline audio
 // tags for TTS delivery — for the moment described by sc. The result must
 // avoid markdown; it's fed directly into GenerateTTSAudio via BuildTTSPrompt.
@@ -608,6 +640,9 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 
 	currentLabel := artistOrChannel(sc.CurrentArtistName, sc.CurrentChannelName)
 	nextLabel := artistOrChannel(sc.NextArtistName, sc.NextChannelName)
+
+	currentSong := cleanTitle(sc.CurrentSong)
+	nextSong := cleanTitle(sc.NextSong)
 
 	var taskPrompt string
 	switch sc.Type {
@@ -644,7 +679,7 @@ Your task: Announce what just played and what's coming up next. Write it as two 
 - If you know who queued a song, mention them by name. Skip attribution for songs with no requester.
 - If both songs were queued by the same person, mention them once naturally (e.g. "both queued by Ben").
 
-Now write your transition:`, sc.CurrentSong, currentLabel, sc.NextSong, nextLabel, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
+Now write your transition:`, currentSong, currentLabel, nextSong, nextLabel, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
 	case AnnouncementIntro:
 		taskPrompt = fmt.Sprintf(`First song of the session: %s (%s)
 
@@ -653,7 +688,7 @@ IMPORTANT: You MUST say the exact song title and artist/channel provided above. 
 Your task: Introduce the first song of the session. Build a little anticipation — you're kicking things off.
 - You MUST say the song/artist
 
-Now write your intro:`, sc.NextSong, nextLabel)
+Now write your intro:`, nextSong, nextLabel)
 	case AnnouncementQueueEmpty:
 		taskPrompt = `Your task: The queue just ran out. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing and it's awesome. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
 
@@ -665,7 +700,7 @@ Keep it brief and natural.
 
 IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
 
-Now write your announcement:`, sc.NextSong, nextLabel)
+Now write your announcement:`, nextSong, nextLabel)
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""
