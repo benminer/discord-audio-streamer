@@ -383,7 +383,7 @@ Suggest 3-5 songs that match the request. Return each as a YouTube search query 
 
 // GenerateNowPlayingCommentary creates conversational DJ commentary for the current song
 // based on the song history and whether it was auto-queued by radio mode.
-func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recentHistory []string, isRadioPick bool) string {
+func GenerateNowPlayingCommentary(ctx context.Context, currentSong, channelName string, recentHistory []string, isRadioPick bool) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
@@ -414,12 +414,15 @@ func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recen
 	}()
 
 	instructions := buildPrompt(fmt.Sprintf(`Current song playing: **%s**
+Channel: %s
 
 %s
 
 %s
 
 Your task: Write ONE sentence of commentary about this song. Two sentences only if the second adds something the first genuinely can't.
+
+IMPORTANT: Your commentary MUST reference the song using ONLY the exact title and channel provided above. Do not guess the artist or substitute with your own knowledge.
 
 Good commentary looks like:
 - One specific detail — a production choice, a story behind the track, a connection to the listening pattern
@@ -446,7 +449,7 @@ Rules:
 - Never say "As an AI..." or apologize
 - If you don't know something specific, be vague rather than invent facts
 
-Now write your commentary:`, currentSong, historyStr, radioStr))
+Now write your commentary:`, currentSong, channelName, historyStr, radioStr))
 
 	response := generateResponse(ctx, instructions)
 	if response == "" {
