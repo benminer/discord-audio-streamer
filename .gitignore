@@ -7,3 +7,4 @@ beatbot
 data/*
 data/
 dave-binary/
+.worktrees/

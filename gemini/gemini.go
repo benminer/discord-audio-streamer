@@ -43,13 +43,17 @@ const (
 // DJScriptContext carries the situational details GenerateDJScript needs to
 // write a natural-sounding announcement for the given AnnouncementType.
 type DJScriptContext struct {
-	Type            AnnouncementType
-	CurrentSong     string   // song that just played (transition)
-	NextSong        string   // song coming up (transition, intro)
-	RecentHistory   []string // recent song titles
-	IsRadioPick     bool     // whether next song was auto-queued by radio
-	CurrentQueuedBy string   // who queued the current song (empty = radio/unknown)
-	NextQueuedBy    string   // who queued the next song (empty = radio/unknown)
+	Type               AnnouncementType
+	CurrentSong        string   // song that just played (transition)
+	CurrentChannelName string   // YouTube channel/uploader of current song
+	CurrentArtistName  string   // Deezer-resolved artist (preferred over channel when set)
+	NextSong           string   // song coming up (transition, intro)
+	NextChannelName    string   // YouTube channel/uploader of next song
+	NextArtistName     string   // Deezer-resolved artist for next song (rarely available)
+	RecentHistory      []string // recent song titles
+	IsRadioPick        bool     // whether next song was auto-queued by radio
+	CurrentQueuedBy    string   // who queued the current song (empty = radio/unknown)
+	NextQueuedBy       string   // who queued the next song (empty = radio/unknown)
 }
 
 // Init initializes the shared Gemini client. Must be called once at startup
@@ -385,6 +389,7 @@ Suggest 3-5 songs that match the request. Return each as a YouTube search query 
 // title/history. All fields are best-effort — nil/zero values are simply
 // omitted from the prompt.
 type SongContext struct {
+	ArtistName     string
 	Genre          string
 	BPM            float64
 	AlbumName      string
@@ -398,8 +403,8 @@ type SongContext struct {
 // GenerateNowPlayingCommentary creates conversational DJ commentary for the current song
 // based on the song history and whether it was auto-queued by radio mode.
 // songCtx is optional (may be nil) and adds Deezer-derived metadata (genre, BPM,
-// album) to the prompt when available.
-func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recentHistory []string, isRadioPick bool, songCtx *SongContext) string {
+// album, artist) to the prompt when available.
+func GenerateNowPlayingCommentary(ctx context.Context, currentSong, channelName string, recentHistory []string, isRadioPick bool, songCtx *SongContext) string {
 	if !config.Config.Gemini.Enabled {
 		return ""
 	}
@@ -429,13 +434,22 @@ func GenerateNowPlayingCommentary(ctx context.Context, currentSong string, recen
 		return "This song was manually requested by a user."
 	}()
 
+	// Build artist identification line: prefer Deezer-resolved artist, fall back to YouTube channel
+	artistLine := fmt.Sprintf("Channel: %s", channelLabel(channelName))
+	if songCtx != nil && songCtx.ArtistName != "" {
+		artistLine = fmt.Sprintf("Artist: %s (verified)", songCtx.ArtistName)
+	}
+
 	instructions := buildPrompt(fmt.Sprintf(`Current song playing: **%s**
+%s
 
 %s
 
 %s
 
 Your task: Write ONE sentence of commentary about this song. Two sentences only if the second adds something the first genuinely can't.
+
+IMPORTANT: Your commentary MUST reference the song using ONLY the exact title and artist/channel provided above. Do not guess the artist or substitute with your own knowledge.
 
 Good commentary looks like:
 - One specific detail — a production choice, a story behind the track, a connection to the listening pattern
@@ -449,20 +463,20 @@ Bad commentary (avoid these):
 - Fake enthusiasm ("you can practically smell the...")
 - Announcing it's a radio pick — just play it
 
-Examples of good commentary:
-- "**House of Jealous Lovers** and that cowbell. DFA knew exactly what they were doing."
-- "Kevin Parker recorded this in his childhood bedroom. Somehow that's obvious and impressive at the same time."
-- "After that stretch of bangers, **Nick Drake** is the right call."
-- "This is the song that made people realize **LCD Soundsystem** was serious."
-- "**Stevie Wonder** played almost every instrument on this himself. Still sounds effortless."
+Examples of good commentary (these are style examples; use only the exact title and artist above for facts):
+- "**House of Jealous Lovers** — that cowbell is doing a lot of work."
+- "This one sounds like it was recorded in a bedroom, and somehow that makes it better."
+- "After that stretch of bangers, this is the right call."
+- "This is the song that makes the band sound inevitable."
+- "The production on this is doing a lot with very little."
 
 Rules:
 - ONE sentence. Two max, only if earned.
-- Bold **artist and song names**
+- Bold **the song title** when you reference it
 - Never say "As an AI..." or apologize
 - If you don't know something specific, be vague rather than invent facts
 
-Now write your commentary:`, currentSong, historyStr, radioStr))
+Now write your commentary:`, currentSong, artistLine, historyStr, radioStr))
 
 	if songCtx != nil {
 		instructions += "\n\nAdditional context about the current song:"
@@ -547,6 +561,16 @@ func recentHistoryBlock(recentHistory []string) string {
 	return sb.String()
 }
 
+// channelLabel returns the channel name for prompt display, with a fallback
+// when YouTube does not expose one. Prevents awkward empty placeholders like
+// "(channel: )" from reaching the model.
+func channelLabel(name string) string {
+	if name == "" {
+		return "unknown"
+	}
+	return name
+}
+
 // GenerateDJScript generates a short spoken-word DJ script — with inline audio
 // tags for TTS delivery — for the moment described by sc. The result must
 // avoid markdown; it's fed directly into GenerateTTSAudio via BuildTTSPrompt.
@@ -560,6 +584,18 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 	span.SetTag("model", config.Config.Gemini.Model)
 	span.SetTag("announcement_type", announcementTypeTag(sc.Type))
 	defer span.Finish()
+
+	// artistOrChannel picks the best available identification for a song.
+	// Deezer-resolved artist is preferred (more accurate), YouTube channel is fallback.
+	artistOrChannel := func(artistName, channelName string) string {
+		if artistName != "" {
+			return fmt.Sprintf("artist: %s", artistName)
+		}
+		return fmt.Sprintf("channel: %s", channelLabel(channelName))
+	}
+
+	currentLabel := artistOrChannel(sc.CurrentArtistName, sc.CurrentChannelName)
+	nextLabel := artistOrChannel(sc.NextArtistName, sc.NextChannelName)
 
 	var taskPrompt string
 	switch sc.Type {
@@ -581,37 +617,43 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 			}
 		}
 
-		taskPrompt = fmt.Sprintf(`Current song (just finished): %s
-Next up: %s
+		taskPrompt = fmt.Sprintf(`Current song (just finished): %s (%s)
+Next up: %s (%s)
 
 %s
 
 %s
 %s
+IMPORTANT: You MUST announce the songs using ONLY the exact titles and artist/channel provided above. Do not guess, substitute, or use your own knowledge about what artist or song this might be.
+
 Your task: Announce what just played and what's coming up next. Write it as two halves: first announce what just played, then what's next.
 - You MUST say BOTH the song/artist that just played AND the song/artist coming up next
 - Never omit either name — they are the entire point of the announcement
 - If you know who queued a song, mention them by name. Skip attribution for songs with no requester.
 - If both songs were queued by the same person, mention them once naturally (e.g. "both queued by Ben").
 
-Now write your transition:`, sc.CurrentSong, sc.NextSong, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
+Now write your transition:`, sc.CurrentSong, currentLabel, sc.NextSong, nextLabel, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
 	case AnnouncementIntro:
-		taskPrompt = fmt.Sprintf(`First song of the session: %s
+		taskPrompt = fmt.Sprintf(`First song of the session: %s (%s)
+
+IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
 
 Your task: Introduce the first song of the session. Build a little anticipation — you're kicking things off.
 - You MUST say the song/artist
 
-Now write your intro:`, sc.NextSong)
+Now write your intro:`, sc.NextSong, nextLabel)
 	case AnnouncementQueueEmpty:
 		taskPrompt = `Your task: The queue just ran out. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing and it's awesome. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
 
 Now write your announcement:`
 	case AnnouncementRadioStart:
 		taskPrompt = fmt.Sprintf(`Your task: Radio mode was just turned on. You're taking over as DJ.
-Announce that radio mode is on and introduce your first pick: %s.
+Announce that radio mode is on and introduce your first pick: %s (%s).
 Keep it brief and natural.
 
-Now write your announcement:`, sc.NextSong)
+IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
+
+Now write your announcement:`, sc.NextSong, nextLabel)
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""
