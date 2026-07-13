@@ -107,6 +107,14 @@ func (p *GuildPlayer) SetAnnounceVoice(voice string) {
 	p.announceMu.Unlock()
 }
 
+// TriggerTTSRegen signals the TTS watcher to attempt generation for the current transition.
+// Safe to call when no next song is set — generateTransitionTTS will no-op.
+func (p *GuildPlayer) TriggerTTSRegen() {
+	if p.playbackState != nil {
+		p.playbackState.SignalRegen()
+	}
+}
+
 // --- ShouldJoinVoice ---
 
 // ShouldJoinVoice returns true if the bot needs to join (or move to) the given voice channel.

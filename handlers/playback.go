@@ -421,12 +421,28 @@ func (manager *Manager) handleAnnounce(ctx context.Context, interaction *Interac
 		}
 		player.SetAnnounceVoice(matchedVoice)
 
+		// Setting a voice implicitly re-enables announcements when they were off.
+		wasDisabled := !player.GetAnnounceEnabled()
+		if wasDisabled {
+			player.SetAnnounceEnabled(true)
+			if player.DB != nil {
+				if err := player.DB.SetGuildSetting(guildID, "announce_enabled", "true"); err != nil {
+					log.Errorf("Failed to save announce setting: %v", err)
+				}
+			}
+			player.TriggerTTSRegen()
+		}
+
 		hint := manager.Hints.ShowIfApplicable(guildID)
+		msg := fmt.Sprintf("🎙️ DJ voice set to **%s**", matchedVoice)
+		if wasDisabled {
+			msg += " — announcements enabled"
+		}
 
 		return Response{
 			Type: 4,
 			Data: ResponseData{
-				Content: fmt.Sprintf("🎙️ DJ voice set to **%s**", matchedVoice) + hint,
+				Content: msg + hint,
 			},
 		}
 	}
