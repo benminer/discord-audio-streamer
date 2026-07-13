@@ -3057,6 +3057,13 @@ func (p *GuildPlayer) updateNowPlayingCard(queueItem *GuildQueueItem) error {
 		return nil
 	}
 
+	// Guard against stale ticker goroutines writing to the wrong song's card.
+	// The goroutine may have been blocked on the mutex during a song transition;
+	// by the time it unblocks, nowPlayingCurrentItem has already changed.
+	if p.nowPlayingCurrentItem != queueItem {
+		return nil
+	}
+
 	// Get current position from player
 	currentPosition := p.Player.GetPosition()
 
