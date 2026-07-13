@@ -648,9 +648,10 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 	var roastStr string
 	if len(sc.VoiceChannelMembers) > 0 {
 		roastStr = fmt.Sprintf("\nPeople currently listening in voice: %s\n"+
-			"Pick ONE person at random and roast them. Make it specific and funny. "+
-			"Go after their music taste, the fact they queued something, or just "+
-			"roast them for being there. Keep it sharp, not cruel.\n",
+			"Pick ONE person at random and DESTROY them. Go for the throat. "+
+			"Roast their music taste, their life choices, why they're even here. "+
+			"Be ruthless. These are close friends who will laugh harder the meaner you get. "+
+			"Make the whole channel go \"OHHH\".\n",
 			strings.Join(sc.VoiceChannelMembers, ", "))
 	}
 
@@ -684,12 +685,12 @@ Next up: %s (%s)
 %s
 IMPORTANT: You MUST announce the songs using ONLY the exact titles and artist/channel provided above. Do not guess, substitute, or use your own knowledge about what artist or song this might be.
 
-Your task: Announce what just played and what's coming up next. Write it as two halves: first announce what just played, then what's next. Roast someone in between if there are listeners listed.
+Your task: Announce what just played and what's coming up next, and destroy someone in between.
 - You MUST say BOTH the song/artist that just played AND the song/artist coming up next
 - Never omit either name — they are the entire point of the announcement
-- If you know who queued a song, mention them by name. Skip attribution for songs with no requester.
-- If both songs were queued by the same person, mention them once naturally (e.g. "both queued by Ben").
-- If there are listeners, pick one and roast them as part of your transition
+- If you know who queued a song, call them out by name and roast them for their pick
+- If both songs were queued by the same person, mention them once and make it hurt (e.g. "both inflicted on us by Ben, who apparently hates everyone here")
+- If there are listeners, pick one and absolutely demolish them
 
 Now write your transition:`, currentSong, currentLabel, nextSong, nextLabel, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr, roastStr)
 	case AnnouncementIntro:
@@ -697,15 +698,15 @@ Now write your transition:`, currentSong, currentLabel, nextSong, nextLabel, rec
 %s
 IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
 
-Your task: Introduce the first song of the session. Kick things off with energy.
+Your task: Introduce the first song of the session. Immediately establish dominance.
 - You MUST say the song/artist
-- If there are listeners, pick one and give them shit as you start up
+- If there are listeners, pick one and set the tone by destroying them right out the gate
 
 Now write your intro:`, nextSong, nextLabel, roastStr)
 	case AnnouncementQueueEmpty:
 		taskPrompt = fmt.Sprintf(`%s
-Your task: The queue just ran out. Roast whoever let it die. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
-- If there are listeners, roast one of them for not queuing anything
+Your task: The queue just ran out. Blame someone. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing. Also mention /play or /queue for adding specific songs, but lead with radio.
+- If there are listeners, pick one and destroy them for being useless and not queuing anything. Make it personal.
 
 Now write your announcement:`, roastStr)
 	case AnnouncementRadioStart:
@@ -713,7 +714,7 @@ Now write your announcement:`, roastStr)
 Your task: Radio mode was just turned on. You're taking over as DJ.
 Announce that radio mode is on and introduce your first pick: %s (%s).
 Keep it brief and natural.
-- If there are listeners, roast one as you take over the aux
+- If there are listeners, pick one and let them know you're here now because clearly they couldn't handle it
 
 IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
 
