@@ -56,17 +56,18 @@ const (
 // DJScriptContext carries the situational details GenerateDJScript needs to
 // write a natural-sounding announcement for the given AnnouncementType.
 type DJScriptContext struct {
-	Type               AnnouncementType
-	CurrentSong        string   // song that just played (transition)
-	CurrentChannelName string   // YouTube channel/uploader of current song
-	CurrentArtistName  string   // Deezer-resolved artist (preferred over channel when set)
-	NextSong           string   // song coming up (transition, intro)
-	NextChannelName    string   // YouTube channel/uploader of next song
-	NextArtistName     string   // Deezer-resolved artist for next song (rarely available)
-	RecentHistory      []string // recent song titles
-	IsRadioPick        bool     // whether next song was auto-queued by radio
-	CurrentQueuedBy    string   // who queued the current song (empty = radio/unknown)
-	NextQueuedBy       string   // who queued the next song (empty = radio/unknown)
+	Type                AnnouncementType
+	CurrentSong         string   // song that just played (transition)
+	CurrentChannelName  string   // YouTube channel/uploader of current song
+	CurrentArtistName   string   // Deezer-resolved artist (preferred over channel when set)
+	NextSong            string   // song coming up (transition, intro)
+	NextChannelName     string   // YouTube channel/uploader of next song
+	NextArtistName      string   // Deezer-resolved artist for next song (rarely available)
+	RecentHistory       []string // recent song titles
+	IsRadioPick         bool     // whether next song was auto-queued by radio
+	CurrentQueuedBy     string   // who queued the current song (empty = radio/unknown)
+	NextQueuedBy        string   // who queued the next song (empty = radio/unknown)
+	VoiceChannelMembers []string // display names of listeners in the voice channel (excludes the bot)
 }
 
 // Init initializes the shared Gemini client. Must be called once at startup
@@ -644,6 +645,15 @@ func GenerateDJScript(ctx context.Context, sc DJScriptContext) string {
 	currentSong := cleanTitle(sc.CurrentSong)
 	nextSong := cleanTitle(sc.NextSong)
 
+	var roastStr string
+	if len(sc.VoiceChannelMembers) > 0 {
+		roastStr = fmt.Sprintf("\nPeople currently listening in voice: %s\n"+
+			"Pick ONE person at random and roast them. Make it specific and funny. "+
+			"Go after their music taste, the fact they queued something, or just "+
+			"roast them for being there. Keep it sharp, not cruel.\n",
+			strings.Join(sc.VoiceChannelMembers, ", "))
+	}
+
 	var taskPrompt string
 	switch sc.Type {
 	case AnnouncementTransition:
@@ -671,36 +681,43 @@ Next up: %s (%s)
 
 %s
 %s
+%s
 IMPORTANT: You MUST announce the songs using ONLY the exact titles and artist/channel provided above. Do not guess, substitute, or use your own knowledge about what artist or song this might be.
 
-Your task: Announce what just played and what's coming up next. Write it as two halves: first announce what just played, then what's next.
+Your task: Announce what just played and what's coming up next. Write it as two halves: first announce what just played, then what's next. Roast someone in between if there are listeners listed.
 - You MUST say BOTH the song/artist that just played AND the song/artist coming up next
 - Never omit either name — they are the entire point of the announcement
 - If you know who queued a song, mention them by name. Skip attribution for songs with no requester.
 - If both songs were queued by the same person, mention them once naturally (e.g. "both queued by Ben").
+- If there are listeners, pick one and roast them as part of your transition
 
-Now write your transition:`, currentSong, currentLabel, nextSong, nextLabel, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr)
+Now write your transition:`, currentSong, currentLabel, nextSong, nextLabel, recentHistoryBlock(sc.RecentHistory), radioStr, requesterStr, roastStr)
 	case AnnouncementIntro:
 		taskPrompt = fmt.Sprintf(`First song of the session: %s (%s)
-
+%s
 IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
 
-Your task: Introduce the first song of the session. Build a little anticipation — you're kicking things off.
+Your task: Introduce the first song of the session. Kick things off with energy.
 - You MUST say the song/artist
+- If there are listeners, pick one and give them shit as you start up
 
-Now write your intro:`, nextSong, nextLabel)
+Now write your intro:`, nextSong, nextLabel, roastStr)
 	case AnnouncementQueueEmpty:
-		taskPrompt = `Your task: The queue just ran out. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing and it's awesome. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
+		taskPrompt = fmt.Sprintf(`%s
+Your task: The queue just ran out. Roast whoever let it die. Hype up /radio mode as the way to keep the music going — it auto-queues songs based on what's been playing. Also mention /play or /queue for adding specific songs, but lead with radio as the main suggestion.
+- If there are listeners, roast one of them for not queuing anything
 
-Now write your announcement:`
+Now write your announcement:`, roastStr)
 	case AnnouncementRadioStart:
-		taskPrompt = fmt.Sprintf(`Your task: Radio mode was just turned on. You're taking over as DJ.
+		taskPrompt = fmt.Sprintf(`%s
+Your task: Radio mode was just turned on. You're taking over as DJ.
 Announce that radio mode is on and introduce your first pick: %s (%s).
 Keep it brief and natural.
+- If there are listeners, roast one as you take over the aux
 
 IMPORTANT: You MUST say the exact song title and artist/channel provided above. Do not guess or substitute.
 
-Now write your announcement:`, nextSong, nextLabel)
+Now write your announcement:`, roastStr, nextSong, nextLabel)
 	default:
 		span.Status = sentry.SpanStatusInvalidArgument
 		return ""

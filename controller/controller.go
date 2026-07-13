@@ -809,6 +809,44 @@ func (p *GuildPlayer) getChannelName(channelID string) string {
 	return channel.Name
 }
 
+// getVoiceChannelMemberNames returns display names of humans in the bot's voice channel.
+func (p *GuildPlayer) getVoiceChannelMemberNames() []string {
+	p.VoiceChannelMutex.RLock()
+	vcID := p.VoiceChannelID
+	p.VoiceChannelMutex.RUnlock()
+	if vcID == nil || p.Discord == nil {
+		return nil
+	}
+
+	guild, err := p.Discord.State.Guild(p.GuildID)
+	if err != nil {
+		return nil
+	}
+
+	botID := ""
+	if p.Discord.State.User != nil {
+		botID = p.Discord.State.User.ID
+	}
+
+	var names []string
+	for _, vs := range guild.VoiceStates {
+		if vs.ChannelID != *vcID || vs.UserID == botID {
+			continue
+		}
+		name := ""
+		if vs.Member != nil {
+			name = vs.Member.DisplayName()
+		}
+		if name == "" && p.DB != nil {
+			name = p.DB.GetOrFetchUsername(p.GuildID, vs.UserID)
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func (p *GuildPlayer) findQueueItemByVideoID(videoID string) (*GuildQueueItem, int) {
 	p.Queue.Mutex.Lock()
 	defer p.Queue.Mutex.Unlock()
@@ -1632,9 +1670,10 @@ func (p *GuildPlayer) startRadioMode() {
 		scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer scriptCancel()
 		script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-			Type:            gemini.AnnouncementRadioStart,
-			NextSong:        picked.Title,
-			NextChannelName: picked.ChannelName,
+			Type:                gemini.AnnouncementRadioStart,
+			NextSong:            picked.Title,
+			NextChannelName:     picked.ChannelName,
+			VoiceChannelMembers: p.getVoiceChannelMemberNames(),
 		})
 		if script != "" {
 			ttsCtx, ttsCancel := context.WithTimeout(ctx, gemini.TTSTimeout)
@@ -2730,16 +2769,17 @@ func (p *GuildPlayer) generateTransitionTTS() {
 	p.currentItemMutex.RUnlock()
 
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type:               gemini.AnnouncementTransition,
-		CurrentSong:        current.Title,
-		CurrentChannelName: current.ChannelName,
-		CurrentArtistName:  currentArtist,
-		NextSong:           next.Title,
-		NextChannelName:    next.ChannelName,
-		RecentHistory:      recentHistory,
-		IsRadioPick:        next.IsRadioPick,
-		CurrentQueuedBy:    current.QueuedBy,
-		NextQueuedBy:       next.QueuedBy,
+		Type:                gemini.AnnouncementTransition,
+		CurrentSong:         current.Title,
+		CurrentChannelName:  current.ChannelName,
+		CurrentArtistName:   currentArtist,
+		NextSong:            next.Title,
+		NextChannelName:     next.ChannelName,
+		RecentHistory:       recentHistory,
+		IsRadioPick:         next.IsRadioPick,
+		CurrentQueuedBy:     current.QueuedBy,
+		NextQueuedBy:        next.QueuedBy,
+		VoiceChannelMembers: p.getVoiceChannelMemberNames(),
 	})
 	if script == "" {
 		return
@@ -2778,7 +2818,8 @@ func (p *GuildPlayer) playNoMoreSongsMessage() {
 	scriptCtx, scriptCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer scriptCancel()
 	script := gemini.GenerateDJScript(scriptCtx, gemini.DJScriptContext{
-		Type: gemini.AnnouncementQueueEmpty,
+		Type:                gemini.AnnouncementQueueEmpty,
+		VoiceChannelMembers: p.getVoiceChannelMemberNames(),
 	})
 	if script == "" {
 		script = "That's all for now. Hit up /radio and I'll keep the vibes going based on what we've been playing. Or queue something specific with /play."
