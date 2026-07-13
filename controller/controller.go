@@ -499,7 +499,15 @@ func (p *GuildPlayer) loadNext() {
 		log.Tracef("loading next song: %s", next.Video.Title)
 
 		if !next.WaitForStreamURL() {
-			log.Warnf("stream URL not found for %s", next.Video.Title)
+			select {
+			case <-next.streamReady:
+				// handleAdd explicitly closed streamReady (already returned) — safe to remove
+				log.Warnf("stream URL not available for %s, removing from queue", next.Video.Title)
+				p.removeItemByVideoID(next.Video.VideoID)
+			default:
+				// True 30s timeout — handleAdd still running, leave item in place
+				log.Warnf("stream URL timed out for %s, skipping preload", next.Video.Title)
+			}
 			return
 		}
 
@@ -540,7 +548,16 @@ func (p *GuildPlayer) playNext() {
 			})
 
 			if !next.WaitForStreamURL() {
-				log.Warnf("stream URL not available for %s, skipping", next.Video.Title)
+				select {
+				case <-next.streamReady:
+					// handleAdd explicitly closed streamReady (already returned) — safe to remove and advance
+					log.Warnf("stream URL not available for %s, skipping", next.Video.Title)
+					p.removeItemByVideoID(next.Video.VideoID)
+					p.playNext()
+				default:
+					// True 30s timeout — handleAdd still running, leave item in place
+					log.Warnf("stream URL timed out for %s", next.Video.Title)
+				}
 				return
 			}
 		}
@@ -650,6 +667,9 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 				Content: msg,
 				Flags:   64,
 			})
+			if event.Item.streamReady != nil {
+				close(event.Item.streamReady)
+			}
 			return
 		}
 
@@ -659,9 +679,12 @@ func (p *GuildPlayer) handleAdd(event QueueEvent) {
 			Token:   event.Item.Interaction.InteractionToken,
 			AppID:   event.Item.Interaction.AppID,
 			UserID:  event.Item.Interaction.UserID,
-			Content: "Error getting video stream: " + err.Error(),
+			Content: fmt.Sprintf("❌ Can't play **%s**: %s", event.Item.Video.Title, err.Error()),
 			Flags:   64,
 		})
+		if event.Item.streamReady != nil {
+			close(event.Item.streamReady)
+		}
 		return
 	}
 streamReady:
@@ -685,6 +708,9 @@ streamReady:
 	// if the player is stopped, or not loading anything, play the next song in the queue
 	if shouldPlay {
 		next := p.GetNext()
+		if next == nil {
+			return
+		}
 		log.Tracef("no song playing, starting load job for: %s", next.Video.Title)
 		nextCtx := next.Context
 		if nextCtx == nil {

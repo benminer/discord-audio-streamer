@@ -504,7 +504,7 @@ func GetVideoStream(ctx context.Context, videoResponse VideoResponse) (*YoutubeS
 					return nil, ErrAgeRestricted
 				}
 				sentry.CaptureException(fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output)))
-				return nil, fmt.Errorf("yt-dlp error after 3 attempts: %v, output: %s", err, string(output))
+				return nil, fmt.Errorf("%s", extractYtDlpReason(string(output)))
 			}
 			continue
 		}
@@ -519,6 +519,37 @@ func GetVideoStream(ctx context.Context, videoResponse VideoResponse) (*YoutubeS
 		Title:     videoResponse.Title,
 		VideoID:   videoResponse.VideoID,
 	}, nil
+}
+
+// extractYtDlpReason parses yt-dlp combined output for a user-readable error reason.
+// For extractor errors ("ERROR: [youtube] VIDEO_ID: reason"), strips the prefix and
+// video ID to return just the human reason. For other errors, returns the message as-is.
+// Falls back to "video unavailable" if no ERROR line is found.
+func extractYtDlpReason(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ERROR: ") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "ERROR: ")
+		if strings.HasPrefix(rest, "[") {
+			// Format: "[extractor] VIDEO_ID: reason" — strip both prefixes
+			if idx := strings.Index(rest, "] "); idx != -1 {
+				afterBracket := rest[idx+2:]
+				parts := strings.SplitN(afterBracket, ": ", 2)
+				if len(parts) == 2 && parts[1] != "" {
+					return parts[1]
+				}
+			}
+			// Bracket format didn't parse cleanly — skip rather than returning a raw video ID
+			continue
+		}
+		// Non-extractor error — return as-is
+		if rest != "" {
+			return rest
+		}
+	}
+	return "video unavailable"
 }
 
 func parseYoutubeDuration(iso string) time.Duration {
