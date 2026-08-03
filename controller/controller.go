@@ -539,13 +539,15 @@ func (p *GuildPlayer) playNext() {
 		if next.Stream == nil {
 			log.Debugf("waiting for stream to be ready for %s", next.Video.Title)
 
-			go discord.UpdateMessage(&discord.FollowUpRequest{
-				Token:           next.Interaction.InteractionToken,
-				AppID:           next.Interaction.AppID,
-				UserID:          next.Interaction.UserID,
-				Content:         "loading " + next.Video.Title + "...",
-				GenerateContent: false,
-			})
+			if next.Interaction != nil {
+				go discord.UpdateMessage(&discord.FollowUpRequest{
+					Token:           next.Interaction.InteractionToken,
+					AppID:           next.Interaction.AppID,
+					UserID:          next.Interaction.UserID,
+					Content:         "loading " + next.Video.Title + "...",
+					GenerateContent: false,
+				})
+			}
 
 			if !next.WaitForStreamURL() {
 				select {
@@ -1373,15 +1375,19 @@ func (p *GuildPlayer) listenForPlaybackEvents() {
 
 					// parse the error, if any
 					var errStr string
-					if err != nil {
-						log.Errorf("Error playing stream: %v", err)
+					if err != nil && *err != nil {
+						log.Errorf("Error playing stream: %v", *err)
 						errStr = (*err).Error()
 					}
 
-					log.Tracef("[loaderror] queueItem: %+v", queueItem.Video.Title)
+					if queueItem == nil {
+						log.Tracef("[playbackerror] queue item not found")
+					} else {
+						log.Tracef("[playbackerror] queue item: %q", queueItem.Video.Title)
+					}
 
 					// if we found a queue item, send a followup to the user notifying them of the error
-					if queueItem != nil {
+					if queueItem != nil && queueItem.Interaction != nil {
 						var msg string
 						if errStr != "" {
 							msg = "Something went wrong while playing " + queueItem.Video.Title + "\nError: " + errStr
