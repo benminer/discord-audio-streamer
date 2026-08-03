@@ -328,6 +328,73 @@ func TestPlaybackStateConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+// TestListenForPlaybackEventsHandlesPlaybackErrorWithoutVideoID verifies that
+// a late playback error without a VideoID cannot crash the guild listener.
+func TestListenForPlaybackEventsHandlesPlaybackErrorWithoutVideoID(t *testing.T) {
+	p := &GuildPlayer{
+		GuildID:              "test-guild",
+		Player:               &audio.Player{Notifications: make(chan audio.PlaybackNotification, 1)},
+		Queue:                &GuildQueue{},
+		playbackState:        newPlaybackState(),
+		playbackListenerStop: make(chan struct{}),
+	}
+	p.playbackState.SetCurrent(SongInfo{Title: "current song", VideoID: "current-video"})
+
+	p.listenForPlaybackEvents()
+	defer close(p.playbackListenerStop)
+
+	p.Player.Notifications <- audio.PlaybackNotification{Event: audio.PlaybackError}
+
+	deadline := time.NewTimer(500 * time.Millisecond)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for p.playbackState.Current() != nil {
+		select {
+		case <-deadline.C:
+			t.Fatal("playback error without a VideoID was not handled")
+		case <-ticker.C:
+		}
+	}
+}
+
+// TestListenForPlaybackEventsHandlesPlaybackErrorWithNilInteraction verifies
+// that a playback error for a loop-created queue item still advances playback
+// when there is no interaction available to update.
+func TestListenForPlaybackEventsHandlesPlaybackErrorWithNilInteraction(t *testing.T) {
+	videoID := "loop-created-video"
+	p := &GuildPlayer{
+		GuildID: "test-guild",
+		Player:  &audio.Player{Notifications: make(chan audio.PlaybackNotification, 1)},
+		Queue: &GuildQueue{Items: []*GuildQueueItem{{
+			Video:       youtube.VideoResponse{VideoID: videoID, Title: "loop-created song"},
+			LoadResult:  &audio.LoadResult{Title: "loop-created song"},
+			streamReady: make(chan struct{}),
+		}}},
+		playbackState:        newPlaybackState(),
+		playbackListenerStop: make(chan struct{}),
+	}
+	p.playbackState.SetCurrent(SongInfo{Title: "loop-created song", VideoID: videoID})
+
+	p.listenForPlaybackEvents()
+	defer close(p.playbackListenerStop)
+	close(p.Queue.Items[0].streamReady)
+
+	p.Player.Notifications <- audio.PlaybackNotification{Event: audio.PlaybackError, VideoID: &videoID}
+
+	deadline := time.NewTimer(500 * time.Millisecond)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for p.playbackState.Current() != nil {
+		select {
+		case <-deadline.C:
+			t.Fatal("playback error with nil interaction was not handled")
+		case <-ticker.C:
+		}
+	}
+}
+
 // TestResetReinitializesStopChannels verifies the contract that after Reset()
 // all stop channels are non-nil and usable — i.e., ready for the next round
 // of listenFor*Events() goroutines. We test this by checking we can send to
