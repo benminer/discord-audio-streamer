@@ -8,6 +8,8 @@ import (
 
 	"beatbot/audio"
 	"beatbot/youtube"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 func TestSongHistory(t *testing.T) {
@@ -256,6 +258,245 @@ func TestListenerStopChannelsInitialized(t *testing.T) {
 	}
 	if p.loadListenerStop == nil {
 		t.Error("loadListenerStop must not be nil")
+	}
+}
+
+func TestVoiceRecoveryTeardownRejectsConcurrentMonitorAdmissions(t *testing.T) {
+	p := &GuildPlayer{}
+	p.configureVoiceRecovery(3)
+	p.invalidateVoiceRecovery() // Reset, idle cleanup, and user joins all do this first.
+
+	var admitted int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := p.beginVoiceRecovery(); ok {
+				mu.Lock()
+				admitted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if admitted != 0 {
+		t.Fatalf("recovery admissions during teardown = %d, want 0", admitted)
+	}
+}
+
+func TestCancelledRecoveryCannotDisconnectNewUserConnection(t *testing.T) {
+	channelID := "voice-channel"
+	oldVC := &discordgo.VoiceConnection{}
+	newUserVC := &discordgo.VoiceConnection{}
+	p := &GuildPlayer{
+		Queue:           &GuildQueue{notifications: make(chan QueueEvent, 1)},
+		VoiceChannelID:  &channelID,
+		VoiceConnection: oldVC,
+	}
+	p.configureVoiceRecovery(3)
+	ctx, ok := p.beginVoiceRecovery()
+	if !ok {
+		t.Fatal("expected recovery admission")
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	p.voiceRecoveryBeforeDetach = func() {
+		close(entered)
+		<-release
+	}
+	var disconnected []*discordgo.VoiceConnection
+	p.voiceRecoveryDisconnect = func(vc *discordgo.VoiceConnection) error {
+		disconnected = append(disconnected, vc)
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		p.runVoiceRecovery(ctx)
+		close(done)
+	}()
+	<-entered
+	p.invalidateVoiceRecovery()
+	p.VoiceChannelMutex.Lock()
+	p.VoiceConnection = newUserVC
+	p.VoiceChannelMutex.Unlock()
+	close(release)
+	<-done
+
+	if got := p.GetVoiceConnection(); got != newUserVC {
+		t.Fatal("stale recovery replaced or disconnected the new user connection")
+	}
+	if len(disconnected) != 0 {
+		t.Fatalf("stale recovery disconnected %d connection(s), want none", len(disconnected))
+	}
+}
+
+func TestCancelledRecoveryCannotPublishRequeueOrNotify(t *testing.T) {
+	channelID := "voice-channel"
+	oldVC := &discordgo.VoiceConnection{}
+	recoveredVC := &discordgo.VoiceConnection{}
+	savedItem := &GuildQueueItem{Video: youtube.VideoResponse{Title: "interrupted", VideoID: "song"}}
+	p := &GuildPlayer{
+		Queue:           &GuildQueue{notifications: make(chan QueueEvent, 1)},
+		VoiceChannelID:  &channelID,
+		VoiceConnection: oldVC,
+		CurrentItem:     savedItem,
+	}
+	p.configureVoiceRecovery(3)
+	ctx, ok := p.beginVoiceRecovery()
+	if !ok {
+		t.Fatal("expected recovery admission")
+	}
+
+	joinStarted := make(chan struct{})
+	releaseJoin := make(chan struct{})
+	p.voiceRecoveryJoin = func(string) (*discordgo.VoiceConnection, error) {
+		close(joinStarted)
+		<-releaseJoin
+		return recoveredVC, nil
+	}
+	disconnected := make(chan *discordgo.VoiceConnection, 2)
+	p.voiceRecoveryDisconnect = func(vc *discordgo.VoiceConnection) error {
+		disconnected <- vc
+		return nil
+	}
+	notified := make(chan string, 1)
+	p.voiceRecoveryMessage = func(message string) { notified <- message }
+	p.SetLastTextChannelID("text-channel")
+
+	done := make(chan struct{})
+	go func() {
+		p.runVoiceRecovery(ctx)
+		close(done)
+	}()
+	<-joinStarted
+	p.invalidateVoiceRecovery()
+	close(releaseJoin)
+	<-done
+
+	p.VoiceChannelMutex.RLock()
+	publishedVC := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if publishedVC != nil {
+		t.Fatal("cancelled recovery published a voice connection")
+	}
+	if got := p.GetQueueSnapshot(); len(got) != 0 {
+		t.Fatalf("cancelled recovery requeued %d item(s), want none", len(got))
+	}
+	select {
+	case message := <-notified:
+		t.Fatalf("cancelled recovery notified %q", message)
+	default:
+	}
+	disconnectedSet := make(map[*discordgo.VoiceConnection]bool, 2)
+	for range 2 {
+		select {
+		case vc := <-disconnected:
+			disconnectedSet[vc] = true
+		default:
+			t.Fatal("cancelled recovery did not clean up both detached connections")
+		}
+	}
+	if !disconnectedSet[oldVC] || !disconnectedSet[recoveredVC] {
+		t.Fatal("cancelled recovery leaked an old or recovered voice connection")
+	}
+}
+
+func TestCancelledRecoveryAfterDetachDoesNotBeginJoin(t *testing.T) {
+	channelID := "voice-channel"
+	oldVC := &discordgo.VoiceConnection{}
+	p := &GuildPlayer{
+		Queue:           &GuildQueue{notifications: make(chan QueueEvent, 1)},
+		VoiceChannelID:  &channelID,
+		VoiceConnection: oldVC,
+	}
+	p.configureVoiceRecovery(3)
+	ctx, ok := p.beginVoiceRecovery()
+	if !ok {
+		t.Fatal("expected recovery admission")
+	}
+
+	disconnectStarted := make(chan struct{})
+	releaseDisconnect := make(chan struct{})
+	joinStarted := make(chan struct{})
+	disconnected := make(chan *discordgo.VoiceConnection, 1)
+	p.voiceRecoveryDisconnect = func(vc *discordgo.VoiceConnection) error {
+		disconnected <- vc
+		close(disconnectStarted)
+		<-releaseDisconnect
+		return nil
+	}
+	p.voiceRecoveryJoin = func(string) (*discordgo.VoiceConnection, error) {
+		close(joinStarted)
+		return &discordgo.VoiceConnection{}, nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		p.runVoiceRecovery(ctx)
+		close(done)
+	}()
+	<-disconnectStarted
+	p.invalidateVoiceRecovery()
+	close(releaseDisconnect)
+	<-done
+
+	select {
+	case <-joinStarted:
+		t.Fatal("cancelled recovery began a new voice join after stale disconnect")
+	default:
+	}
+	select {
+	case vc := <-disconnected:
+		if vc != oldVC {
+			t.Fatal("recovery disconnected an unexpected connection")
+		}
+	default:
+		t.Fatal("recovery did not disconnect the detached stale connection")
+	}
+	p.VoiceChannelMutex.RLock()
+	publishedVC := p.VoiceConnection
+	p.VoiceChannelMutex.RUnlock()
+	if publishedVC != nil {
+		t.Fatal("cancelled recovery published a voice connection")
+	}
+}
+
+func TestVoiceMonitorStopIsConcurrentSafe(t *testing.T) {
+	p := &GuildPlayer{}
+	p.startVoiceConnectionMonitor()
+
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.stopVoiceConnectionMonitor()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestVoiceConnectionCleanupUsesVoiceChannelMutex(t *testing.T) {
+	channelID := "voice-channel"
+	p := &GuildPlayer{VoiceChannelID: &channelID}
+
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.disconnectVoiceConnection(true)
+			_ = p.GetVoiceChannelID()
+		}()
+	}
+	wg.Wait()
+
+	if p.GetVoiceChannelID() != nil {
+		t.Fatal("voice cleanup must clear the voice channel ID")
 	}
 }
 

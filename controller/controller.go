@@ -104,41 +104,57 @@ func (h *SongHistory) Len() int {
 }
 
 type GuildPlayer struct {
-	Discord                *discordgo.Session
-	DB                     *database.Database
-	GuildID                string
-	playbackState          *PlaybackState
-	Queue                  *GuildQueue
-	VoiceChannelMutex      sync.RWMutex
-	VoiceChannelID         *string
-	VoiceJoinedAt          *time.Time
-	VoiceConnection        *discordgo.VoiceConnection
-	reconnectAttempts      int
-	maxReconnectAttempts   int
-	voiceMonitorStop       chan struct{}
-	Loader                 *audio.Loader
-	Player                 *audio.Player
-	LastActivityAt         time.Time
-	LastTextChannelID      string
-	lastTextChannelMu      sync.RWMutex // protects LastTextChannelID
-	idleCheckStop          chan struct{}
-	queueListenerStop      chan struct{}
-	playbackListenerStop   chan struct{}
-	loadListenerStop       chan struct{}
-	ttsWatcherStop         chan struct{}
-	RadioEnabled           bool
-	RadioTheme             string // user-provided vibe for radio picks, empty = history-based
-	RadioGenre             string // user-provided genre for radio picks, empty = not genre mode
-	RadioArtistName        string // resolved Deezer artist name for artist radio mode
-	RadioArtistID          int    // resolved Deezer artist ID for artist radio mode
-	radioMutex             sync.Mutex
-	radioCandidatePool     []deezer.Track // buffered Deezer tracks for genre/artist radio modes
-	radioCandidatesMu      sync.Mutex
-	radioQueueing          sync.Mutex // held while queueRadioSong is in-flight, prevents double-queue
-	radioStartAnnouncement *audio.TTSPlayback
-	radioStartMu           sync.Mutex
-	radioStartGen          int64
-	SongHistory            *SongHistory
+	Discord              *discordgo.Session
+	DB                   *database.Database
+	GuildID              string
+	playbackState        *PlaybackState
+	Queue                *GuildQueue
+	VoiceChannelMutex    sync.RWMutex
+	VoiceChannelID       *string
+	VoiceJoinedAt        *time.Time
+	VoiceConnection      *discordgo.VoiceConnection
+	reconnectAttempts    int
+	maxReconnectAttempts int
+	voiceMonitorStop     chan struct{}
+	voiceLifecycleMu     sync.Mutex // protects monitor ownership and recovery admission/retries
+	voiceRecoveryCtx     context.Context
+	voiceRecoveryCancel  context.CancelFunc
+	voiceRecoveryActive  bool
+	voiceRecoveryEnabled bool
+	// voiceLifecycleGeneration changes whenever teardown or a user-directed join
+	// supersedes the current voice lifecycle. It lets network work finish without
+	// holding VoiceChannelMutex while preventing a stale result from publishing.
+	voiceLifecycleGeneration uint64
+	voiceRecoveryJoining     context.Context
+	// The following hooks are intentionally narrow test seams. Production leaves
+	// them nil and uses the Discord client directly.
+	voiceRecoveryBeforeDetach func()
+	voiceRecoveryJoin         func(channelID string) (*discordgo.VoiceConnection, error)
+	voiceRecoveryDisconnect   func(*discordgo.VoiceConnection) error
+	voiceRecoveryMessage      func(string)
+	Loader                    *audio.Loader
+	Player                    *audio.Player
+	LastActivityAt            time.Time
+	LastTextChannelID         string
+	lastTextChannelMu         sync.RWMutex // protects LastTextChannelID
+	idleCheckStop             chan struct{}
+	queueListenerStop         chan struct{}
+	playbackListenerStop      chan struct{}
+	loadListenerStop          chan struct{}
+	ttsWatcherStop            chan struct{}
+	RadioEnabled              bool
+	RadioTheme                string // user-provided vibe for radio picks, empty = history-based
+	RadioGenre                string // user-provided genre for radio picks, empty = not genre mode
+	RadioArtistName           string // resolved Deezer artist name for artist radio mode
+	RadioArtistID             int    // resolved Deezer artist ID for artist radio mode
+	radioMutex                sync.Mutex
+	radioCandidatePool        []deezer.Track // buffered Deezer tracks for genre/artist radio modes
+	radioCandidatesMu         sync.Mutex
+	radioQueueing             sync.Mutex // held while queueRadioSong is in-flight, prevents double-queue
+	radioStartAnnouncement    *audio.TTSPlayback
+	radioStartMu              sync.Mutex
+	radioStartGen             int64
+	SongHistory               *SongHistory
 
 	CurrentItem      *GuildQueueItem
 	currentItemMutex sync.RWMutex
@@ -368,6 +384,8 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	// select on playerCtx.Done(). Replace with a fresh context immediately.
 	p.playerCancel()
 	p.playerCtx, p.playerCancel = context.WithCancel(context.Background())
+	p.invalidateVoiceRecovery()
+	p.stopVoiceConnectionMonitor()
 
 	p.radioStartMu.Lock()
 	p.radioStartAnnouncement = nil
@@ -403,21 +421,10 @@ func (p *GuildPlayer) Reset(ctx context.Context, interaction *GuildQueueItemInte
 	if p.playbackState != nil {
 		p.playbackState.ClearNext()
 	}
-	p.stopVoiceConnectionMonitor()
-
-	p.VoiceChannelMutex.Lock()
 	// Disconnect from voice to ensure a clean rejoin on next play.
 	// Without this, the voice connection can go stale after reset,
 	// causing the next play command to hang.
-	if p.VoiceConnection != nil {
-		if err := p.VoiceConnection.Disconnect(); err != nil {
-			log.Errorf("Error disconnecting from voice during reset: %v", err)
-		}
-		p.VoiceConnection = nil
-	}
-	p.VoiceChannelID = nil
-	p.VoiceChannelMutex.Unlock()
-	p.reconnectAttempts = 0
+	p.disconnectVoiceConnection(true)
 
 	// Reset queue and song state under their respective locks.
 	// Keep the Queue.Mutex scope tight — only cover the state mutation.
@@ -742,8 +749,11 @@ streamReady:
 }
 
 func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
-	p.VoiceChannelMutex.Lock()
-	defer p.VoiceChannelMutex.Unlock()
+	// A user-directed join supersedes any failed-connection recovery that may
+	// still be waiting to retry. Keep the resulting generation as a publish
+	// token; no voice-state lookup or Discord join holds VoiceChannelMutex.
+	generation := p.beginUserVoiceJoin()
+	p.stopVoiceConnectionMonitor()
 
 	voiceState, err := discord.GetMemberVoiceState(&userID, &p.GuildID)
 	if err != nil {
@@ -764,15 +774,15 @@ func (p *GuildPlayer) JoinVoiceChannel(userID string) error {
 	}
 
 	now := time.Now()
-
-	p.VoiceConnection = vc
-	p.VoiceChannelID = &voiceState.ChannelID
-	p.VoiceJoinedAt = &now
-	p.reconnectAttempts = 0
-	p.maxReconnectAttempts = 3
+	if !p.publishUserVoiceJoin(generation, vc, voiceState.ChannelID, now) {
+		// Reset, idle cleanup, or a newer user join superseded this network
+		// operation. It must not publish over the newer lifecycle.
+		p.disconnectVoice(vc)
+		return errors.New("voice join superseded by newer lifecycle change")
+	}
 
 	// Start monitoring voice connection health
-	p.startVoiceConnectionMonitor()
+	p.startVoiceConnectionMonitorForGeneration(generation)
 
 	// Add breadcrumb for voice channel join (uses global scope since this is a guild-level operation)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
@@ -1447,17 +1457,13 @@ func (p *GuildPlayer) startIdleChecker() {
 					p.stopNowPlayingUpdates()
 					p.clearNowPlayingCard()
 
+					// Invalidate recovery before teardown so a delayed retry cannot
+					// reconnect after this idle disconnect.
+					p.invalidateVoiceRecovery()
+
 					// Stop voice monitoring before cleanup
 					p.stopVoiceConnectionMonitor()
-
-					if p.VoiceConnection != nil {
-						if err := p.VoiceConnection.Disconnect(); err != nil {
-							log.Errorf("Error disconnecting from voice: %v", err)
-						}
-						p.VoiceConnection = nil
-					}
-
-					p.VoiceChannelID = nil
+					p.disconnectVoiceConnection(true)
 					p.Clear()
 					return
 				}
@@ -2499,15 +2505,40 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 	// Stop any existing monitor
 	p.stopVoiceConnectionMonitor()
 
-	p.voiceMonitorStop = make(chan struct{})
+	p.voiceLifecycleMu.Lock()
+	stop := make(chan struct{})
+	p.voiceMonitorStop = stop
+	p.voiceLifecycleMu.Unlock()
 
+	p.runVoiceConnectionMonitor(stop)
+}
+
+// startVoiceConnectionMonitorForGeneration starts a monitor only if the join
+// that published the connection is still current. Reset and a later user join
+// both advance the generation before stopping the old monitor.
+func (p *GuildPlayer) startVoiceConnectionMonitorForGeneration(generation uint64) {
+	p.stopVoiceConnectionMonitor()
+
+	p.voiceLifecycleMu.Lock()
+	if generation != p.voiceLifecycleGeneration || !p.voiceRecoveryEnabled {
+		p.voiceLifecycleMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	p.voiceMonitorStop = stop
+	p.voiceLifecycleMu.Unlock()
+
+	p.runVoiceConnectionMonitor(stop)
+}
+
+func (p *GuildPlayer) runVoiceConnectionMonitor(stop <-chan struct{}) {
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		for {
 			select {
-			case <-p.voiceMonitorStop:
+			case <-stop:
 				return
 			case <-ticker.C:
 				p.VoiceChannelMutex.RLock()
@@ -2518,11 +2549,10 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 					if !vc.Ready {
 						log.Warnf("Voice connection not ready for guild %s", p.GuildID)
 
-						// If we're actively playing (not paused), attempt recovery.
 						// IsPlaying() is true even when paused (silence loop still runs),
 						// so we guard with !IsPaused() to avoid reconnecting when the user
 						// intentionally disconnected us while paused.
-						if p.Player.IsPlaying() && !p.Player.IsPaused() {
+						if p.Player != nil && p.Player.IsPlaying() && !p.Player.IsPaused() {
 							log.Infof("Attempting voice connection recovery for guild %s", p.GuildID)
 							p.attemptVoiceRecovery()
 						}
@@ -2535,148 +2565,396 @@ func (p *GuildPlayer) startVoiceConnectionMonitor() {
 
 // stopVoiceConnectionMonitor stops the voice connection monitoring goroutine
 func (p *GuildPlayer) stopVoiceConnectionMonitor() {
-	if p.voiceMonitorStop != nil {
-		close(p.voiceMonitorStop)
-		p.voiceMonitorStop = nil
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if p.voiceMonitorStop == nil {
+		return
 	}
+	close(p.voiceMonitorStop)
+	p.voiceMonitorStop = nil
 }
 
 // attemptVoiceRecovery attempts to recover from a failed voice connection
 func (p *GuildPlayer) attemptVoiceRecovery() {
-	if p.reconnectAttempts >= p.maxReconnectAttempts {
-		log.Errorf("Max voice reconnection attempts reached for guild %s", p.GuildID)
-		p.handleVoiceRecoveryFailure()
+	ctx, ok := p.beginVoiceRecovery()
+	if !ok {
+		return
+	}
+	p.runVoiceRecovery(ctx)
+}
+
+// beginVoiceRecovery admits one recovery sequence at a time. Its context is
+// invalidated by Reset and idle cleanup, which also prevents delayed retries
+// from becoming a new recovery sequence.
+func (p *GuildPlayer) beginVoiceRecovery() (context.Context, bool) {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if !p.voiceRecoveryEnabled || p.voiceRecoveryCtx == nil || p.voiceRecoveryActive || p.reconnectAttempts >= p.maxReconnectAttempts {
+		return nil, false
+	}
+	p.voiceRecoveryActive = true
+	p.reconnectAttempts++
+	return p.voiceRecoveryCtx, true
+}
+
+func (p *GuildPlayer) nextVoiceRecoveryAttempt(ctx context.Context) (int, bool) {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if !p.ownsVoiceRecoveryLocked(ctx) || p.reconnectAttempts >= p.maxReconnectAttempts {
+		return 0, false
+	}
+	p.reconnectAttempts++
+	return p.reconnectAttempts, true
+}
+
+func (p *GuildPlayer) finishVoiceRecovery(ctx context.Context) {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if p.ownsVoiceRecoveryLocked(ctx) {
+		p.voiceRecoveryActive = false
+	}
+}
+
+// invalidateVoiceRecovery closes recovery admission during teardown. A fresh
+// context is deliberately not created here: only configureVoiceRecovery,
+// called after a user-directed join has safely published its connection, may
+// enable a new recovery generation.
+func (p *GuildPlayer) invalidateVoiceRecovery() {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	p.invalidateVoiceRecoveryLocked()
+	p.voiceLifecycleGeneration++
+}
+
+func (p *GuildPlayer) invalidateVoiceRecoveryLocked() {
+	if p.voiceRecoveryCancel != nil {
+		p.voiceRecoveryCancel()
+	}
+	p.voiceRecoveryCtx = nil
+	p.voiceRecoveryCancel = nil
+	p.voiceRecoveryActive = false
+	p.voiceRecoveryEnabled = false
+	p.reconnectAttempts = 0
+}
+
+// beginUserVoiceJoin invalidates any recovery and returns the generation that
+// is allowed to publish this user-directed join after its network work ends.
+func (p *GuildPlayer) beginUserVoiceJoin() uint64 {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	p.invalidateVoiceRecoveryLocked()
+	p.voiceLifecycleGeneration++
+	return p.voiceLifecycleGeneration
+}
+
+// publishUserVoiceJoin atomically verifies a user join's generation, publishes
+// its connection, and enables the recovery generation. No network I/O occurs
+// while either mutex is held.
+func (p *GuildPlayer) publishUserVoiceJoin(generation uint64, vc *discordgo.VoiceConnection, channelID string, joinedAt time.Time) bool {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if generation != p.voiceLifecycleGeneration {
+		return false
+	}
+
+	p.VoiceChannelMutex.Lock()
+	p.VoiceConnection = vc
+	p.VoiceChannelID = &channelID
+	p.VoiceJoinedAt = &joinedAt
+	p.VoiceChannelMutex.Unlock()
+	p.configureVoiceRecoveryLocked(3)
+	return true
+}
+
+func (p *GuildPlayer) resetVoiceRecoveryAttempts() {
+	p.voiceLifecycleMu.Lock()
+	p.reconnectAttempts = 0
+	p.voiceLifecycleMu.Unlock()
+}
+
+func (p *GuildPlayer) configureVoiceRecovery(maxAttempts int) {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	p.configureVoiceRecoveryLocked(maxAttempts)
+}
+
+func (p *GuildPlayer) configureVoiceRecoveryLocked(maxAttempts int) {
+	if p.voiceRecoveryCancel != nil {
+		p.voiceRecoveryCancel()
+	}
+	p.voiceRecoveryCtx, p.voiceRecoveryCancel = context.WithCancel(context.Background())
+	p.voiceRecoveryEnabled = true
+	p.voiceRecoveryActive = false
+	p.voiceRecoveryJoining = nil
+	p.maxReconnectAttempts = maxAttempts
+	p.reconnectAttempts = 0
+}
+
+func (p *GuildPlayer) ownsVoiceRecoveryLocked(ctx context.Context) bool {
+	return ctx != nil && p.voiceRecoveryEnabled && p.voiceRecoveryActive && ctx == p.voiceRecoveryCtx && ctx.Err() == nil
+}
+
+func (p *GuildPlayer) runVoiceRecovery(ctx context.Context) {
+	if ctx == nil {
 		return
 	}
 
-	p.reconnectAttempts++
-	log.Infof("Voice reconnection attempt %d/%d for guild %s", p.reconnectAttempts, p.maxReconnectAttempts, p.GuildID)
+	p.voiceLifecycleMu.Lock()
+	if !p.ownsVoiceRecoveryLocked(ctx) {
+		p.voiceLifecycleMu.Unlock()
+		return
+	}
+	attempt := p.reconnectAttempts
+	maxAttempts := p.maxReconnectAttempts
+	p.voiceLifecycleMu.Unlock()
+	log.Infof("Voice reconnection attempt %d/%d for guild %s", attempt, maxAttempts, p.GuildID)
 
-	// Snapshot current item under its lock before touching anything else.
-	// We key off savedItem (not wasPlaying) because when the VC drops,
-	// safeSendOpus may have already caused Play() to exit — so IsPlaying()
-	// can return false even though a song was interrupted. CurrentItem
-	// persists through PlaybackStopped, making it the reliable signal.
+	// This hook gives lifecycle tests a deterministic point between admission
+	// and the destructive phase. It is nil in production.
+	if p.voiceRecoveryBeforeDetach != nil {
+		p.voiceRecoveryBeforeDetach()
+	}
+
+	savedItem, currentChannelID, staleVC, ok := p.detachVoiceForRecovery(ctx)
+	if !ok {
+		return
+	}
+	p.disconnectVoice(staleVC)
+
+	// Attempt to rejoin the voice channel
+	if currentChannelID != "" {
+		// The stale VC disconnect above may block. Recheck ownership only after
+		// it returns, immediately before beginning a new Discord join, so Reset,
+		// idle cleanup, or a user join can cancel the recovery in that window.
+		if !p.beginVoiceRecoveryJoin(ctx) {
+			return
+		}
+		log.Infof("Attempting to rejoin voice channel %s in guild %s", currentChannelID, p.GuildID)
+
+		vc, err := p.joinVoiceForRecovery(currentChannelID)
+		p.finishVoiceRecoveryJoin(ctx)
+		if err != nil {
+			log.Errorf("Failed to rejoin voice channel for guild %s: %v", p.GuildID, err)
+
+			// Schedule retry after delay, but honour the recovery lifecycle context
+			// so Reset and idle cleanup can cancel it before it fires.
+			delay := time.Duration(attempt*2) * time.Second
+			go func() {
+				select {
+				case <-ctx.Done():
+					log.Debugf("Voice recovery retry cancelled for guild %s", p.GuildID)
+					return
+				case <-time.After(delay):
+				}
+				if _, ok := p.nextVoiceRecoveryAttempt(ctx); ok {
+					p.runVoiceRecovery(ctx)
+				} else {
+					p.handleVoiceRecoveryFailure(ctx)
+				}
+			}()
+			return
+		}
+		if !p.ownsVoiceRecovery(ctx) {
+			// A reset or idle cleanup won while the join was in flight. Do not
+			// publish the stale connection back onto the player.
+			p.disconnectVoice(vc)
+			return
+		}
+
+		if !p.commitVoiceRecovery(ctx, vc, savedItem) {
+			p.disconnectVoice(vc)
+		}
+		return
+	}
+	p.finishVoiceRecovery(ctx)
+}
+
+// detachVoiceForRecovery claims and detaches the currently published voice
+// connection while holding lifecycle ownership. Teardown invalidates that
+// ownership before publishing a user-directed connection, so a stale recovery
+// can never stop playback or disconnect a later user connection.
+func (p *GuildPlayer) detachVoiceForRecovery(ctx context.Context) (*GuildQueueItem, string, *discordgo.VoiceConnection, bool) {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if !p.ownsVoiceRecoveryLocked(ctx) {
+		return nil, "", nil, false
+	}
+
 	p.currentItemMutex.RLock()
 	savedItem := p.CurrentItem
 	p.currentItemMutex.RUnlock()
 
-	p.VoiceChannelMutex.RLock()
-	currentChannelID := p.VoiceChannelID
-	p.VoiceChannelMutex.RUnlock()
+	p.VoiceChannelMutex.Lock()
+	channelID := ""
+	if p.VoiceChannelID != nil {
+		channelID = *p.VoiceChannelID
+	}
+	staleVC := p.VoiceConnection
+	p.VoiceConnection = nil
+	p.VoiceChannelMutex.Unlock()
 
-	// Stop cleanly if still playing; may already be stopped if safeSendOpus
-	// failed mid-frame and Play() exited on its own. Either way, Stop() is
-	// lockless (just an atomic store) so it's always safe to call.
-	if p.Player.IsPlaying() {
+	if p.Player != nil && p.Player.IsPlaying() {
 		p.Player.Stop()
 		log.Infof("Stopped playback for voice recovery in guild %s", p.GuildID)
 	}
+	return savedItem, channelID, staleVC, true
+}
 
-	// Disconnect the stale connection
-	p.VoiceChannelMutex.Lock()
-	if p.VoiceConnection != nil {
-		if err := p.VoiceConnection.Disconnect(); err != nil {
-			log.Errorf("Error disconnecting during recovery for guild %s: %v", p.GuildID, err)
-		}
-		p.VoiceConnection = nil
+// commitVoiceRecovery publishes every successful recovery side effect while
+// ownership is held. Invalidation either happens before this point (and none
+// of these effects occur) or after this recovery has committed as current.
+func (p *GuildPlayer) commitVoiceRecovery(ctx context.Context, vc *discordgo.VoiceConnection, savedItem *GuildQueueItem) bool {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if !p.ownsVoiceRecoveryLocked(ctx) {
+		return false
 	}
+
+	p.VoiceChannelMutex.Lock()
+	p.VoiceConnection = vc
 	p.VoiceChannelMutex.Unlock()
 
-	// Attempt to rejoin the voice channel
-	if currentChannelID != nil {
-		log.Infof("Attempting to rejoin voice channel %s in guild %s", *currentChannelID, p.GuildID)
-
-		vc, err := discord.JoinVoiceChannel(p.Discord, p.GuildID, *currentChannelID)
-		if err != nil {
-			log.Errorf("Failed to rejoin voice channel for guild %s: %v", p.GuildID, err)
-
-			// Schedule retry after delay, but honour the player-scoped context so
-			// Reset() can cancel this goroutine before it fires.
-			delay := time.Duration(p.reconnectAttempts*2) * time.Second
-			go func() {
-				select {
-				case <-p.playerCtx.Done():
-					log.Debugf("Voice recovery retry cancelled for guild %s (player reset)", p.GuildID)
-					return
-				case <-time.After(delay):
-				}
-				p.attemptVoiceRecovery()
-			}()
-			return
+	if savedItem != nil && p.Queue != nil {
+		freshItem := &GuildQueueItem{
+			Video:          savedItem.Video,
+			ProbedDuration: savedItem.ProbedDuration,
+			AddedAt:        time.Now(),
+			LoadAttempts:   0,
+			MaxAttempts:    3,
+			Context:        context.Background(),
+			IsRadioPick:    savedItem.IsRadioPick,
+			Interaction:    savedItem.Interaction,
+			streamReady:    make(chan struct{}),
 		}
-
-		// Success — update the connection under write lock
-		p.VoiceChannelMutex.Lock()
-		p.VoiceConnection = vc
-		p.VoiceChannelMutex.Unlock()
-
-		log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
-		p.reconnectAttempts = 0
-
-		// Re-queue the interrupted song at the front of the queue for a
-		// fresh load. We never replay savedItem.LoadResult — it's a one-shot
-		// pipe that Play() partially consumed; trying to reuse it hits EOF.
-		// Prepending a fresh item and calling playNext() is safe and clean.
-		if savedItem != nil {
-			freshItem := &GuildQueueItem{
-				Video:          savedItem.Video,
-				ProbedDuration: savedItem.ProbedDuration,
-				AddedAt:        time.Now(),
-				LoadAttempts:   0,
-				MaxAttempts:    3,
-				Context:        context.Background(),
-				IsRadioPick:    savedItem.IsRadioPick,
-				Interaction:    savedItem.Interaction,
-				LoadResult:     nil, // force fresh load — do not reuse consumed pipe
-				Stream:         nil,
-				// Required: playNext() calls WaitForStreamURL() which checks this
-				// to avoid a nil-pointer dereference when Stream is nil.
-				streamReady: make(chan struct{}),
-			}
-			p.Queue.Mutex.Lock()
-			p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
-			p.Queue.Mutex.Unlock()
-			log.Infof("Re-queued '%s' for fresh playback after voice recovery", savedItem.Video.Title)
-			select {
-			case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: freshItem}:
-				log.Debugf("Recovery requeue notified for guild %s: %s", p.GuildID, freshItem.Video.Title)
-			default:
-				log.Warnf("Queue notifications channel full during recovery for guild %s", p.GuildID)
-			}
+		p.Queue.Mutex.Lock()
+		p.Queue.Items = append([]*GuildQueueItem{freshItem}, p.Queue.Items...)
+		p.Queue.Mutex.Unlock()
+		log.Infof("Re-queued '%s' for fresh playback after voice recovery", savedItem.Video.Title)
+		select {
+		case p.Queue.notifications <- QueueEvent{Type: EventAdd, Item: freshItem}:
+			log.Debugf("Recovery requeue notified for guild %s: %s", p.GuildID, freshItem.Video.Title)
+		default:
+			log.Warnf("Queue notifications channel full during recovery for guild %s", p.GuildID)
 		}
+	}
 
-		// Send notification to channel about recovery
-		if p.GetLastTextChannelID() != "" {
-			go p.sendRecoveryMessage("🔄 Voice connection restored! Playback resumed.")
-		}
+	p.reconnectAttempts = 0
+	if p.GetLastTextChannelID() != "" {
+		p.sendVoiceRecoveryMessage("🔄 Voice connection restored! Playback resumed.")
+	}
+	p.voiceRecoveryActive = false
+	log.Infof("Successfully reconnected to voice channel for guild %s", p.GuildID)
+	return true
+}
+
+func (p *GuildPlayer) ownsVoiceRecovery(ctx context.Context) bool {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	return p.ownsVoiceRecoveryLocked(ctx)
+}
+
+// beginVoiceRecoveryJoin is the final ownership gate before Discord I/O. A
+// Discord voice join has no context-aware cancellation API, so invalidation
+// racing after this point may let the request finish, but the generation check
+// after it guarantees the result is never published and is disconnected.
+func (p *GuildPlayer) beginVoiceRecoveryJoin(ctx context.Context) bool {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if !p.ownsVoiceRecoveryLocked(ctx) {
+		return false
+	}
+	p.voiceRecoveryJoining = ctx
+	return true
+}
+
+func (p *GuildPlayer) finishVoiceRecoveryJoin(ctx context.Context) {
+	p.voiceLifecycleMu.Lock()
+	defer p.voiceLifecycleMu.Unlock()
+	if p.voiceRecoveryJoining == ctx {
+		p.voiceRecoveryJoining = nil
 	}
 }
 
-// handleVoiceRecoveryFailure handles the case when voice recovery completely fails
-func (p *GuildPlayer) handleVoiceRecoveryFailure() {
-	log.Errorf("Voice connection recovery failed for guild %s, stopping playback", p.GuildID)
+func (p *GuildPlayer) joinVoiceForRecovery(channelID string) (*discordgo.VoiceConnection, error) {
+	if p.voiceRecoveryJoin != nil {
+		return p.voiceRecoveryJoin(channelID)
+	}
+	return discord.JoinVoiceChannel(p.Discord, p.GuildID, channelID)
+}
 
-	// Stop playback and clear state
+// handleVoiceRecoveryFailure handles the case when an owned recovery completely
+// fails. It first claims the lifecycle state, so a canceled retry cannot tear
+// down a newer user-directed connection.
+func (p *GuildPlayer) handleVoiceRecoveryFailure(ctx context.Context) {
+	p.voiceLifecycleMu.Lock()
+	if !p.ownsVoiceRecoveryLocked(ctx) {
+		p.voiceLifecycleMu.Unlock()
+		return
+	}
+	p.voiceRecoveryActive = false
+	p.voiceRecoveryEnabled = false
+	p.reconnectAttempts = 0
+	p.VoiceChannelMutex.Lock()
+	vc := p.VoiceConnection
+	p.VoiceConnection = nil
+	p.VoiceChannelID = nil
+	p.VoiceChannelMutex.Unlock()
 	if p.Player != nil {
 		p.Player.Stop()
 	}
+	p.voiceLifecycleMu.Unlock()
+
+	log.Errorf("Voice connection recovery failed for guild %s, stopping playback", p.GuildID)
+	p.disconnectVoice(vc)
 
 	p.stopNowPlayingUpdates()
 	p.clearNowPlayingCard()
 
-	p.VoiceChannelMutex.Lock()
-	p.VoiceConnection = nil
-	p.VoiceChannelID = nil
-	p.VoiceChannelMutex.Unlock()
-	p.reconnectAttempts = 0
-
 	// Send notification to channel about failure
 	if p.GetLastTextChannelID() != "" {
-		go p.sendRecoveryMessage("❌ Voice connection lost and recovery failed. Use a play command to reconnect.")
+		p.sendVoiceRecoveryMessage("❌ Voice connection lost and recovery failed. Use a play command to reconnect.")
 	}
 
 	p.stopVoiceConnectionMonitor()
+}
+
+// disconnectVoiceConnection removes the published connection under the same
+// lock used by playback and monitor readers, then disconnects the detached
+// connection. Keeping the network call outside the lock avoids blocking those
+// readers while preserving single ownership of the player fields.
+func (p *GuildPlayer) disconnectVoiceConnection(clearChannelID bool) {
+	p.VoiceChannelMutex.Lock()
+	vc := p.VoiceConnection
+	p.VoiceConnection = nil
+	if clearChannelID {
+		p.VoiceChannelID = nil
+	}
+	p.VoiceChannelMutex.Unlock()
+
+	p.disconnectVoice(vc)
+}
+
+func (p *GuildPlayer) disconnectVoice(vc *discordgo.VoiceConnection) {
+	if vc == nil {
+		return
+	}
+	var err error
+	if p.voiceRecoveryDisconnect != nil {
+		err = p.voiceRecoveryDisconnect(vc)
+	} else {
+		err = vc.Disconnect()
+	}
+	if err != nil {
+		log.Errorf("Error disconnecting from voice for guild %s: %v", p.GuildID, err)
+	}
+}
+
+func (p *GuildPlayer) sendVoiceRecoveryMessage(message string) {
+	if p.voiceRecoveryMessage != nil {
+		p.voiceRecoveryMessage(message)
+		return
+	}
+	go p.sendRecoveryMessage(message)
 }
 
 // sendRecoveryMessage sends a message to the last active text channel
