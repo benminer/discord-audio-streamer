@@ -1,17 +1,38 @@
 #!/bin/bash
-# Start the Cloudflare tunnel for beatbot (runs on host, forwards to Docker container on :8080)
-# Run this AFTER docker-restart.sh
+# Ensure the beatbot Cloudflare tunnel is running under launchd.
+#
+# The tunnel runs as the LaunchAgent com.ben.cloudflared-beatbot (KeepAlive +
+# RunAtLoad), so it survives reboots and crashes. Its definition lives in
+# deploy/com.ben.cloudflared-beatbot.plist; it is copied into
+# ~/Library/LaunchAgents only when missing, so after editing it there, re-copy
+# it and run `launchctl bootout gui/$(id -u)/com.ben.cloudflared-beatbot`
+# before running this script again.
+#
+# Usage: ./start-tunnel.sh            # load if not loaded, otherwise leave alone
+#        ./start-tunnel.sh restart    # force a restart of the tunnel process
+set -euo pipefail
 
-SESSION="beatbot-tunnel"
+LABEL="com.ben.cloudflared-beatbot"
+SRC="$(cd "$(dirname "$0")" && pwd)/deploy/$LABEL.plist"
+DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DOMAIN="gui/$(id -u)"
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    echo "Killing existing tunnel session..."
-    tmux kill-session -t "$SESSION"
+if [[ ! -f "$DEST" ]]; then
+    echo "Installing $DEST"
+    cp "$SRC" "$DEST"
 fi
 
-tmux new-session -d -s "$SESSION" -n tunnel
-tmux send-keys -t "$SESSION:tunnel" "cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot" Enter
+if launchctl print "$DOMAIN/$LABEL" > /dev/null 2>&1; then
+    if [[ "${1:-}" == "restart" ]]; then
+        echo "Restarting cloudflared beatbot tunnel ($LABEL)..."
+        launchctl kickstart -k "$DOMAIN/$LABEL"
+    else
+        echo "Cloudflared beatbot tunnel already running under launchd ($LABEL)"
+    fi
+else
+    echo "Loading cloudflared beatbot tunnel ($LABEL)..."
+    launchctl bootstrap "$DOMAIN" "$DEST"
+fi
 
-echo "Cloudflare tunnel started in tmux session: $SESSION"
 echo "Public URL: https://beatbot.bensserver.com"
-echo "Attach with: tmux attach -t $SESSION"
+echo "Tunnel log: ~/.cloudflared/beatbot-tunnel.log"
