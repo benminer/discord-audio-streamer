@@ -1,0 +1,15 @@
+{
+  "setup": {
+    "default": "bash scripts/traycer-setup.sh",
+    "macos": null,
+    "linux": null,
+    "windows": null
+  },
+  "teardown": {
+    "default": "",
+    "macos": null,
+    "linux": null,
+    "windows": null
+  },
+  "updatedAt": 1795652241915
+}
