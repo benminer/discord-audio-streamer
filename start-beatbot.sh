@@ -1,5 +1,6 @@
 #!/bin/bash
-# Start beatbot (discord-audio-streamer) + Cloudflare tunnel in a tmux session
+# Start beatbot (discord-audio-streamer) natively in a tmux session; the
+# Cloudflare tunnel is ensured via launchd (start-tunnel.sh)
 # Usage: ./start-beatbot.sh
 
 SESSION="beatbot"
@@ -15,13 +16,6 @@ if pgrep -f "$BOT_BIN" > /dev/null; then
     sleep 1
 fi
 
-# Kill any running cloudflared tunnel for beatbot
-if pgrep -f "cloudflared tunnel run beatbot" > /dev/null; then
-    echo "Killing cloudflared tunnel..."
-    pkill -f "cloudflared tunnel run beatbot"
-    sleep 1
-fi
-
 # Kill existing tmux session if it exists
 if tmux has-session -t "$SESSION" 2>/dev/null; then
     echo "Killing tmux session '$SESSION'..."
@@ -34,12 +28,11 @@ echo "=== Starting fresh ==="
 tmux new-session -d -s "$SESSION" -n bot -c "$BOT_DIR"
 tmux send-keys -t "$SESSION:bot" "TUNNEL_PROVIDER=cloudflare CLOUDFLARE_TUNNEL_URL=https://beatbot.bensserver.com ./beatbot" Enter
 
-# Create second window for cloudflare tunnel
-tmux new-window -t "$SESSION" -n tunnel
-tmux send-keys -t "$SESSION:tunnel" "cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot" Enter
+# Cloudflare tunnel runs under launchd (see start-tunnel.sh)
+"$BOT_DIR/start-tunnel.sh"
 
 echo "=== Done ==="
 echo "Bot URL:    https://beatbot.bensserver.com"
-echo "tmux:       $SESSION (windows: bot, tunnel)"
+echo "tmux:       $SESSION (window: bot)"
 echo ""
 echo "Attach with: tmux attach -t $SESSION"
