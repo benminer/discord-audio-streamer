@@ -11,13 +11,6 @@ if [ "$1" == "rebuild" ]; then
     docker build --platform linux/arm64 -t benminer/discord-audio-streamer:latest ./
 fi
 
-# --- Stop existing cloudflared tunnel ---
-if pgrep -f "cloudflared tunnel run beatbot" > /dev/null; then
-    echo "Stopping cloudflared beatbot tunnel..."
-    pkill -f "cloudflared tunnel run beatbot"
-    sleep 1
-fi
-
 # --- Remove existing container ---
 if docker ps -a --format '{{.Names}}' | grep -q "^discord-audio-streamer$"; then
     echo "Removing existing container..."
@@ -70,10 +63,10 @@ for i in $(seq 1 15); do
     sleep 2
 done
 
-# --- Start cloudflared tunnel ---
-echo "Starting cloudflared beatbot tunnel..."
-cloudflared tunnel --config ~/.cloudflared/beatbot.yml run beatbot > ~/.openclaw/logs/cloudflared-beatbot.log 2>&1 &
-echo "Cloudflare tunnel started (PID: $!)"
+# --- Ensure cloudflared tunnel (launchd-managed, survives reboots) ---
+# The tunnel reconnects to :8080 on its own, so a container restart doesn't
+# need a tunnel restart.
+./start-tunnel.sh
 
 echo ""
 echo "=== Done ==="
